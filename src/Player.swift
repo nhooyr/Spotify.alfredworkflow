@@ -560,6 +560,7 @@ private final class SpotifyCommands {
     private let playbackQueue = DispatchQueue(label: "spotify.playback", qos: .userInteractive)
     private var script: NSAppleScript?
     private var polling = false
+    private var statusGeneration = 0
     private var launchedAt = Date.distantPast
     func validate() -> String? {
         let candidate = NSAppleScript(source: source)
@@ -683,15 +684,17 @@ private final class SpotifyCommands {
             DispatchQueue.main.async { completion(uri) }
         }
     }
+    func invalidateStatus() { statusGeneration += 1 }
     func poll() {
         guard !polling else { return }
+        let generation = statusGeneration
         polling = true
         queue.async {
             let result = self.call("snapshot", arguments: [])
             let values = result.map { value in (1...max(1, value.numberOfItems)).compactMap { value.atIndex($0)?.stringValue } } ?? []
             DispatchQueue.main.async {
                 self.polling = false
-                if result != nil { self.status?(values) }
+                if result != nil, generation == self.statusGeneration { self.status?(values) }
             }
         }
     }
@@ -807,6 +810,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         return queue
     }()
     private var imagesRequested: Set<String> = []
+    private var sentTestCommands: [String] = []
 
     init(testMode: Bool = false) {
         self.testMode = testMode
@@ -819,7 +823,10 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         installEditingMenu()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeSpaceChanged(_:)), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         backend.receive = { [weak self] value in self?.receive(value) }
-        spotify.failed = { [weak self] message in self?.showError(message) }
+        spotify.failed = { [weak self] message in
+            guard let self = self, self.connection == "connected" else { return }
+            self.showError(message)
+        }
         spotify.status = { [weak self] values in self?.updatePlayback(values) }
         do {
             try server.start { [weak self] message in self?.handleIPC(message) ?? [:] }
@@ -1045,7 +1052,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         search.wantsLayer = true
         search.layer?.cornerRadius = theme.searchRadius
         search.layer?.masksToBounds = true
-        nowTitle.textColor = theme.text
+        nowTitle.textColor = currentTrackURI.isEmpty ? theme.secondary : theme.text
         nowDetail.textColor = theme.secondary
         nowContext.textColor = theme.secondary
         nowArt.contentTintColor = theme.secondary
@@ -1080,6 +1087,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         return button
     }
     private func send(_ command: String, args: [String] = []) {
+        if testMode { sentTestCommands.append(command) }
         if command == "refresh" {
             failedImages.removeAll()
             artworkPaths = artworkPaths.filter { !$0.value.isEmpty }
@@ -1099,16 +1107,19 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             offlineStatus.isHidden = !offline
             if offline { catalogPending = false }
         }
-        if let request = value["navigation"] as? Int, request != navigationRequest { return }
-        // A queued home refresh must not turn an in-flight catalogue query into
-        // a literal local search when the panel is reopened.
-        if routeKind == "catalog", search.stringValue.hasPrefix("/"),
-           let incoming = value["route_kind"] as? String, incoming != "catalog",
-           ["show", "refresh", "artwork", "liked"].contains(value["command"] as? String ?? "") { return }
-        if value["route_kind"] as? String == "catalog", routeKind != "catalog", pendingHomeQuery != nil { return }
-        if value["route_kind"] as? String == "catalog", routeKind == "catalog",
-           let query = value["query"] as? String, value["command"] as? String != "back",
-           query != String(search.stringValue.dropFirst()) { return }
+        let nextConnection = value["connection"] as? String ?? connection
+        if nextConnection == connection {
+            if let request = value["navigation"] as? Int, request != navigationRequest { return }
+            // A queued home refresh must not turn an in-flight catalogue query into
+            // a literal local search when the panel is reopened.
+            if routeKind == "catalog", search.stringValue.hasPrefix("/"),
+               let incoming = value["route_kind"] as? String, incoming != "catalog",
+               ["show", "refresh", "artwork", "liked"].contains(value["command"] as? String ?? "") { return }
+            if value["route_kind"] as? String == "catalog", routeKind != "catalog", pendingHomeQuery != nil { return }
+            if value["route_kind"] as? String == "catalog", routeKind == "catalog",
+               let query = value["query"] as? String, value["command"] as? String != "back",
+               query != String(search.stringValue.dropFirst()) { return }
+        }
         if type == "error" {
             pendingPlaintextPath = nil
             if routeKind == "catalog" { catalogPending = false; filter() }
@@ -1125,7 +1136,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             return
         }
         if type == "playback" {
-            guard value["request"] as? Int == playbackRequest else { return }
+            guard connection == "connected", value["request"] as? Int == playbackRequest else { return }
             if let error = value["error"] as? String {
                 optimisticUntil = .distantPast
                 currentPlaybackContext = nil; selectedSourceTrack = ""; updateContextLabel()
@@ -1157,6 +1168,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             return
         }
         if type == "liked" {
+            guard connection == "connected" else { return }
             let uri = value["uri"] as? String ?? ""
             likedTracks[uri] = value["liked"] as? Bool ?? false
             if value["cached"] as? Bool != true { pendingLikes.removeValue(forKey: uri) }
@@ -1167,12 +1179,13 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             return
         }
         if type == "catalog" {
+            guard connection == "connected" else { return }
             catalogRevision += 1
             let revision = catalogRevision, rows = value["rows"] as? [[String: Any]] ?? []
             catalogQueue.async { [weak self] in
                 let prepared = MusicItem.prioritized(rows.map(MusicItem.init))
                 DispatchQueue.main.async {
-                    guard let self = self, revision == self.catalogRevision else { return }
+                    guard let self = self, self.connection == "connected", revision == self.catalogRevision else { return }
                     self.catalog = prepared
                     if self.offline && self.routeKind == "catalog" {
                         self.source = self.localCatalogResults(String(self.search.stringValue.dropFirst()))
@@ -1187,21 +1200,14 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             let path = value["path"] as? String ?? ""
             if !url.isEmpty { artworkPaths[url] = path }
             if !path.isEmpty { failedImages.remove(path) }
-            if url == currentImageURL { setNowArt(path) }
+            if connection == "connected", url == currentImageURL { setNowArt(path) }
             return
         }
-        let nextConnection = value["connection"] as? String ?? connection
         let signedIn = connection == "connecting" && nextConnection == "connected"
-        if nextConnection != connection {
-            inlineError = nil
-            if nextConnection != "connected" {
-                pendingPlaintextPath = nil; lastPlaintextPath = nil
-                catalogRevision += 1; catalog = []
-                repeatRequest += 1; repeatSessionStart = repeatRequest
-                repeatPending = false; repeatMode = .off; confirmedRepeatMode = .off
-            }
-        }
+        let disconnected = connection != nextConnection && nextConnection != "connected"
+        if nextConnection != connection { inlineError = nil }
         connection = nextConnection
+        if disconnected { clearDisconnectedState() }
         if value["close_player"] as? Bool == true { hide() }
         if let message = value["message"] as? String { statusMessage = message }
         renderStatus()
@@ -1211,6 +1217,16 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         shuffle.isEnabled = connection == "connected"
         updateLike()
         updateRepeat()
+        if connection != "connected" {
+            routeKind = "home"; breadcrumb = ""; setSearchText("")
+            catalogPending = false; updateSearchStatus()
+            source = ((value["rows"] as? [[String: Any]])?.map(MusicItem.init) ?? source)
+                .filter { $0.payload["action"] as? String == "connect" }
+            home = source
+            filter(resetSelection: true)
+            if value["command"] as? String == "configure" { hide() }
+            return
+        }
         if let rows = value["rows"] as? [[String: Any]] {
             if let kind = value["route_kind"] as? String { routeKind = kind }
             if routeKind == "catalog" { catalogPending = value["searching"] as? Bool == true }
@@ -1275,6 +1291,28 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
     }
 
+    private func clearDisconnectedState() {
+        spotify.invalidateStatus()
+        playbackRequest += 1
+        repeatRequest += 1; repeatSessionStart = repeatRequest
+        repeatPending = false; repeatMode = .off; confirmedRepeatMode = .off
+        pendingLikes.removeAll(); likedTracks.removeAll()
+        playing = false; shuffling = false; optimisticUntil = .distantPast
+        currentTrackArtist = ""; currentTrackAlbum = ""
+        setCurrentTrack("", refresh: false)
+        currentImageURL = ""; currentArtPath = ""
+        nowTitle.stringValue = "No track currently selected"
+        setNowArt("")
+        updateToggle(); updateShuffle(); updateRepeat()
+        lastLikedCheck = .distantPast; lastRepeatPoll = .distantPast
+        catalogSearchWork?.cancel(); catalogSearchWork = nil; catalogPending = false
+        pendingPlaintextPath = nil; lastPlaintextPath = nil; pendingHomeQuery = nil
+        navigationSelections.removeAll(); restoreOpeningSelection = false
+        routeKind = "home"; breadcrumb = ""; setSearchText("")
+        catalogRevision += 1; catalog = []; home = []; source = []
+        filter(resetSelection: true)
+    }
+
     private func image(_ path: String) -> NSImage? {
         guard !path.isEmpty else { return nil }
         if let image = imageCache.object(forKey: path as NSString) { return image }
@@ -1290,8 +1328,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 } else {
                     self.failedImages.insert(path)
                 }
-                if self.currentArtPath == path { self.nowArt.image = decoded ?? self.symbol("questionmark", height: 64) }
-                if let item = self.selectedItem(), self.previewURI == item.uri,
+                if self.connection == "connected", self.currentArtPath == path { self.nowArt.image = decoded ?? self.symbol("questionmark", height: 64) }
+                if self.connection == "connected", let item = self.selectedItem(), self.previewURI == item.uri,
                    (self.previewPaths[item.uri] ?? item.art) == path {
                     self.setPreviewImage(decoded ?? self.previewPlaceholder(item))
                     self.previewIsCover = decoded != nil
@@ -1469,6 +1507,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     private func placeSearchCaretAtEnd() { focusSearch(selectAll: false) }
     private func enterCatalog(_ requestedQuery: String, preservingSelection: Bool = false) {
+        guard connection == "connected" else { return }
         if routeKind != "catalog" { rememberSelection() }
         let restored = preservingSelection ? navigationSelections["/"] : nil
         let query = restored.map { String($0.query.dropFirst()) } ?? requestedQuery
@@ -1485,6 +1524,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         placeSearchCaretAtEnd()
     }
     private func updateCatalogQuery() {
+        guard connection == "connected" else { return }
         catalogSearchWork?.cancel()
         let query = String(search.stringValue.dropFirst())
         source = localCatalogResults(query)
@@ -1517,7 +1557,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         return true
     }
     func controlTextDidChange(_ obj: Notification) {
-        guard !updatingSearchField else { return }
+        guard !updatingSearchField, connection == "connected" else { return }
         let text = singleLineQuery(search.stringValue)
         if text != search.stringValue { setSearchText(text) }
         restoreOpeningSelection = false
@@ -1545,6 +1585,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if let item = selectedItem() { navigationSelections[breadcrumb] = (item.uri, search.stringValue) }
     }
     private func navigateUp() {
+        guard connection == "connected" else { return }
         if pendingPlaintextPath != nil {
             setSearchText(""); controlTextDidChange(Notification(name: NSControl.textDidChangeNotification)); return
         }
@@ -1559,6 +1600,11 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         let modifiers = NSApp.currentEvent?.modifierFlags.intersection([.command, .control, .option, .shift]) ?? []
+        if connection != "connected" {
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) { hide() }
+            else if modifiers.isEmpty && commandSelector == #selector(NSResponder.insertNewline(_:)) { activateSelection() }
+            return true
+        }
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveDown(_:)) { move(1); return true }
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveUp(_:)) { move(-1); return true }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) { hide(); return true }
@@ -1591,6 +1637,13 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let key = event.charactersIgnoringModifiers ?? ""
+        if modifiers.isEmpty && event.keyCode == 53 { hide(); return true }
+        if modifiers == .command && key == "w" { hide(); return true }
+        if modifiers == .command && key == "," { openSettings(); return true }
+        guard connection == "connected" else {
+            if modifiers.isEmpty && [36, 76].contains(event.keyCode) { activateSelection() }
+            return true
+        }
         if modifiers == .option && [36, 76].contains(event.keyCode) {
             openSelection(preservingSelection: false, playDirectly: true); return true
         }
@@ -1625,8 +1678,6 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 }
                 return true
             }
-            if key == "w" { hide(); return true }
-            if key == "," { openSettings(); return true }
             if event.keyCode == 36 {
                 let value = search.stringValue
                 enterCatalog(value.hasPrefix(breadcrumb) ? String(value.dropFirst(breadcrumb.count)) : value)
@@ -1634,7 +1685,6 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             }
         }
         if modifiers.isEmpty && event.keyCode == 36 && !search.isEnabled { activateSelection(); return true }
-        if modifiers.isEmpty && event.keyCode == 53 { hide(); return true }
         return false
     }
     private func move(_ offset: Int) {
@@ -1649,8 +1699,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         collapseSearchSelection()
         guard pendingPlaintextPath == nil, let item = selectedItem() else { return }
         let action = item.payload["action"] as? String ?? ""
-        if action == "catalog" { enterCatalog("", preservingSelection: preservingSelection); return }
         if action == "connect" { send("connect"); return }
+        guard connection == "connected" else { return }
+        if action == "catalog" { enterCatalog("", preservingSelection: preservingSelection); return }
         let directURI: String?
         if playDirectly, ["album", "artist", "playlist"].contains(item.kind), validURI(item.uri) { directURI = item.uri }
         else if playDirectly, action == "browse", text(dict(item.payload["target"])["kind"]) == "songs" { directURI = PlaybackContext.likedSongs.uri }
@@ -1666,7 +1717,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 let request = playbackRequest
                 let context = item.payload["context"] as? String ?? ""
                 spotify.ensureRunning { [weak self] started in
-                    guard let self = self, request == self.playbackRequest else { return }
+                    guard let self = self, self.connection == "connected", request == self.playbackRequest else { return }
                     self.send("play", args: [uri, context, started ? "started" : "running", String(request)])
                 }
             }
@@ -1703,12 +1754,13 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         requestLiked(likedTracks[currentTrackURI] != true)
     }
     private func requestLiked(_ desired: Bool) {
-        guard validTrack(currentTrackURI) else { return }
+        guard connection == "connected", validTrack(currentTrackURI) else { return }
         pendingLikes[currentTrackURI] = desired
         updateLike()
         if !testMode { send(desired ? "save" : "unsave", args: [currentTrackURI]) }
     }
     private func setCurrentTrack(_ uri: String, refresh: Bool = true) {
+        nowTitle.textColor = uri.isEmpty ? playerTheme.secondary : playerTheme.text
         if uri.isEmpty {
             currentPlaybackContext = nil; selectedSourceTrack = ""; observedPlaybackContext = nil
             updateContextLabel()
@@ -1747,7 +1799,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     private func refreshCurrentLike() {
         lastLikedCheck = Date()
-        if !testMode, currentTrackURI.range(of: #"^spotify:track:[A-Za-z0-9]{22}$"#, options: .regularExpression) != nil {
+        if !testMode, connection == "connected", currentTrackURI.range(of: #"^spotify:track:[A-Za-z0-9]{22}$"#, options: .regularExpression) != nil {
             send("liked", args: [currentTrackURI])
         }
     }
@@ -1801,9 +1853,10 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     private func refreshRepeat() {
         lastRepeatPoll = Date()
-        if !testMode { send("repeat-state", args: [String(repeatRequest), String(playbackRequest)]) }
+        if !testMode, connection == "connected" { send("repeat-state", args: [String(repeatRequest), String(playbackRequest)]) }
     }
     private func performExternal(_ command: String) {
+        guard connection == "connected" || command == "refresh" else { return }
         if ["toggle", "previous", "next"].contains(command) {
             lastTransportCommand = command; transportCommands += 1
             if command == "toggle", panel.isVisible {
@@ -1828,8 +1881,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             updateLike()
             return
         }
+        let request = playbackRequest
         spotify.currentTrack { [weak self] uri in
-            guard let self = self else { return }
+            guard let self = self, self.connection == "connected", request == self.playbackRequest else { return }
             guard let uri = uri, validTrack(uri) else {
                 if !self.panel.isVisible { self.show() }
                 self.showError("No Spotify song is currently playing.")
@@ -1867,7 +1921,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         toggle.setFrameOrigin(NSPoint(x: (leftEdge + rightEdge - toggle.frame.width) / 2, y: toggle.frame.minY))
     }
     private func updatePlayback(_ values: [String]) {
-        guard Date() >= optimisticUntil else { return }
+        guard connection == "connected", Date() >= optimisticUntil else { return }
         playing = values.first == "playing"
         updateToggle()
         if values.count >= 7 { shuffling = values[6] == "true"; updateShuffle() }
@@ -2023,6 +2077,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if testMode && value["command"] as? String == "test-plaintext-paths" { return plaintextPathChecks() }
         if testMode && value["command"] as? String == "test-navigation-shortcuts" { return navigationShortcutChecks() }
         if testMode && value["command"] as? String == "test-connection-ui" { return connectionUIChecks() }
+        if testMode && value["command"] as? String == "test-connection-session" { return connectionSessionChecks() }
         if testMode && value["command"] as? String == "test-catalog-resume" { return catalogResumeChecks() }
         if testMode && value["command"] as? String == "test-editing" {
             return editingChecks()
@@ -2434,6 +2489,74 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         demo(); search.isEnabled = true; focusSearch(selectAll: false)
         return ["status": "ok", "connection_has_no_cover_preview": emptyPreview, "no_connect_button": noButton,
                 "return_activates_connection_row": enter, "connection_status_is_inline": inlineStatus]
+    }
+    private func connectionSessionChecks() -> [String: Any] {
+        demo(); search.isEnabled = true; optimisticUntil = .distantPast
+        let uri = "spotify:track:" + String(repeating: "t", count: 22)
+        let cover = NSImage(size: NSSize(width: 20, height: 20))
+        imageCache.setObject(cover, forKey: "old-session-cover")
+        artworkPaths["old-session-url"] = "old-session-cover"
+        updatePlayback(["playing", "Old title", "Old artist", "Old album", "old-session-url", uri, "true"])
+        currentPlaybackContext = PlaybackContext(uri: "spotify:playlist:" + String(repeating: "p", count: 22), name: "Old playlist")
+        likedTracks[uri] = true; pendingLikes[uri] = true; repeatMode = .track; updateLike(); updateRepeat(); updateContextLabel()
+        routeKind = "catalog"; breadcrumb = "/"; setSearchText("/old query")
+        let row: JSONObject = ["uri": "action:connect", "name": "Connecting to Spotify…", "kind": "action", "item": ["action": "connect"]]
+        let oldPlayback = playbackRequest, oldRepeat = repeatRequest
+        receive(["type": "update", "command": "refresh", "connection": "connecting", "navigation": navigationRequest - 1,
+                 "message": "Finish connecting in your browser", "route_kind": "home", "prefix": "", "rows": [row]])
+        func blankHeader() -> Bool {
+            nowTitle.stringValue == "No track currently selected" && nowTitle.textColor == playerTheme.secondary
+                && nowArt.contentTintColor == playerTheme.secondary && nowDetail.stringValue.isEmpty && nowContext.isHidden
+                && currentTrackURI.isEmpty && currentImageURL.isEmpty && currentArtPath.isEmpty && nowArt.image !== cover
+                && !playing && !shuffling && repeatMode == .off && pendingLikes.isEmpty && likedTracks.isEmpty
+        }
+        let cleared = connection == "connecting" && blankHeader() && playbackRequest > oldPlayback && repeatRequest > oldRepeat
+        updatePlayback(["playing", "Late title", "Late artist", "Late album", "old-session-url", uri, "true"])
+        receive(["type": "liked", "uri": uri, "liked": true])
+        receive(["type": "artwork", "url": "old-session-url", "path": "old-session-cover"])
+        receive(["type": "repeat", "mode": "track", "request": oldRepeat])
+        receive(["type": "playback", "request": oldPlayback, "error": "Old playback error"])
+        let staleIgnored = blankHeader() && inlineError == nil
+        func event(_ code: UInt16, _ character: String = "", _ modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: panel.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code)!
+        }
+        let blocked: [(UInt16, String, NSEvent.ModifierFlags)] = [
+            (36, "\r", .command), (36, "\r", .option), (125, "", .command), (126, "", .command), (18, "1", .command),
+            (1, "s", .command), (35, "p", .command), (45, "n", .command), (15, "r", .command),
+            (123, "", [.control, .command]), (124, "", [.control, .command]), (125, "", [.control, .command]), (126, "", [.control, .command])]
+        var inactive = true
+        for state in ["connecting", "credentials", "cleared", "failed", "loading"] {
+            receive(["type": "update", "command": "connect", "connection": state, "route_kind": "catalog",
+                     "prefix": "/", "query": "leftover query", "search_text": "/leftover query", "rows": [row]])
+            let commands = sentTestCommands.count, navigation = navigationRequest, transports = transportCommands, refreshes = refreshRequests
+            for (code, character, modifiers) in blocked { panel.sendEvent(event(code, character, modifiers)) }
+            inactive = inactive && sentTestCommands.count == commands && navigationRequest == navigation
+                && transportCommands == transports && refreshRequests == refreshes
+                && routeKind == "home" && search.stringValue.isEmpty && filtered.count == 1
+                && selectedItem()?.payload["action"] as? String == "connect" && !search.isEnabled && blankHeader()
+        }
+        let commands = sentTestCommands.count
+        panel.sendEvent(event(36, "\r"))
+        let enter = Array(sentTestCommands.dropFirst(commands)) == ["connect"]
+        let original = launchHotkey
+        launchHotkey = LaunchHotkey(code: 49, modifiers: [.control, .command])
+        hotkeyHandoffAllowed = false
+        let shows = showCount
+        panel.sendEvent(event(49, " ", [.control, .command]))
+        let global = showCount == shows + 1 && hotkeyHandoffAllowed
+        panel.sendEvent(event(53))
+        let escape = !hotkeyHandoffAllowed
+        launchHotkey = original
+        receive(["type": "update", "connection": "connected", "route_kind": "home", "prefix": "", "rows": []])
+        updatePlayback(["playing", "Fresh title", "Fresh artist", "Fresh album", "", uri, "false"])
+        let resumes = nowTitle.stringValue == "Fresh title" && nowTitle.textColor == playerTheme.text && currentTrackURI == uri && search.isEnabled
+        demo()
+        return ["status": "ok", "disconnect_clears_header_and_playback_session": cleared,
+                "late_playback_likes_and_artwork_are_ignored": staleIgnored,
+                "all_player_shortcuts_inactive_until_connected": inactive,
+                "return_reopens_signin": enter, "global_launch_still_works": global, "escape_still_hides": escape,
+                "fresh_connected_updates_resume": resumes]
     }
     private func inputFocusChecks() -> [String: Any] {
         demo(); search.isEnabled = true; setSearchText("filter"); focusSearch(selectAll: false)
@@ -2984,7 +3107,10 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                        "text": ["color": "#E6F2FFFF", "colorSelected": "#FFFFFFFF", "font": "Avenir"]],
             "scrollbar": ["color": "#A9C7E4FF", "thickness": 3]]])
         defer { applyTheme(PlayerTheme()); demo(); search.stringValue = ""; filter() }
-        demo(); applyTheme(theme)
+        demo(); setCurrentTrack("", refresh: false); applyTheme(theme)
+        let emptyTitleThemed = nowTitle.textColor == theme.secondary
+        setCurrentTrack("spotify:track:" + String(repeating: "h", count: 22), refresh: false)
+        nowTitle.stringValue = "Theme song"
         placeSearchCaretAtEnd()
         let editor = search.currentEditor() as? NSTextView
         let row = MusicCell(frame: NSRect(x: 0, y: 0, width: 320, height: 25))
@@ -3015,6 +3141,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let otherPreviewsThemed = preview.contentTintColor == theme.secondary
         return ["status": "ok", "theme_applied_to_rows": selection && normal,
                 "theme_applied_to_header": nowTitle.textColor == theme.text && nowDetail.textColor == theme.secondary,
+                "empty_track_title_follows_secondary_color": emptyTitleThemed,
                 "theme_applied_to_cursor": editor?.insertionPointColor == theme.searchText,
                 "theme_applied_to_text_selection": editor?.selectedTextAttributes[.backgroundColor] as? NSColor == theme.searchSelection,
                 "theme_font_family": row.title.font?.familyName == "Avenir" && search.font?.familyName == "Avenir",

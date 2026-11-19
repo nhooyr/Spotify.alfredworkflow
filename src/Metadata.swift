@@ -67,14 +67,17 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     launchLayout["note"] = "Launch Spotify Mini Player — global\nDefault: ⌃⌘Space; press again in the player to open Spotify"
     layout["HOTKEY"] = launchLayout
     layout["HOTKEY_PLAYER"] = ["xpos": 300, "ypos": 20]
-    layout["PLAYER"] = ["xpos": 300, "ypos": 180]
-    layout["OPEN"] = ["xpos": 50, "ypos": 180]
-    layout["REAUTH"] = ["xpos": 50, "ypos": 320]
-    layout["CLEAR_ACTION"] = ["xpos": 300, "ypos": 320]
-    layout["REAUTH_RESULT"] = ["xpos": 550, "ypos": 320]
+    layout["PLAYER"] = ["xpos": 300, "ypos": 220]
+    layout["OPEN"] = ["xpos": 50, "ypos": 220]
+    layout["REAUTH"] = ["xpos": 50, "ypos": 360]
+    layout["CLEAR_ACTION"] = ["xpos": 300, "ypos": 360]
+    layout["REAUTH_RESULT"] = ["xpos": 550, "ypos": 360]
+    var resetLayout = dict(layout["CLEAR_CONNECTION"])
+    resetLayout["ypos"] = 460
+    layout["CLEAR_CONNECTION"] = resetLayout
     for (index, command) in commands.enumerated() {
-        layout["COMMAND_" + command.0.uppercased()] = ["xpos": 50, "ypos": 500 + index * 130]
-        layout["ACTION_" + command.0.uppercased()] = ["xpos": 300, "ypos": 500 + index * 130]
+        layout["COMMAND_" + command.0.uppercased()] = ["xpos": 50, "ypos": 540 + index * 130]
+        layout["ACTION_" + command.0.uppercased()] = ["xpos": 300, "ypos": 540 + index * 130]
     }
     workflow["connections"] = connections
     workflow["uidata"] = layout

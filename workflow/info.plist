@@ -635,36 +635,40 @@
 	<key>readme</key>
 	<string># Spotify.alfredworkflow
 
-Search and play your Spotify music with the `spot` keyword or &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt;.
+Search and play music from Spotify with the `spot` keyword or &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt;.
 
 ![Spotify Mini Player](./docs/ss.png)
 
-## install
+## Install
 
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
-
-&lt;PHOTO&gt;
-
-2. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
-   **Spotify Client ID**. Enable **Web API** and set the app’s redirect URI to
+1. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
+   **Spotify Client ID**. Enable the **Web API** and set the app’s redirect URI to
    `http://127.0.0.1:8765/spotify_callback`.
 
-&lt;PHOTO&gt;
+![Install screenshot for step 1](./docs/install-1.png)
 
-3. In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
+2. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+   In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
 
-&lt;PHOTO&gt;
+![Install screenshot for step 2](./docs/install-2.png)
 
-When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access.
-The Mini Player will reopen automatically if successful. If you close the browser tab,
-press Return on **Connecting to Spotify…** to open sign-in again.
+3. Optional but set a hotkey for the Spotify Mini Player in the workflow’s configuration.
+   I suggest &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt;.
+
+![Install screenshot for step 3](./docs/install-3.png)
+
+4. When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access. The
+   Mini Player will reopen automatically if successful. If you close the browser tab, press &lt;kbd&gt;↩&lt;/kbd&gt; on
+   the **Connecting to Spotify…** menu to open sign-in again.
+
+![Install screenshot for step 4](./docs/install-3.png)
 
 If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredworkflow](https://github.com/nhooyr/Spotify.alfredworkflow/issues).
 
-## usage
+## Usage
 
 Browse **Playlists**, **Albums**, **Artists**, and **Songs**, or type to search.
 You can type or paste these paths directly. Category names accept singular or
@@ -782,49 +786,49 @@ Your Spotify Client ID and cached music are kept.
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>500</integer>
+			<integer>540</integer>
 		</dict>
 		<key>ACTION_NOSHUFFLE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>890</integer>
+			<integer>930</integer>
 		</dict>
 		<key>ACTION_REFRESH</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>1150</integer>
+			<integer>1190</integer>
 		</dict>
 		<key>ACTION_SCREENSHOT</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>1020</integer>
+			<integer>1060</integer>
 		</dict>
 		<key>ACTION_SHUFFLE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>760</integer>
+			<integer>800</integer>
 		</dict>
 		<key>ACTION_UNLIKE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>630</integer>
+			<integer>670</integer>
 		</dict>
 		<key>CLEAR_ACTION</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>320</integer>
+			<integer>360</integer>
 		</dict>
 		<key>CLEAR_CONNECTION</key>
 		<dict>
@@ -833,49 +837,49 @@ Your Spotify Client ID and cached music are kept.
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>420</integer>
+			<integer>460</integer>
 		</dict>
 		<key>COMMAND_LIKE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>500</integer>
+			<integer>540</integer>
 		</dict>
 		<key>COMMAND_NOSHUFFLE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>890</integer>
+			<integer>930</integer>
 		</dict>
 		<key>COMMAND_REFRESH</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>1150</integer>
+			<integer>1190</integer>
 		</dict>
 		<key>COMMAND_SCREENSHOT</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>1020</integer>
+			<integer>1060</integer>
 		</dict>
 		<key>COMMAND_SHUFFLE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>760</integer>
+			<integer>800</integer>
 		</dict>
 		<key>COMMAND_UNLIKE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>630</integer>
+			<integer>670</integer>
 		</dict>
 		<key>HOTKEY</key>
 		<dict>
@@ -899,28 +903,28 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>180</integer>
+			<integer>220</integer>
 		</dict>
 		<key>PLAYER</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
-			<integer>180</integer>
+			<integer>220</integer>
 		</dict>
 		<key>REAUTH</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>320</integer>
+			<integer>360</integer>
 		</dict>
 		<key>REAUTH_RESULT</key>
 		<dict>
 			<key>xpos</key>
 			<integer>550</integer>
 			<key>ypos</key>
-			<integer>320</integer>
+			<integer>360</integer>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>
@@ -973,7 +977,7 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 		<string>SPOTIFY_CLIENT_ID</string>
 	</array>
 	<key>version</key>
-	<string>0.4.35</string>
+	<string>0.4.37</string>
 	<key>webaddress</key>
 	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>

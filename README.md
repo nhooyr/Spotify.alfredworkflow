@@ -1,35 +1,39 @@
 # Spotify.alfredworkflow
 
-Search and play your Spotify music with the `spot` keyword or <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
+Search and play music from Spotify with the `spot` keyword or <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
 
 ![Spotify Mini Player](./docs/ss.png)
 
-## install
+## Install
 
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
-
-<PHOTO>
-
-2. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
-   **Spotify Client ID**. Enable **Web API** and set the app’s redirect URI to
+1. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
+   **Spotify Client ID**. Enable the **Web API** and set the app’s redirect URI to
    `http://127.0.0.1:8765/spotify_callback`.
 
-<PHOTO>
+![Install screenshot for step 1](./docs/install-1.png)
 
-3. In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
+2. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+   In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
 
-<PHOTO>
+![Install screenshot for step 2](./docs/install-2.png)
 
-When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access.
-The Mini Player will reopen automatically if successful. If you close the browser tab,
-press Return on **Connecting to Spotify…** to open sign-in again.
+3. Optional but set a hotkey for the Spotify Mini Player in the workflow’s configuration.
+   I suggest <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
+
+![Install screenshot for step 3](./docs/install-3.png)
+
+4. When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access. The
+   Mini Player will reopen automatically if successful. If you close the browser tab, press <kbd>↩</kbd> on
+   the **Connecting to Spotify…** menu to open sign-in again.
+
+![Install screenshot for step 4](./docs/install-3.png)
 
 If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredworkflow](https://github.com/nhooyr/Spotify.alfredworkflow/issues).
 
-## usage
+## Usage
 
 Browse **Playlists**, **Albums**, **Artists**, and **Songs**, or type to search.
 You can type or paste these paths directly. Category names accept singular or

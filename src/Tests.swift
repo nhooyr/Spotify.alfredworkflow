@@ -815,13 +815,16 @@ func runModelTests() {
         let finished = DispatchSemaphore(value: 0)
         var connected = false
         var browserURLs: [URL] = []
-        let flow = AuthorizationFlow(paths, api, browser: { browserURLs.append($0); return true })
+        let flow = AuthorizationFlow(paths, api, callbackPort: 0, browser: { browserURLs.append($0); return true })
         try flow.start { result in if case .success = result { connected = true }; finished.signal() }
         check(flow.reopenBrowser(), "A pending sign-in can reopen its browser")
         RunLoop.current.run(until: Date().addingTimeInterval(0.03))
         check(browserURLs.count == 2 && browserURLs[0] == browserURLs[1], "Reopening sign-in reuses the pending state and callback")
         let query = Dictionary(flow.authorizationURL!.queryItemsForTesting.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
-        check(query["redirect_uri"] == "http://127.0.0.1:8765/spotify_callback", "Sign-in uses the registered fixed-port callback")
+        check(AuthorizationFlow.defaultCallbackPort == 8765, "Production sign-in uses the registered fixed port")
+        let redirect = URL(string: query["redirect_uri"]!)!
+        check(redirect.host == "127.0.0.1" && (redirect.port ?? 0) > 0 && redirect.path == "/spotify_callback",
+              "Test sign-in uses its own loopback port and the production callback path")
         func callback(_ state: String) -> Int {
             var url = URLComponents(string: query["redirect_uri"]!)!
             url.queryItems = [URLQueryItem(name: "state", value: state), URLQueryItem(name: "code", value: "test-code")]
@@ -946,7 +949,7 @@ func runIntegrationTests() {
     for _ in 0..<50 { let start = DispatchTime.now().uptimeNanoseconds; spawnClient(workflow.appendingPathComponent("show"), environment: env); timings.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
     check(number(request("state")["pid"]) == number(initial["pid"]), "Hotkey keeps the same process")
     check(dict(request("state")["theme"])["id"] as? String == env["alfred_theme"], "C launcher safely forwards theme context")
-    for command in ["test-ui", "test-editing", "test-local-bindings", "test-navigation", "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui", "test-controls", "test-direct-play", "test-single-line", "test-offline-ui", "test-repeat", "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode", "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
+    for command in ["test-ui", "test-editing", "test-local-bindings", "test-navigation", "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui", "test-connection-session", "test-controls", "test-direct-play", "test-single-line", "test-offline-ui", "test-repeat", "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode", "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
         let initial = request(command)
         var result = initial
         let deadline = Date().addingTimeInterval(3)

@@ -3,7 +3,6 @@
 
 import json
 import plistlib
-import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -488,29 +487,36 @@ def build():
         json.dumps(ui(), ensure_ascii=False, indent=2) + "\n"
     )
     (source / "info.plist").write_bytes(plistlib.dumps(workflow_plist(), sort_keys=False))
-    target = ROOT / "build/Spotify"
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(
-        source,
-        target,
-        ignore=shutil.ignore_patterns(
-            "prefs.plist", "client-credentials.json", "authorization.json"
-        ),
-    )
-    shutil.copytree(
-        ROOT / "src/alfred_spotify",
-        target / "Spotify.alfredui/alfred_spotify",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
-    shutil.copy(ROOT / "README.md", target / "README.md")
-    (target / "Spotify.alfredui/run").chmod(0o755)
+    excluded = {
+        "prefs.plist",
+        "client-credentials.json",
+        "authorization.json",
+        "__pycache__",
+        ".DS_Store",
+        ".env",
+    }
+    files = {}
+    for tree, prefix in (
+        (source, Path()),
+        (ROOT / "src/alfred_spotify", Path("Spotify.alfredui/alfred_spotify")),
+    ):
+        if not tree.is_dir():
+            raise FileNotFoundError(tree)
+        for file in tree.rglob("*"):
+            relative = file.relative_to(tree)
+            if file.is_file() and not any(
+                part in excluded or part.endswith((".pyc", ".pyo")) for part in relative.parts
+            ):
+                files[(prefix / relative).as_posix()] = file
+    files["README.md"] = ROOT / "README.md"
     out = ROOT / "dist/Spotify.alfredworkflow"
     out.parent.mkdir(exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file in sorted(target.rglob("*")):
-            if file.is_file():
-                archive.write(file, file.relative_to(target))
+        for name, file in sorted(files.items()):
+            info = zipfile.ZipInfo.from_file(file, name)
+            if name == "Spotify.alfredui/run":
+                info.external_attr = 0o100755 << 16
+            archive.writestr(info, file.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
     (ROOT / "dist/Spotify Mini Player.alfredworkflow").unlink(missing_ok=True)
     print(out.relative_to(ROOT))
 

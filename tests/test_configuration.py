@@ -62,12 +62,12 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(configuration.apply_imported_credentials())
         self.assertEqual(configuration.credential_values(), ("", ""))
 
-    def test_never_writes_credentials_into_source_or_staging_tree(self):
-        module = self.base / "build/Spotify/Spotify.alfredui/alfred_spotify/configuration.py"
+    def test_never_writes_credentials_into_source_checkout(self):
+        module = self.base / "checkout/src/alfred_spotify/configuration.py"
         module.parent.mkdir(parents=True)
         with patch.object(configuration, "__file__", str(module)):
             self.assertFalse(configuration.apply_imported_credentials())
-        self.assertFalse((self.base / "build/Spotify/prefs.plist").exists())
+        self.assertFalse((self.base / "checkout/prefs.plist").exists())
 
     def test_first_launch_migrates_credentials_before_filling_settings(self):
         (self.data / configuration.SEED).unlink()

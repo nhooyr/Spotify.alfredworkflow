@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import json
 import os
@@ -592,6 +593,59 @@ class ConnectionTests(Isolated):
 
 
 class PackageTests(unittest.TestCase):
+    def test_direct_build_excludes_private_files_without_creating_staging_directory(self):
+        source_root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location(
+            "workflow_build", source_root / "scripts/build.py"
+        )
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixtures = {
+                "README.md": "Fixture workflow",
+                "workflow/Spotify.alfredui/run": "#!/bin/sh\nexit 0\n",
+                "workflow/icon.png": "fixture icon",
+                "workflow/prefs.plist": "private preferences",
+                "workflow/Spotify.alfredui/authorization.json": "private authorization",
+                "workflow/nested/client-credentials.json": "private credentials",
+                "workflow/.DS_Store": "desktop metadata",
+                "src/alfred_spotify/__init__.py": "# fixture package",
+                "src/alfred_spotify/controller.py": "# fixture controller",
+                "src/alfred_spotify/__pycache__/controller.pyc": "compiled bytecode",
+                "src/alfred_spotify/client-credentials.json": "private credentials",
+                "src/alfred_spotify/.env": "private environment",
+            }
+            for name, contents in fixtures.items():
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(contents)
+            launcher = root / "workflow/Spotify.alfredui/run"
+            launcher.chmod(0o600)
+            with patch.object(builder, "ROOT", root), patch("builtins.print") as output:
+                builder.build()
+            output.assert_called_once_with(Path("dist/Spotify.alfredworkflow"))
+            self.assertFalse((root / "build").exists())
+            self.assertEqual(launcher.stat().st_mode & 0o777, 0o600)
+            with zipfile.ZipFile(root / "dist/Spotify.alfredworkflow") as archive:
+                self.assertEqual(
+                    set(archive.namelist()),
+                    {
+                        "README.md",
+                        "info.plist",
+                        "icon.png",
+                        "Spotify.alfredui/run",
+                        "Spotify.alfredui/ui.json",
+                        "Spotify.alfredui/alfred_spotify/__init__.py",
+                        "Spotify.alfredui/alfred_spotify/controller.py",
+                    },
+                )
+                self.assertEqual(
+                    archive.getinfo("Spotify.alfredui/run").external_attr >> 16 & 0o777,
+                    0o755,
+                )
+                self.assertEqual(archive.read("README.md"), b"Fixture workflow")
+
     def test_package_has_native_ui_correct_launchers_and_no_private_files(self):
         root = Path(__file__).resolve().parents[1]
         path = root / "dist/Spotify.alfredworkflow"

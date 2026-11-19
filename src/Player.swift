@@ -864,7 +864,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             currentTrackArtist = "Artist"; currentTrackAlbum = "Album"
             currentPlaybackContext = PlaybackContext(uri: "spotify:playlist:" + String(repeating: "p", count: 22), name: "Example Playlist")
             updateContextLabel()
-            nowArt.image = NSImage(contentsOf: workflowRoot().appendingPathComponent("icons/spotify.png"))
+            nowArt.image = NSImage(contentsOf: workflowRoot().appendingPathComponent("icon.png"))
             setCurrentTrack("spotify:track:" + String(repeating: "a", count: 22))
             playing = true; updateToggle()
             likedTracks[currentTrackURI] = true; updateLike()

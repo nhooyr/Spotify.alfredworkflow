@@ -91,5 +91,5 @@ func reauthFeedback(error: String = "") -> JSONObject {
     let succeeded = error.isEmpty
     return ["items": [["title": succeeded ? "Open Spotify Mini Player" : "Could not clear Spotify sign-in",
                        "subtitle": succeeded ? "Sign-in cleared. Press Return to sign in again." : error,
-                       "arg": "", "valid": succeeded, "icon": ["path": "icons/spotify.png"]]]]
+                       "arg": "", "valid": succeeded, "icon": ["path": "icon.png"]]]]
 }

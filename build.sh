@@ -9,10 +9,9 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/spotify-build.XXXXXX")
 trap 'rm -rf "$work"' 0
 stage=$work/stage
 app="$stage/Spotify Mini Player.app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage/icons" "$stage/docs" "$stage/licenses" dist
-cp workflow/icons/spotify.png "$stage/icon.png"
-cp workflow/icons/spotify.png "$app/Contents/Resources/icon.png"
-cp -R workflow/icons/. "$stage/icons/"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage/docs" "$stage/licenses" dist
+cp workflow/*.png "$stage/"
+cp workflow/icon.png "$app/Contents/Resources/icon.png"
 cp docs/*.png "$stage/docs/"
 cp README.md "$stage/README.md"
 cp src/vendor/ZSTD-LICENSE "$stage/licenses/Zstandard.txt"

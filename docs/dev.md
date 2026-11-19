@@ -36,7 +36,7 @@ source and exported workflow. Other native dependencies are macOS system librari
 Tests use temporary files, a mock HTTPS transport, and hidden native panels.
 They do not operate Alfred or Spotify or change the user’s library.
 
-File-based icons live in `workflow/icons`. The build generates the copies required
+File-based icons live in `workflow`. The build generates the copies required
 by Alfred and the app bundle. Player controls use Apple’s SF Symbols and native vector paths for the extended
 repeat arrows and selection indicator, drawn at the display’s native resolution.
 
@@ -61,7 +61,7 @@ themes fall back to Alfred’s exported background and selection colours with
 contrasting text. Theme changes are checked when opening and while visible;
 active playback controls keep Spotify green.
 
-The bundled Liked Songs cover in `workflow/icons/liked-songs.png` comes from
+The bundled Liked Songs cover in `workflow/spotify-liked-songs.png` comes from
 [Spotify’s public collection artwork](https://misc.scdn.co/liked-songs/liked-songs-640.png)
 and is available offline without duplicating it in the artwork cache.
 

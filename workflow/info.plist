@@ -977,7 +977,7 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 		<string>SPOTIFY_CLIENT_ID</string>
 	</array>
 	<key>version</key>
-	<string>0.4.37</string>
+	<string>0.4.39</string>
 	<key>webaddress</key>
 	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>

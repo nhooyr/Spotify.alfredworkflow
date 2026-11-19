@@ -19,6 +19,6 @@ func bundledArtwork(_ item: JSONObject, root: URL) -> String? {
     let liked = text(item["action"]) == "play" && isLikedSongsURI(text(item["play_uri"]))
         || text(item["action"]) == "browse" && text(dict(item["target"])["kind"]) == "songs"
     guard liked else { return nil }
-    let file = root.appendingPathComponent("icons/liked-songs.png")
+    let file = root.appendingPathComponent("spotify-liked-songs.png")
     return FileManager.default.fileExists(atPath: file.path) ? file.path : nil
 }

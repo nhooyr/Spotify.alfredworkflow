@@ -720,6 +720,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private let imageCache = NSCache<NSString, NSImage>()
     private var loadingImages: Set<String> = []
     private var artworkTestPaths: [String] = []
+    private var missingArtworkTestPath = ""
+    private var failedImages: Set<String> = []
+    private var artworkPaths: [String: String] = [:]
     private let imageQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "spotify.artwork"
@@ -808,7 +811,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         panel.contentView = root
         nowArt.frame = NSRect(x: 20, y: 369, width: 82, height: 82)
         nowArt.imageScaling = .scaleProportionallyUpOrDown
-        nowArt.image = symbol("music.note", height: 64)
+        nowArt.image = symbol("questionmark", height: 64)
         nowArt.contentTintColor = .tertiaryLabelColor
         nowTitle.frame = NSRect(x: 120, y: 409, width: 254, height: 30)
         nowTitle.font = .systemFont(ofSize: 22, weight: .medium)
@@ -849,7 +852,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         repeatButton.playbackHighlight = true
         updateRepeat()
         root.addSubview(repeatButton)
-        search.frame = NSRect(x: 14, y: 314, width: 556, height: 41)
+        search.frame = NSRect(x: 14, y: 0, width: 556, height: 41)
         search.font = .systemFont(ofSize: 28)
         search.isBordered = false
         search.drawsBackground = false
@@ -861,6 +864,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         search.keyAction = { [weak self] event in self?.key(event) ?? false }
         root.addSubview(search)
         scroll.frame = NSRect(x: 12, y: 35, width: 320, height: 276)
+        search.setFrameOrigin(NSPoint(x: search.frame.minX, y: (nowArt.frame.minY + scroll.frame.maxY - search.frame.height) / 2))
         scroll.hasVerticalScroller = true
         scroll.verticalScroller = ThemeScroller()
         scroll.scrollerStyle = .overlay
@@ -984,6 +988,11 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         return button
     }
     private func send(_ command: String, args: [String] = []) {
+        if command == "refresh" {
+            failedImages.removeAll()
+            artworkPaths = artworkPaths.filter { !$0.value.isEmpty }
+            imagesRequested = Set(artworkPaths.keys)
+        }
         if !["preview", "liked", "image"].contains(command) { inlineError = nil; renderStatus() }
         backend.send(["command": command, "args": args])
     }
@@ -1042,7 +1051,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if type == "artwork" {
             let url = value["url"] as? String ?? ""
             let path = value["path"] as? String ?? ""
-            if url == currentImageURL, !path.isEmpty { setNowArt(path) }
+            if !url.isEmpty { artworkPaths[url] = path }
+            if !path.isEmpty { failedImages.remove(path) }
+            if url == currentImageURL { setNowArt(path) }
             return
         }
         let nextConnection = value["connection"] as? String ?? connection
@@ -1078,6 +1089,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 search.stringValue = pendingHomeQuery ?? text
                 pendingHomeQuery = nil
             }
+            if ["refresh", "artwork"].contains(value["command"] as? String ?? "") { previewURI = "" }
             filter()
             if value["search_text"] != nil && routeKind == "catalog" { placeSearchCaretAtEnd() }
         }
@@ -1098,10 +1110,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             if let cover = loaded {
                 setPreviewImage(cover)
                 previewIsCover = true
-            } else if value["preview_complete"] as? Bool == true && previewPaths[responseURI] == nil,
-                      let item = selectedItem(), item.art.isEmpty, previewIsCover {
-                setPreviewImage(symbol(item.symbol, height: 150))
-                previewIsCover = false
+            } else if value["preview_complete"] as? Bool == true, let item = selectedItem() {
+                let path = previewPaths[responseURI] ?? item.art
+                if path.isEmpty || failedImages.contains(path) {
+                    setPreviewImage(previewPlaceholder(item))
+                    previewIsCover = false
+                }
             }
         }
         if (value["command"] as? String) == "configure" { hide() }
@@ -1114,20 +1128,23 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private func image(_ path: String) -> NSImage? {
         guard !path.isEmpty else { return nil }
         if let image = imageCache.object(forKey: path as NSString) { return image }
-        guard loadingImages.insert(path).inserted else { return nil }
+        guard !failedImages.contains(path), loadingImages.insert(path).inserted else { return nil }
         imageQueue.addOperation { [weak self] in
             let decoded = loadArtwork(path)
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.loadingImages.remove(path)
-                guard let decoded = decoded else { return }
-                self.imageCache.setObject(decoded, forKey: path as NSString,
-                    cost: max(1, Int(decoded.size.width * decoded.size.height * 4)))
-                if self.currentArtPath == path { self.nowArt.image = decoded }
+                if let decoded = decoded {
+                    self.imageCache.setObject(decoded, forKey: path as NSString,
+                        cost: max(1, Int(decoded.size.width * decoded.size.height * 4)))
+                } else {
+                    self.failedImages.insert(path)
+                }
+                if self.currentArtPath == path { self.nowArt.image = decoded ?? self.symbol("questionmark", height: 64) }
                 if let item = self.selectedItem(), self.previewURI == item.uri,
                    (self.previewPaths[item.uri] ?? item.art) == path {
-                    self.setPreviewImage(decoded)
-                    self.previewIsCover = true
+                    self.setPreviewImage(decoded ?? self.previewPlaceholder(item))
+                    self.previewIsCover = decoded != nil
                 }
             }
         }
@@ -1136,7 +1153,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private func setNowArt(_ path: String) {
         currentArtPath = path
         if let cached = image(path) { nowArt.image = cached }
-        else if path.isEmpty { nowArt.image = symbol("music.note", height: 64) }
+        else if path.isEmpty || failedImages.contains(path) { nowArt.image = symbol("questionmark", height: 64) }
     }
     private func filter() {
         let selection = selectedItem()?.uri
@@ -1174,6 +1191,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MusicCell)?.display(filtered[row], index: row, selected: table.selectedRow == row)
         }
         previewSelection()
+    }
+    private func previewPlaceholder(_ item: MusicItem) -> NSImage? {
+        symbol(item.kind == "action" ? item.symbol : "questionmark", height: 150)
     }
     private func setPreviewImage(_ image: NSImage?) {
         guard preview.image !== image else { return }
@@ -1215,11 +1235,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         previewTitle.stringValue = item.name
         previewDetail.stringValue = item.detail
         previewDetail.textColor = playerTheme.secondary
-        if let cover = image(previewPaths[item.uri] ?? item.art) {
+        let path = previewPaths[item.uri] ?? item.art
+        if let cover = image(path) {
             setPreviewImage(cover)
             previewIsCover = true
-        } else if preview.image == nil {
-            setPreviewImage(symbol(item.symbol, height: 150))
+        } else if !previewIsCover || failedImages.contains(path) {
+            setPreviewImage(previewPlaceholder(item))
             previewIsCover = false
         }
         if !testMode, let data = try? JSONSerialization.data(withJSONObject: item.payload),
@@ -1495,15 +1516,20 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         playing = values.first == "playing"
         updateToggle()
         if values.count >= 7 { shuffling = values[6] == "true"; updateShuffle() }
-        guard values.count >= 6 else { setCurrentTrack(""); return }
+        guard values.count >= 6 else { setCurrentTrack(""); setNowArt(""); return }
         setCurrentTrack(values[5])
         nowTitle.stringValue = values[1]
         nowDetail.stringValue = [values[2], values[3]].filter { !$0.isEmpty }.joined(separator: " · ")
+        if currentImageURL != values[4] { currentArtPath = "" }
         currentImageURL = values[4]
         if let item = catalog.first(where: { $0.uri == values[5] }), !item.art.isEmpty {
             setNowArt(item.art)
-        } else if !values[4].isEmpty, !imagesRequested.contains(values[4]) {
-            imagesRequested.insert(values[4]); send("image", args: [values[4]])
+        } else if values[4].isEmpty {
+            setNowArt("")
+        } else if let path = artworkPaths[values[4]] {
+            setNowArt(path)
+        } else if imagesRequested.insert(values[4]).inserted {
+            send("image", args: [values[4]])
         }
     }
     private func renderStatus() {
@@ -1612,6 +1638,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             let complete = catalog.map { $0.uri } == ["latest"]
             return ["status": complete ? "ok" : "pending", "latest_catalog_applied": complete]
         }
+        if testMode && value["command"] as? String == "test-missing-artwork" { return missingArtworkChecks() }
+        if testMode && value["command"] as? String == "test-missing-artwork-result" { return missingArtworkCheckResult() }
         if testMode && value["command"] as? String == "test-artwork" { return artworkChecks() }
         if testMode && value["command"] as? String == "test-artwork-result" { return artworkCheckResult() }
         if testMode && value["command"] as? String == "test-editing" {
@@ -1740,7 +1768,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         scroll.layoutSubtreeIfNeeded()
         let rowRect = table.convert(table.rect(ofRow: 0), to: panel.contentView)
         let rowsAligned = abs(rowRect.maxY - preview.frame.maxY) < 0.5
-        let inputClose = search.frame.minY - rowRect.maxY >= 0 && search.frame.minY - rowRect.maxY <= 5
+        let inputCentered = abs(search.frame.midY - (nowArt.frame.minY + rowRect.maxY) / 2) <= 0.25
         let compactInsets = table.effectiveStyle == .plain && cell.artwork.frame.minX <= 6 && cell.bounds.maxX - cell.shortcutNumber.frame.maxX <= 7
         let mixed = ["track", "artist", "album", "playlist"].map { MusicItem(["kind": $0]) }
         let sorted = MusicItem.prioritized(mixed).map { $0.kind } == ["playlist", "album", "artist", "track"]
@@ -1782,7 +1810,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let signInReturnsOnce = showCount == showsBeforeSignIn + 1
         return ["status": "ok", "text_center_error_pt": offsets.max() ?? 0,
                 "connection_errors_inline": inlineConnection,
-                "rows_align_with_cover": rowsAligned, "input_above_rows": inputClose,
+                "rows_align_with_cover": rowsAligned, "input_centered_between_art_and_rows": inputCentered,
                 "compact_row_insets": compactInsets, "return_aligns_with_command": returnAligned,
                 "search_priority": sorted, "signin_returns_once": signInReturnsOnce,
                 "shortcut_digits_fit": digitsFit,
@@ -1948,6 +1976,53 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "artwork_size_bounded": first?.size == NSSize(width: 512, height: 256) && second?.size == first?.size,
                 "stale_artwork_ignored": second != nil && preview.image === second && nowArt.image === second]
     }
+    private func missingArtworkChecks() -> [String: Any] {
+        optimisticUntil = .distantPast
+        let cover = NSImage(size: NSSize(width: 20, height: 20))
+        nowArt.image = cover
+        let uri = "spotify:track:" + String(repeating: "m", count: 22)
+        updatePlayback(["paused", "No cover", "Artist", "Album", "", uri])
+        let missingHeader = nowArt.image === symbol("questionmark", height: 64)
+        currentImageURL = "https://example.invalid/missing-art"
+        nowArt.image = cover
+        receive(["type": "artwork", "url": currentImageURL, "path": ""])
+        let missingDownload = nowArt.image === symbol("questionmark", height: 64)
+        let cachedURL = "https://example.invalid/cached-art"
+        artworkPaths[cachedURL] = "fixture-reused-cover"
+        imageCache.setObject(cover, forKey: "fixture-reused-cover")
+        catalog = []
+        updatePlayback(["paused", "Known cover", "Artist", "Album", cachedURL, uri])
+        let reused = nowArt.image === cover
+        let item = MusicItem(["uri": uri, "kind": "track", "name": "No cover"])
+        breadcrumb = "Missing/"; routeKind = "songs"; search.stringValue = breadcrumb
+        source = [item]; filter(); previewSelection()
+        setPreviewImage(cover); previewIsCover = true
+        receive(["selected": uri, "preview_complete": true, "variables": [:]])
+        let missingPreview = preview.image === symbol("questionmark", height: 150) && !previewIsCover
+        receive(["type": "update", "command": "artwork", "connection": "connected", "route_kind": "songs", "prefix": breadcrumb,
+                 "rows": [["uri": uri, "kind": "track", "name": "Newly cached cover", "art": "fixture-reused-cover"]]])
+        previewSelection()
+        let newlyCached = preview.image === cover
+        let path = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("spotify-invalid-art-" + UUID().uuidString)
+        try! Data("Not an image".utf8).write(to: path)
+        missingArtworkTestPath = path.path
+        source = [MusicItem(["uri": uri, "kind": "track", "name": "Invalid cover", "art": path.path])]
+        previewURI = ""; filter(); previewSelection()
+        nowArt.image = cover; setNowArt(path.path)
+        return ["status": "pending", "missing_header_art_uses_placeholder": missingHeader,
+                "failed_download_uses_placeholder": missingDownload,
+                "missing_preview_art_uses_placeholder": missingPreview,
+                "known_cover_url_reused": reused, "newly_cached_cover_updates_selection": newlyCached]
+    }
+    private func missingArtworkCheckResult() -> [String: Any] {
+        let path = missingArtworkTestPath
+        guard !path.isEmpty, !loadingImages.contains(path) else { return ["status": "pending"] }
+        defer { try? FileManager.default.removeItem(atPath: path); missingArtworkTestPath = "" }
+        return ["status": "ok", "invalid_art_uses_placeholders": failedImages.contains(path)
+                && nowArt.image === symbol("questionmark", height: 64)
+                && preview.image === symbol("questionmark", height: 150) && !previewIsCover]
+    }
+
     private func screenshotModeChecks() -> [String: Any] {
         demo()
         placeSearchCaretAtEnd()

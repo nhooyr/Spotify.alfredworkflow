@@ -35,10 +35,17 @@ final class MusicLibrary {
         let indices = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         return playlists.enumerated().sorted { let lhs = indices[text($0.element["uri"])] ?? Int.max, rhs = indices[text($1.element["uri"])] ?? Int.max; return lhs == rhs ? $0.offset < $1.offset : lhs < rhs }.map { $0.element }
     }
-    func cachedSearch(_ query: String) -> [JSONObject]? {
-        store.get("search:" + query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) as? [JSONObject]
+    func cachedSearch(_ query: String, stale: Bool = true) -> [JSONObject]? {
+        store.get("search:" + query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), stale: stale) as? [JSONObject]
     }
     func browse(_ route: JSONObject, network: Bool = false, cancellation: RequestCancellation? = nil) throws -> [JSONObject] {
+        do { return try load(route, network: network, cancellation: cancellation) }
+        catch let error as SpotifyFailure where network && error.isNetworkError {
+            if text(route["kind"]) == "catalog" && cachedSearch(text(route["query"])) == nil { throw error }
+            return try load(route, network: false, cancellation: cancellation)
+        }
+    }
+    private func load(_ route: JSONObject, network: Bool, cancellation: RequestCancellation?) throws -> [JSONObject] {
         let kind = text(route["kind"]), uri = text(route["uri"])
         switch kind {
         case "", "home": return homeItems
@@ -50,7 +57,7 @@ final class MusicLibrary {
             let query = text(route["query"]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else { return [] }
             let key = "search:" + query.lowercased()
-            var result = cachedSearch(query)
+            var result = cachedSearch(query, stale: !network)
             if result == nil && network {
                 let payload = dict(try api.request("/search", params: ["q": query, "type": "playlist,album,artist,track", "limit": "10"], cancellation: cancellation))
                 result = ["playlist", "album", "artist", "track"].flatMap { kind in (dict(payload[kind + "s"])["items"] as? [JSONObject] ?? []).compactMap { fromAPI($0, kind: kind) } }
@@ -62,7 +69,7 @@ final class MusicLibrary {
             var items = dict(store.item(uri))["albums"] as? [JSONObject] ?? []
             items += store.items("album").filter { ($0["artists"] as? [JSONObject] ?? []).contains { text($0["uri"]) == uri } }
             let key = "artist-albums:" + uri
-            if let cached = store.get(key) as? [JSONObject] { items = cached }
+            if let cached = store.get(key, stale: !network) as? [JSONObject] { items = cached }
             else if items.isEmpty && network {
                 items = try api.pages("/artists/" + (text(route["id"]).isEmpty ? uri.components(separatedBy: ":").last! : text(route["id"])) + "/albums", params: ["include_groups": "album,single"]).compactMap { fromAPI($0, kind: "album") }
                 try store.put(key, items)
@@ -73,8 +80,12 @@ final class MusicLibrary {
             let item = store.item(uri) ?? route, key = "contents:" + uri
             var tracks = item["tracks"] as? [JSONObject] ?? []
             if kind == "album" && tracks.isEmpty { tracks = store.items("track").filter { text(dict($0["album"])["uri"]) == uri }.sorted { (number($0["disc_number"]), number($0["track_number"])) < (number($1["disc_number"]), number($1["track_number"])) } }
-            if let cached = store.get(key) as? [JSONObject] { tracks = cached }
-            else if network && (kind == "playlist" || tracks.isEmpty) {
+            let desktop = dict(store.get("desktop:contents:" + uri, stale: true))
+            let desktopComplete = desktop["complete"] as? Bool == true
+            let desktopTracks = (desktop["uris"] as? [String] ?? []).compactMap(store.item)
+            if desktopComplete || tracks.isEmpty { tracks = desktopTracks.isEmpty && !desktopComplete ? tracks : desktopTracks }
+            if !desktopComplete, let cached = store.get(key, stale: !network) as? [JSONObject] { tracks = cached }
+            else if network && !desktopComplete && (kind == "playlist" || tracks.isEmpty) {
                 let id = uri.components(separatedBy: ":").last ?? ""
                 do {
                     tracks = try api.pages(kind == "album" ? "/albums/\(id)/tracks" : "/playlists/\(id)/items").compactMap { value in

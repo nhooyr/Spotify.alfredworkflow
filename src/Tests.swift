@@ -36,6 +36,134 @@ private final class WaitingURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class OfflineURLProtocol: URLProtocol {
+    static var requests = 0
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requests += 1
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
+}
+
+private func writeTable(_ records: [(Data, Data)], to file: URL) throws {
+    var data = Data(), index = Data()
+    for (key, value) in records.sorted(by: { $0.0.lexicographicallyPrecedes($1.0) }) {
+        let block = testBlock(key, value)
+        let handle = encodeVarint(UInt64(data.count)) + encodeVarint(UInt64(block.count))
+        data += block + Data(repeating: 0, count: 5)
+        index += encodeVarint(0) + encodeVarint(UInt64(key.count)) + encodeVarint(UInt64(handle.count)) + key + handle
+    }
+    index += littleData(0, 4) + littleData(1, 4)
+    var footer = encodeVarint(0) + encodeVarint(0) + encodeVarint(UInt64(data.count)) + encodeVarint(UInt64(index.count))
+    footer += Data(repeating: 0, count: 40 - footer.count) + littleData(0xdb4775248b80fb57, 8)
+    try (data + index + Data(repeating: 0, count: 5) + footer).write(to: file)
+}
+
+private func testOfflineCache() throws {
+    let root = tempDirectory("spotify-offline-tests-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("http").path])
+    try paths.prepare()
+    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32)], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
+    let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [OfflineURLProtocol.self]
+    let session = URLSession(configuration: config)
+    let api = SpotifyAPI(paths, session: session), library = MusicLibrary(store, api), cache = DesktopCache(paths, store, session: session)
+    try writeJSON(["client_id": String(repeating: "a", count: 32), "access_token": "expired", "refresh_token": "offline", "expires_at": 0], api.tokenURL)
+    let directory = root.appendingPathComponent("primary.ldb")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let playlistURI = "spotify:playlist:" + String(repeating: "p", count: 22)
+    let trackURI = "spotify:track:" + spotifyID(Data(repeating: 1, count: 16))
+    let likedURI = "spotify:track:" + spotifyID(Data(repeating: 4, count: 16))
+    let albumURI = "spotify:album:" + spotifyID(Data(repeating: 2, count: 16))
+    let coverID = String(repeating: "03", count: 20), coverURL = "https://i.scdn.co/image/" + coverID
+    let album = proto(1, Data(repeating: 2, count: 16)) + proto(2, Data("Offline album".utf8)) + proto(9, proto(1, Data(repeating: 3, count: 20)))
+    func track(_ byte: UInt8) -> Data {
+        let track = proto(1, Data(repeating: byte, count: 16)) + proto(2, Data("Offline song".utf8)) + proto(3, album)
+        return proto(2, proto(1, Data("type.googleapis.com/spotify.metadata.Track".utf8)) + proto(2, track))
+    }
+    let content = Data([8, 0, 16, 0]) + proto(3, proto(1, Data(trackURI.utf8)))
+    let playlist = Data([16, 1]) + proto(3, proto(1, Data("Offline playlist".utf8))) + proto(5, content)
+    let removedKey = Data("fixture:deleted".utf8), updatedKey = Data("fixture:updated".utf8)
+    try writeTable([(DesktopMetadata.playlistKey(playlistURI) + littleData(7 << 8 | 1, 8), playlist),
+                    (DesktopMetadata.trackKey(trackURI) + littleData(7 << 8 | 1, 8), track(1)),
+                    (DesktopMetadata.trackKey(likedURI) + littleData(7 << 8 | 1, 8), track(4)),
+                    (removedKey + littleData(7 << 8 | 1, 8), Data("old".utf8)),
+                    (updatedKey + littleData(7 << 8 | 1, 8), Data("old".utf8))], to: directory.appendingPathComponent("000001.ldb"))
+    let batch = littleData(9, 8) + littleData(2, 4) + Data([0]) + encodeVarint(UInt64(removedKey.count)) + removedKey + Data([1]) + encodeVarint(UInt64(updatedKey.count)) + updatedKey + encodeVarint(3) + Data("new".utf8)
+    try (Data(repeating: 0, count: 4) + littleData(UInt64(batch.count), 2) + Data([1]) + batch + Data([0,0,0,0,255,127,1])).write(to: directory.appendingPathComponent("000002.log"))
+    let records = DesktopDatabase.read(directory, prefixes: [removedKey, updatedKey])
+    check(records.count == 1 && records[updatedKey]?.value == Data("new".utf8), "Desktop journal updates and tombstones override older tables; incomplete records are ignored")
+    try store.put("desktop:playlist-order", [playlistURI])
+    try store.putItem(["uri": likedURI, "kind": "track", "name": "Saved song", "image": ""])
+    try store.save(likedURI, liked: true)
+    let imported = try DesktopMetadata.index(directory, store: store)
+    check(imported >= 3 && text(store.item(trackURI)?["image"]) == coverURL && text(store.item(likedURI)?["image"]) == coverURL, "Import playlist and saved-song metadata from native desktop cache")
+    check(!store.isSaved(trackURI) && store.isSaved(likedURI), "Desktop metadata never changes Liked Songs membership")
+    let rows = try library.browse(["kind": "playlist", "uri": playlistURI], network: true)
+    check(rows.count == 2 && text(rows[1]["uri"]) == trackURI && OfflineURLProtocol.requests == 0, "Complete desktop playlist opens offline without token refresh")
+    try store.put("contents:" + albumURI, [store.item(trackURI)!], ttl: -1)
+    let albums = try library.browse(["kind": "album", "uri": albumURI])
+    check(albums.count == 2, "Expired album contents remain browsable offline")
+    let noNative = "spotify:playlist:" + String(repeating: "q", count: 22)
+    try store.putItem(["uri": noNative, "kind": "playlist", "name": "Previously opened"])
+    try store.put("contents:" + noNative, [store.item(trackURI)!], ttl: -1)
+    let fallback = try library.browse(["kind": "playlist", "uri": noNative], network: true)
+    check(fallback.count == 2 && api.connected, "Offline refresh retains expired playlist contents and connection")
+    try store.put("search:offline", [store.item(trackURI)!], ttl: -1)
+    let search = try library.browse(["kind": "catalog", "query": "offline"], network: true)
+    check(search.count == 1, "Previously cached catalogue queries survive offline token expiry")
+    do { _ = try library.browse(["kind": "catalog", "query": "uncached"], network: true); check(false, "Uncached catalogue query must explain unavailable network") }
+    catch { check((error as? SpotifyFailure)?.isNetworkError == true, "Uncached network search preserves its connection error") }
+    let image = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jUKsAAAAASUVORK5CYII=")!
+    // Spotify often caches another size of the same cover ID.
+    let alias = "https://i.scdn.co/image/" + coverID.prefix(8) + "abcdef01" + coverID.suffix(24)
+    let key = Data(alias.utf8)
+    let header = littleData(0xfcfb6d1ba7725c30, 8) + littleData(5, 4) + littleData(UInt64(key.count), 4) + Data(repeating: 0, count: 8)
+    let crc = image.withUnsafeBytes { spotify_crc32($0.baseAddress, $0.count) }
+    let bodyFooter = littleData(0xf4fa6f45970d41d8, 8) + littleData(1, 4) + littleData(UInt64(crc), 4) + Data(repeating: 0, count: 8)
+    let finalFooter = littleData(0xf4fa6f45970d41d8, 8) + Data(repeating: 0, count: 16)
+    try FileManager.default.createDirectory(at: paths.desktop, withIntermediateDirectories: true)
+    let original = paths.desktop.appendingPathComponent("cover_0")
+    try (header + key + image + bodyFooter + finalFooter).write(to: original)
+    _ = try cache.index()
+    let requests = OfflineURLProtocol.requests
+    let preserved = try cache.preserveArtwork()
+    check(preserved == 1, "Desktop artwork is preserved before a track is selected")
+    check(OfflineURLProtocol.requests == requests, "Cover preservation reuses desktop cache without network")
+    try FileManager.default.removeItem(at: original)
+    let retained = try cache.image(coverURL, download: false)
+    check(retained != nil && (try? Data(contentsOf: URL(fileURLWithPath: retained!))) == image, "Cover survives Spotify cache eviction and works offline")
+    try store.putItem(["uri": "spotify:track:" + String(repeating: "m", count: 22), "kind": "track", "name": "Missing art", "image": "https://i.scdn.co/image/missing"])
+    _ = try cache.preserveArtwork(downloadMissing: true)
+    check(OfflineURLProtocol.requests == requests + 1, "Background artwork filling stops immediately when offline")
+    let unusedURL = "https://i.scdn.co/image/unused"
+    let unused = paths.cache.appendingPathComponent("artwork/" + sha256(Data(unusedURL.utf8)) + ".img")
+    try store.putItem(["uri": "spotify:track:" + String(repeating: "m", count: 22), "kind": "track", "name": "Old search result", "image": unusedURL])
+    let recent = paths.cache.appendingPathComponent("artwork/" + String(repeating: "b", count: 64) + ".img")
+    let desktopSentinel = paths.desktop.appendingPathComponent("untouched.img")
+    try Data(repeating: 1, count: 1024).write(to: unused)
+    try Data(repeating: 1, count: 1024).write(to: recent)
+    try (image + bodyFooter).write(to: desktopSentinel)
+    try store.execute("INSERT INTO desktop VALUES(?,?,?,?,?)", [desktopSentinel.path, 0, unusedURL, 0, image.count])
+    let old = Date().addingTimeInterval(-3 * 86400)
+    try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: unused.path)
+    try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: retained!)
+    let underLimit = try cache.prune(maxBytes: 1_000_000_000)
+    check(underLimit == 0 && FileManager.default.fileExists(atPath: unused.path), "No cleanup below the one-gigabyte threshold")
+    let removed = try cache.prune(maxBytes: 1)
+    check(removed == 1 && !FileManager.default.fileExists(atPath: unused.path), "Oversized workflow cache removes old unreferenced artwork")
+    check(FileManager.default.fileExists(atPath: retained!) && FileManager.default.fileExists(atPath: recent.path), "Cleanup preserves saved-library and recently used artwork")
+    check(FileManager.default.fileExists(atPath: desktopSentinel.path), "Cleanup never touches Spotify's desktop cache")
+    _ = try cache.preserveArtwork()
+    check(!FileManager.default.fileExists(atPath: unused.path), "Background warming does not recreate evicted unused art")
+    let requestedAgain = try cache.image(unusedURL, download: false)
+    check(requestedAgain != nil, "Explicitly viewing evicted artwork can reuse Spotify's copy again")
+    print("Offline checks passed: native metadata, playlist contents, expired caches, preserved artwork, network fallback, and bounded cleanup.")
+}
+
 private func testThemes() {
     let root = tempDirectory("spotify-theme-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -63,6 +191,7 @@ private func testThemes() {
 }
 
 func runModelTests() {
+    do { try testOfflineCache() } catch { fputs("FAILED: offline cache: \(error)\n", stderr); exit(1) }
     testThemes()
     let root = tempDirectory("spotify-model-tests-"); defer { try? FileManager.default.removeItem(at: root) }
     do {
@@ -310,7 +439,7 @@ func runIntegrationTests() {
     for _ in 0..<50 { let start = DispatchTime.now().uptimeNanoseconds; spawnClient(workflow.appendingPathComponent("show"), environment: env); timings.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
     check(number(request("state")["pid"]) == number(initial["pid"]), "Hotkey keeps the same process")
     check(dict(request("state")["theme"])["id"] as? String == env["alfred_theme"], "C launcher safely forwards theme context")
-    for command in ["test-ui", "test-editing", "test-controls", "test-repeat", "test-theme", "test-screenshot-mode", "test-search", "test-artwork", "test-catalog-mode"] {
+    for command in ["test-ui", "test-editing", "test-controls", "test-repeat", "test-theme", "test-screenshot-mode", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode"] {
         let initial = request(command)
         var result = initial
         let deadline = Date().addingTimeInterval(3)

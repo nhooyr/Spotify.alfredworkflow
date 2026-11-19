@@ -12,11 +12,19 @@ PKCE sign-in, and the read-only desktop cache adapter are in the other Swift fil
 The small C launcher sends a Unix socket message to show the existing window.
 It does not start the application again on each hotkey press.
 
-The cache adapter reads Chromium cache entries and the playlist-root record in
-Spotify’s immutable LevelDB tables and complete journal records. It never opens
-Spotify’s database for writing. The saved playlist root supplies custom order;
-the public API supplies membership and missing metadata. Existing workflow tokens,
-SQLite data, and extracted covers retain their paths and formats.
+The cache adapter reads Chromium metadata and images, plus playlist snapshots,
+track metadata, and the playlist root in Spotify’s immutable LevelDB tables and
+complete journal records. It reads only the needed key ranges and never writes to
+or locks Spotify’s database. The saved playlist root supplies custom order; the
+public API supplies library membership. Local results are published before network
+refreshes, and expired browse results remain usable offline. Covers are copied
+into the workflow cache before Spotify can evict them; a background pass fetches
+missing images when online. Playback stays in Spotify’s desktop app, which owns
+the downloaded audio. Existing tokens and cache formats retain their paths.
+An hourly maintenance check removes old, unreferenced workflow artwork only if
+our cache exceeds 1 GB. Saved and downloaded-library covers and art used within
+the last day are protected, so the size limit is deliberately soft. Spotify’s
+cache is never cleaned or modified.
 
 Sign-in and token refresh use PKCE. Credentials come from the Workflow’s
 Configuration; the app does not import data from other workflows.

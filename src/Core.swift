@@ -16,6 +16,7 @@ enum RepeatMode: String, CaseIterable {
 struct SpotifyFailure: LocalizedError {
     let message: String
     var status: Int = 0
+    var isNetworkError = false
     var errorDescription: String? { message }
 }
 func jsonData(_ object: Any) throws -> Data { try JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed, .sortedKeys]) }
@@ -194,9 +195,9 @@ final class SpotifyAPI {
         let task = session.dataTask(with: request) { data, response, error in result = (data, response, error); ready.signal() }
         cancellation?.attach(task)
         task.resume()
-        guard ready.wait(timeout: .now() + 22) == .success else { task.cancel(); throw SpotifyFailure(message: "Spotify did not respond. Try again.") }
+        guard ready.wait(timeout: .now() + 22) == .success else { task.cancel(); throw SpotifyFailure(message: "Spotify did not respond. Try again.", isNetworkError: true) }
         if cancellation?.isCancelled == true { throw URLError(.cancelled) }
-        if result.2 != nil { throw SpotifyFailure(message: "Could not reach Spotify. Check your connection and try again.") }
+        if result.2 != nil { throw SpotifyFailure(message: "Could not reach Spotify. Check your connection and try again.", isNetworkError: true) }
         guard let response = result.1 as? HTTPURLResponse else { throw SpotifyFailure(message: "Spotify returned an invalid response.") }
         return (result.0 ?? Data(), response)
     }

@@ -124,7 +124,87 @@ final class DesktopCache {
     static let maxBody = 8 * 1024 * 1024
     let paths: WorkflowPaths
     let store: MusicStore
-    init(_ paths: WorkflowPaths, _ store: MusicStore) { self.paths = paths; self.store = store }
+    let session: URLSession
+    init(_ paths: WorkflowPaths, _ store: MusicStore, session: URLSession? = nil) {
+        self.paths = paths; self.store = store
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 6; config.timeoutIntervalForResource = 6
+        self.session = session ?? URLSession(configuration: config)
+    }
+    static func isImage(_ data: Data) -> Bool {
+        data.count <= maxBody && (data.starts(with: [0xff, 0xd8, 0xff]) || data.starts(with: [137,80,78,71,13,10,26,10]) || (data.count > 12 && data.starts(with: Data("RIFF".utf8)) && data[8..<12] == Data("WEBP".utf8)))
+    }
+    // Preserve covers independently of Spotify's evictable HTTP cache. Copy local
+    // entries first; the optional network pass only fills genuinely missing art.
+    @discardableResult func preserveArtwork(downloadMissing: Bool = false) throws -> Int {
+        var seen = Set<String>(), copied = 0, protected: Set<String>?
+        for item in store.items("track", saved: true) + store.items() {
+            let url = text(item["image"])
+            guard Self.imageURL(url), seen.insert(url).inserted else { continue }
+            let output = paths.cache.appendingPathComponent("artwork/" + sha256(Data(url.utf8)) + ".img")
+            if store.get("evicted-art:" + output.lastPathComponent, stale: true) != nil {
+                if protected == nil { protected = protectedArtwork() }
+                if protected?.contains(output.lastPathComponent) != true { continue }
+            }
+            if FileManager.default.fileExists(atPath: output.path) { continue }
+            do { if try image(url, download: downloadMissing) != nil { copied += 1 } }
+            catch let error as SpotifyFailure where error.isNetworkError { break }
+        }
+        return copied
+    }
+    // The limit is soft: never evict saved/downloaded-library art or art used
+    // within the last day just to reach it. Only our own artwork files qualify.
+    @discardableResult func prune(maxBytes: Int64 = 1_000_000_000, now: Date = Date()) throws -> Int {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        guard let files = FileManager.default.enumerator(at: paths.cache, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return 0 }
+        let art = paths.cache.appendingPathComponent("artwork").standardizedFileURL
+        var bytes: Int64 = 0, candidates: [(URL, Int64, Date)] = []
+        let cutoff = now.addingTimeInterval(-86400)
+        for case let file as URL in files {
+            guard let values = try? file.resourceValues(forKeys: keys) else { continue }
+            if values.isSymbolicLink == true { files.skipDescendants(); continue }
+            guard values.isRegularFile == true else { continue }
+            let size = Int64(values.fileSize ?? 0)
+            bytes += size
+            if file.deletingLastPathComponent().standardizedFileURL == art,
+               file.lastPathComponent.range(of: #"^[a-f0-9]{64}\.img$"#, options: .regularExpression) != nil,
+               let modified = values.contentModificationDate, modified < cutoff { candidates.append((file, size, modified)) }
+        }
+        guard bytes > maxBytes else { return 0 }
+        let protected = protectedArtwork()
+        var removed = 0
+        for (file, size, _) in candidates.sorted(by: { $0.2 < $1.2 }) {
+            if bytes <= maxBytes * 9 / 10 { break }
+            guard !protected.contains(file.lastPathComponent),
+                  let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  modified < cutoff else { continue }
+            do {
+                try FileManager.default.removeItem(at: file)
+                try store.put("evicted-art:" + file.lastPathComponent, true, ttl: 365 * 86400)
+                bytes -= size; removed += 1
+            } catch { continue }
+        }
+        return removed
+    }
+    private func protectedArtwork() -> Set<String> {
+        let saved = store.items(saved: true)
+        let albums = Set(saved.filter { text($0["kind"]) == "album" }.map { text($0["uri"]) })
+        let playlists = Set(saved.filter { text($0["kind"]) == "playlist" }.map { text($0["uri"]) })
+            .union(store.get("desktop:playlist-order", stale: true) as? [String] ?? [])
+            .union(store.get("desktop:offline-playlists", stale: true) as? [String] ?? [])
+        var needed = Set(saved.map { text($0["uri"]) }), urls = Set(saved.map { text($0["image"]) })
+        for uri in playlists {
+            needed.formUnion(dict(store.get("desktop:contents:" + uri, stale: true))["uris"] as? [String] ?? [])
+            for item in store.get("contents:" + uri, stale: true) as? [JSONObject] ?? [] {
+                needed.insert(text(item["uri"])); urls.insert(text(item["image"]))
+            }
+            if let item = store.item(uri) { urls.insert(text(item["image"])) }
+        }
+        for item in store.items("track") where needed.contains(text(item["uri"])) || albums.contains(text(dict(item["album"])["uri"])) {
+            urls.insert(text(item["image"])); urls.insert(text(dict(item["album"])["image"]))
+        }
+        return Set(urls.filter { !$0.isEmpty }.map { sha256(Data($0.utf8)) + ".img" })
+    }
     static func imageURL(_ string: String) -> Bool {
         guard let url = URL(string: string), url.scheme == "https" else { return false }
         return ["i.scdn.co", "mosaic.scdn.co", "i.spotifycdn.com", "image-cdn-ak.spotifycdn.com", "image-cdn-fa.spotifycdn.com", "pickasso.spotifycdn.com"].contains(url.host ?? "")
@@ -196,33 +276,46 @@ final class DesktopCache {
     func image(_ url: String, download: Bool) throws -> String? {
         guard Self.imageURL(url) else { return nil }
         let output = paths.cache.appendingPathComponent("artwork/" + sha256(Data(url.utf8)) + ".img")
-        if FileManager.default.fileExists(atPath: output.path) { return output.path }
+        let evicted = "evicted-art:" + output.lastPathComponent
+        if store.get(evicted, stale: true) != nil { try store.execute("DELETE FROM responses WHERE key=?", [evicted]) }
+        if FileManager.default.fileExists(atPath: output.path) {
+            // Coarse access timestamps keep the cleanup pass from evicting art
+            // in use without adding a write on every preview or keystroke.
+            if let modified = try? output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+               Date().timeIntervalSince(modified) > 3600 {
+                try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: output.path)
+            }
+            return output.path
+        }
         var matches = try store.rows("SELECT path,offset,length FROM desktop WHERE url=? ORDER BY stamp DESC", [url])
         if let parsed = URL(string: url), parsed.host == "i.scdn.co", parsed.lastPathComponent.count == 40 {
             let id = parsed.lastPathComponent
             matches += try store.rows("SELECT path,offset,length FROM desktop WHERE url LIKE ? ORDER BY stamp DESC", ["https://i.scdn.co/image/" + id.prefix(8) + "%" + id.suffix(24)])
         }
         var bytes: Data?
-        for match in matches { if let data = try? Self.body(URL(fileURLWithPath: text(match["path"])), Int(number(match["offset"])), Int(number(match["length"]))) { bytes = data; break } }
+        for match in matches { if let data = try? Self.body(URL(fileURLWithPath: text(match["path"])), Int(number(match["offset"])), Int(number(match["length"]))), Self.isImage(data) { bytes = data; break } }
         if bytes == nil, download, store.get("missing-image:" + url) == nil {
             let ready = DispatchSemaphore(value: 0)
-            var result: Data?
-            let task = URLSession.shared.dataTask(with: URL(string: url)!) { data, response, _ in
-                if let response = response as? HTTPURLResponse, response.statusCode == 200, Self.imageURL(response.url?.absoluteString ?? ""), let data = data, data.count <= Self.maxBody { result = data }
+            var result: Data?, failed = false
+            let task = session.dataTask(with: URL(string: url)!) { data, response, error in
+                failed = error != nil
+                if let response = response as? HTTPURLResponse, response.statusCode == 200, Self.imageURL(response.url?.absoluteString ?? ""), let data = data, Self.isImage(data) { result = data }
                 ready.signal()
             }
-            task.resume(); if ready.wait(timeout: .now() + 6) != .success { task.cancel() }
+            task.resume()
+            guard ready.wait(timeout: .now() + 7) == .success else { task.cancel(); throw SpotifyFailure(message: "Could not load artwork while offline.", isNetworkError: true) }
+            if failed { throw SpotifyFailure(message: "Could not load artwork while offline.", isNetworkError: true) }
             bytes = result
             if bytes == nil { try store.put("missing-image:" + url, true, ttl: 60) }
         }
-        guard let data = bytes, data.count <= Self.maxBody, data.starts(with: [0xff, 0xd8, 0xff]) || data.starts(with: [137,80,78,71,13,10,26,10]) || (data.starts(with: Data("RIFF".utf8)) && data.count > 12 && data[8..<12] == Data("WEBP".utf8)) else { return nil }
+        guard let data = bytes, Self.isImage(data) else { return nil }
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try data.write(to: output, options: .atomic); chmod(output.path, 0o600); return output.path
     }
 }
 
 // Reads immutable SST blocks and complete WAL records. It never opens or locks
-// Spotify's live LevelDB, and only decodes the playlist-root record.
+// Spotify's live LevelDB. The root record supplies the custom playlist order.
 enum PlaylistOrder {
     static let prefix = Data("!pl#slc#2spotify:user:".utf8)
     static func snappy(_ data: Data) throws -> Data {
@@ -264,63 +357,8 @@ enum PlaylistOrder {
         var seen = Set<String>(); return uris.filter { seen.insert($0).inserted }
     }
     static func read(_ directory: URL) -> [String]? {
-        var best: (UInt64, [String])?
-        func record(_ key: Data, _ value: Data, sequence: UInt64) {
-            guard key.starts(with: prefix), key.suffix(10) == Data(":rootlist#".utf8), let list = decode(value), !list.isEmpty, best == nil || sequence > best!.0 else { return }
-            best = (sequence, list)
-        }
-        for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? [] {
-            guard let handle = try? FileHandle(forReadingFrom: file) else { continue }; defer { try? handle.close() }
-            if file.pathExtension == "ldb" || file.pathExtension == "sst" {
-                do {
-                    let size = try handle.seekToEnd(); guard size >= 48 else { continue }; try handle.seek(toOffset: size - 48)
-                    let footer = try handle.read(upToCount: 48) ?? Data(); guard little(footer, 40, 8) == 0xdb4775248b80fb57 else { continue }
-                    func block(_ descriptor: Data) throws -> Data {
-                        var reader = Bytes(descriptor); let offset = try reader.varint(), size = Int(try reader.varint())
-                        guard size <= 16 * 1024 * 1024 else { throw SpotifyFailure(message: "Invalid cache block.") }
-                        try handle.seek(toOffset: offset); let data = try handle.read(upToCount: size + 5) ?? Data()
-                        guard data.count == size + 5 else { throw SpotifyFailure(message: "Incomplete cache block.") }
-                        return data[size] == 1 ? try snappy(Data(data.prefix(size))) : data[size] == 0 ? Data(data.prefix(size)) : Data()
-                    }
-                    var f = Bytes(footer); _ = try f.varint(); _ = try f.varint()
-                    let index = try entries(block(Data(footer.dropFirst(f.position))))
-                    var previous = Data()
-                    for (key, descriptor) in index {
-                        let upper = Data(key.dropLast(8)), high = Data("!pl#slc#3".utf8)
-                        if !upper.lexicographicallyPrecedes(prefix) && (previous.isEmpty || previous.lexicographicallyPrecedes(high)) {
-                            for (key, value) in try entries(block(descriptor)) where key.count >= 8 {
-                                let trailer = little(key, key.count - 8, 8)
-                                if trailer & 255 == 1 { record(Data(key.dropLast(8)), value, sequence: trailer >> 8) }
-                            }
-                        }
-                        previous = upper
-                    }
-                } catch { continue }
-            } else if file.pathExtension == "log" {
-                guard let data = try? handle.readToEnd(), data.count < 32 * 1024 * 1024 else { continue }
-                var offset = 0, fragments = Data()
-                while offset + 7 <= data.count {
-                    let remaining = 32768 - offset % 32768
-                    if remaining < 7 { offset += remaining; continue }
-                    let length = Int(little(data, offset + 4, 2)), type = data[offset + 6]
-                    guard length <= remaining - 7, offset + 7 + length <= data.count else { break }
-                    let chunk = data.subdata(in: offset + 7..<offset + 7 + length); offset += 7 + length
-                    if type == 1 || type == 2 { fragments = chunk } else if type == 3 || type == 4 { fragments += chunk } else { continue }
-                    if type != 1 && type != 4 { continue }
-                    do {
-                        guard fragments.count >= 12 else { continue }
-                        let sequence = little(fragments, 0, 8), count = Int(little(fragments, 8, 4)); guard count < 100000 else { continue }
-                        var reader = Bytes(fragments); reader.position = 12
-                        for i in 0..<count {
-                            let type = try reader.take(1).first!, key = try reader.take(Int(reader.varint()))
-                            let value = type == 1 ? try reader.take(Int(reader.varint())) : Data()
-                            if type == 1 { record(key, value, sequence: sequence + UInt64(i)) }
-                        }
-                    } catch { continue }
-                }
-            }
-        }
-        return best?.1
+        DesktopDatabase.read(directory, prefixes: [prefix]).filter { $0.key.suffix(10) == Data(":rootlist#".utf8) }
+            .sorted { $0.value.sequence > $1.value.sequence }.compactMap { decode($0.value.value) }.first { !$0.isEmpty }
     }
     static func desktopDirectory() -> URL? {
         if let override = ProcessInfo.processInfo.environment["SPOTIFY_DESKTOP_USER_CACHE"] { return URL(fileURLWithPath: override) }

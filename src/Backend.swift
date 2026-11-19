@@ -8,6 +8,10 @@ final class NativeBackend {
     private let likeWork = DispatchQueue(label: "spotify.likes", qos: .userInitiated)
     private let repeatWork = DispatchQueue(label: "spotify.repeat", qos: .userInitiated)
     private var repeatPolling = false
+    private let artworkWork = DispatchQueue(label: "spotify.artwork", qos: .utility)
+    private var warmingArtwork = false
+    private var cleaningCache = false
+    private var cacheMaintenance: DispatchSourceTimer?
     private let paths: WorkflowPaths
     private var store: MusicStore!
     private var api: SpotifyAPI!
@@ -36,6 +40,11 @@ final class NativeBackend {
                 self.store = try MusicStore(self.paths.cache.appendingPathComponent("index.sqlite3"))
                 self.api = SpotifyAPI(self.paths); self.cache = DesktopCache(self.paths, self.store); self.library = MusicLibrary(self.store, self.api)
                 self.reloadArt()
+                let timer = DispatchSource.makeTimerSource(queue: self.queue)
+                timer.schedule(deadline: .now() + 3600, repeating: 3600, leeway: .seconds(60))
+                timer.setEventHandler { [weak self] in self?.cleanCache() }
+                self.cacheMaintenance = timer
+                timer.resume()
                 if self.api.connected {
                     self.connection = "connected"; self.publishRows(command: "init", resetText: true); self.sendCatalog()
                     self.refresh(force: false)
@@ -44,7 +53,7 @@ final class NativeBackend {
             } catch { self.connection = "failed"; self.message = error.localizedDescription; self.running = false; self.publishRows(command: "init") }
         }
     }
-    func stop() { running = false; auth?.cancel() }
+    func stop() { running = false; auth?.cancel(); cacheMaintenance?.cancel(); cacheMaintenance = nil }
     private var validCredentials: Bool { paths.credentials().0.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil }
     private var route: JSONObject { stack.last ?? ["kind": "home"] }
     private var prefix: String {
@@ -107,6 +116,32 @@ final class NativeBackend {
             }
         } catch { connection = "failed"; message = error.localizedDescription; publishRows(command: "connect") }
     }
+    private func cleanCache() {
+        guard !cleaningCache, store.get("cache:cleaned") == nil else { return }
+        cleaningCache = true
+        work.async { [weak self] in
+            guard let self = self else { return }
+            let removed = (try? self.cache.prune()) ?? 0
+            try? self.store.put("cache:cleaned", true, ttl: 3600)
+            self.queue.async {
+                self.cleaningCache = false
+                if removed > 0 { self.sendCatalog() }
+            }
+        }
+    }
+    private func warmArtwork() {
+        guard !warmingArtwork else { return }
+        warmingArtwork = true
+        artworkWork.async { [weak self] in
+            guard let self = self else { return }
+            let local = (try? self.cache.preserveArtwork()) ?? 0
+            let copied = local + ((try? self.cache.preserveArtwork(downloadMissing: true)) ?? 0)
+            self.queue.async {
+                self.warmingArtwork = false
+                if copied > 0 { self.sendCatalog(); self.publishRows(command: "artwork") }
+            }
+        }
+    }
     private func refresh(force: Bool) {
         guard !syncing, force || Date().timeIntervalSince(lastRefresh) >= 30 else { return }
         syncing = true
@@ -114,16 +149,23 @@ final class NativeBackend {
         let doSync = api.connected && (force || store.get("library:synced") == nil)
         work.async { [weak self] in
             guard let self = self else { return }
-            var error: Error?
-            var changed = force
+            var error: Error?, changed = force
             do {
-                if force || self.store.get("desktop:scanned:v2") == nil {
+                if force || self.store.get("desktop:scanned:v3") == nil {
                     changed = try self.cache.index() > 0 || changed
-                    try self.store.put("desktop:scanned:v2", true, ttl: 300)
+                    if let root = PlaylistOrder.desktopDirectory() {
+                        if let order = PlaylistOrder.read(root), order != self.store.get("desktop:playlist-order", stale: true) as? [String] {
+                            try self.store.put("desktop:playlist-order", order, ttl: 365 * 86400)
+                            changed = true
+                        }
+                        changed = try DesktopMetadata.index(root, store: self.store) > 0 || changed
+                    }
+                    changed = try self.cache.preserveArtwork() > 0 || changed
+                    try self.store.put("desktop:scanned:v3", true, ttl: 60)
                 }
-                if let root = PlaylistOrder.desktopDirectory(), let order = PlaylistOrder.read(root), order != self.store.get("desktop:playlist-order", stale: true) as? [String] {
-                    try self.store.put("desktop:playlist-order", order, ttl: 365 * 86400)
-                    changed = true
+                // Publish local data before any network request or token refresh.
+                if changed {
+                    self.queue.async { self.sendCatalog(); self.publishRows(command: "refresh") }
                 }
                 if doSync { try self.library.sync(); changed = true }
             } catch let caught { error = caught }
@@ -131,10 +173,12 @@ final class NativeBackend {
                 self.syncing = false
                 if changed { self.sendCatalog() }
                 if self.connection == "connected", changed || error != nil {
-                    self.message = error?.localizedDescription ?? ""
+                    self.message = (error as? SpotifyFailure)?.isNetworkError == true ? "" : error?.localizedDescription ?? ""
                     if let failure = error as? SpotifyFailure, failure.status == 401 { self.connection = "failed" }
                     self.publishRows(command: "refresh")
                 }
+                self.warmArtwork()
+                self.cleanCache()
             }
         }
     }
@@ -155,6 +199,7 @@ final class NativeBackend {
                     self.reloadArt()
                     self.output(["type": "update", "command": "browse", "connection": self.connection, "message": self.message, "route_kind": text(current["kind"]), "prefix": self.prefix, "query": text(current["query"]), "searching": false, "rows": rows.map(self.nativeRow), "variables": [:]])
                     self.sendCatalog()
+                    self.warmArtwork()
                 }
             } catch {
                 self.queue.async {

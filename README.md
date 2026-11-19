@@ -18,6 +18,16 @@ Choose **Spotify** (`⌘5`) to search the full catalogue, or press `⌘↩` to c
 your current query. Type after `/` in this mode for live results; a slash typed
 in the home view does not switch modes.
 
+The player reuses Spotify’s desktop metadata and covers, keeping copies for offline
+browsing. Missing covers download in the background while online; unavailable
+artwork shows a grey question mark. Connect once online, then play songs already
+downloaded in Spotify without an internet connection.
+
+The workflow checks its own cache hourly. Above **1 GB**, it removes the oldest
+unused artwork, protecting covers for your saved/downloaded library and anything
+used in the last day. This is a soft limit so needed offline artwork is retained;
+Spotify’s cache is never changed.
+
 | Keyword | Action |
 | --- | --- |
 | `spotify` | Open the mini player. |
@@ -51,6 +61,10 @@ screenshot tool. Run it again, or press Esc in the player, to exit.
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and
 selection colours.
+
+In the Workflow’s Configuration, enter your Spotify app’s **Client ID** and set
+its redirect URI to `http://127.0.0.1/spotify_callback` (no port). **Client Secret**
+is optional.
 
 Sign-in opens in your browser automatically; use **Connect** to retry. After `spotify reauth`, choose
 **Open Spotify Mini Player** in Alfred to sign in again. Your Client ID and

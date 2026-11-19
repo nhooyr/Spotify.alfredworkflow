@@ -24,6 +24,7 @@ INITIAL_MAGIC = 0xFCFB6D1BA7725C30
 FINAL_MAGIC = 0xF4FA6F45970D41D8
 IMAGE_HOSTS = {
     "i.scdn.co",
+    "mosaic.scdn.co",
     "i.spotifycdn.com",
     "image-cdn-ak.spotifycdn.com",
     "image-cdn-fa.spotifycdn.com",

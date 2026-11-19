@@ -2,16 +2,21 @@
 
 import contextlib
 import os
+import plistlib
 import shutil
 import sqlite3
 import tempfile
 import time
 from pathlib import Path
 
-from .configuration import SEED, values
+from .configuration import KEYS, SEED, installed_root, read_preferences, values
 from .storage import Store, cache_dir, data_dir, lock, read_json, write_json
 
-LEGACY_BUNDLE_IDS = ("com.aqsnow.alfred-spotify", "io.nhooyr.alfred-spotify")
+LEGACY_BUNDLE_IDS = (
+    "com.aqsnow.alfred.spotify",
+    "com.aqsnow.alfred-spotify",
+    "io.nhooyr.alfred-spotify",
+)
 MARKER = ".legacy-import.json"
 
 
@@ -65,7 +70,9 @@ def import_database(source, destination, reuse_account):
             (
                 "responses",
                 "key, payload, expires",
-                "" if reuse_account else " WHERE key='desktop:scanned'",
+                " WHERE key != 'search:snapshot'"
+                if reuse_account
+                else " WHERE key LIKE 'desktop:scanned%'",
             ),
         ]
         if reuse_account:
@@ -83,6 +90,29 @@ def import_database(source, destination, reuse_account):
         if store:
             store.close()
         snapshot.unlink(missing_ok=True)
+
+
+def source_credentials(bundle_id, data_source):
+    """Prefer the source workflow's current settings to an old imported seed."""
+    root = installed_root()
+    if root:
+        candidates = []
+        for candidate in root.parent.glob("user.workflow.*"):
+            prefs = candidate / "prefs.plist"
+            if candidate.is_symlink() or prefs.is_symlink():
+                continue
+            try:
+                info = plistlib.loads((candidate / "info.plist").read_bytes())
+                if isinstance(info, dict) and info.get("bundleid") == bundle_id and prefs.is_file():
+                    candidates.append((prefs.stat().st_mtime_ns, candidate))
+            except OSError, ValueError, plistlib.InvalidFileException:
+                continue
+        for _, candidate in sorted(candidates, reverse=True):
+            settings = read_preferences(candidate)
+            if any(key in settings for key in KEYS):
+                return dict(zip(KEYS, values(settings), strict=True))
+    seed = data_source / SEED
+    return read_json(seed, {}) if seed.is_file() and not seed.is_symlink() else None
 
 
 def migrate(data_target=None, cache_target=None):
@@ -117,9 +147,10 @@ def migrate(data_target=None, cache_target=None):
         if previous:
             return {**previous, "already_imported": True}
         try:
-            old_credentials = data_source / SEED
-            if not old_credentials.is_symlink() and all(values(read_json(old_credentials, {}))):
-                report["credentials"] = copy_missing(old_credentials, data_target / SEED)
+            old_credentials = source_credentials(source_id, data_source)
+            if values(old_credentials or {})[0] and not (data_target / SEED).exists():
+                write_json(data_target / SEED, old_credentials)
+                report["credentials"] = True
             with lock(data_target / "authorization.lock"):
                 old_auth_path = data_source / "authorization.json"
                 old_auth = read_json(old_auth_path, {}) if not old_auth_path.is_symlink() else {}
@@ -129,6 +160,8 @@ def migrate(data_target=None, cache_target=None):
                     isinstance(old_auth.get(k), str) and old_auth[k]
                     for k in ("client_id", "access_token", "refresh_token")
                 )
+                if old_credentials is not None:
+                    valid = valid and old_auth.get("client_id") == values(old_credentials)[0]
                 if valid and not new_auth and not cleared:
                     report["authorization"] = copy_missing(
                         old_auth_path, data_target / "authorization.json"

@@ -1,10 +1,17 @@
 """Browse the desktop metadata index, filling misses through the public API."""
 
+import re
 import time
 import unicodedata
 
 from .api import SpotifyError
 from .metadata import from_api
+
+KIND_PRIORITY = {"playlist": 0, "album": 1, "artist": 2, "track": 3}
+
+
+def prioritize(items):
+    return sorted(items, key=lambda item: KIND_PRIORITY.get(item.get("kind"), 4))
 
 
 def folded(value):
@@ -34,12 +41,41 @@ def matching(items, query):
     ]
 
 
+def search_text(item):
+    return " ".join(
+        [
+            item["name"],
+            item.get("album", {}).get("name", ""),
+            *[artist["name"] for artist in item.get("artists", [])],
+        ]
+    )
+
+
+def native_matching(items, query):
+    """Match the word prefixes used by Alfred's wordmatchanyorder filter."""
+    terms = folded(query).split()
+    return [
+        item
+        for item in items
+        if all(
+            any(word.startswith(term) for word in re.split(r"[\s/]+", folded(search_text(item))))
+            for term in terms
+        )
+    ]
+
+
 def unique(items):
     return list({item["uri"]: item for item in items if item and item.get("uri")}.values())
 
 
 def action_row(name, action, **values):
-    return {"name": name, "kind": "action", "action": action, "uri": action, **values}
+    return {
+        "name": name,
+        "kind": "action",
+        "action": action,
+        "uri": f"action:{action}:{name}",
+        **values,
+    }
 
 
 class Library:
@@ -50,6 +86,7 @@ class Library:
     def sync(self):
         """Commit membership only when all four paginated reads have succeeded."""
         items = []
+        album_tracks = []
         for value in self.spotify.pages("/me/tracks"):
             items.append(from_api(value.get("track"), "track"))
         for value in self.spotify.pages("/me/albums"):
@@ -61,13 +98,16 @@ class Library:
                     track = from_api(track, "track")
                     if track:
                         track["album"] = album
-                        self.store.put_item(track)
+                        album_tracks.append(track)
         items.extend(
             from_api(value, "artist")
             for value in self.spotify.pages("/me/following", {"type": "artist"}, nested="artists")
         )
         items.extend(from_api(value, "playlist") for value in self.spotify.pages("/me/playlists"))
         items = [item for item in items if item]
+        # Do not hold a SQLite write transaction across network requests.
+        for track in album_tracks:
+            self.store.put_item(track)
         self.store.db.execute("DELETE FROM saved")
         for item in items:
             self.store.put_item(item)
@@ -96,15 +136,14 @@ class Library:
                     )
                 return items
             return [
-                action_row("Genres", "browse", target={"kind": "genres"}, symbol="opticaldisc"),
-                action_row("Artists", "browse", target={"kind": "artists"}, symbol="person.fill"),
-                action_row("Albums", "browse", target={"kind": "albums"}, symbol="music.note"),
                 action_row(
                     "Playlists", "browse", target={"kind": "playlists"}, symbol="music.note.list"
                 ),
-                action_row("Random Album", "random", symbol="shuffle"),
+                action_row("Albums", "browse", target={"kind": "albums"}, symbol="square.stack"),
+                action_row("Artists", "browse", target={"kind": "artists"}, symbol="person.fill"),
+                action_row("Songs", "browse", target={"kind": "songs"}, symbol="music.note"),
             ]
-        if kind in {"artists", "albums", "playlists", "tracks"}:
+        if kind in {"artists", "albums", "playlists", "tracks", "songs"}:
             if kind == "playlists" and not connected:
                 return [
                     action_row(
@@ -119,8 +158,9 @@ class Library:
                 "albums": "album",
                 "playlists": "playlist",
                 "tracks": "track",
+                "songs": "track",
             }[kind]
-            items = self.store.items(singular, saved=saved_only)
+            items = self.store.items(singular, saved=saved_only or kind == "songs")
             if kind == "albums" and saved_only:
                 items = unique(
                     [
@@ -134,40 +174,6 @@ class Library:
                 )
         elif kind == "catalog":
             return self.search(route["query"], network)
-        elif kind == "genres":
-            genres = sorted(
-                {
-                    g
-                    for item in self.store.items("artist", saved=saved_only)
-                    for g in item.get("genres", [])
-                }
-            )
-            items = [
-                action_row(
-                    g.title(),
-                    "browse",
-                    target={"kind": "genre", "genre": g, "name": g.title()},
-                    symbol="opticaldisc",
-                )
-                for g in genres
-            ]
-            if not items:
-                items = [
-                    action_row(
-                        "No genre information available",
-                        "none",
-                        detail=(
-                            "Spotify no longer provides genre tags in desktop metadata. "
-                            "Browse Artists or Albums instead."
-                        ),
-                    )
-                ]
-        elif kind == "genre":
-            items = [
-                a
-                for a in self.store.items("artist", saved=saved_only)
-                if route["genre"] in a.get("genres", [])
-            ]
         elif kind == "artist":
             artist = self.store.item(route["uri"]) or route
             items = artist.get("albums", [])
@@ -252,7 +258,7 @@ class Library:
             ]
         else:
             items = []
-        if kind in {"artists", "albums", "playlists", "genre"}:
+        if kind in {"artists", "albums", "playlists", "songs"}:
             items = sorted(items, key=lambda x: folded(x["name"]))
         return matching(items, query) if query else items
 
@@ -274,5 +280,5 @@ class Library:
             for item in remote:
                 self.store.put_item(item)
             self.store.commit()
-        result = unique([*(remote or []), *local])
+        result = prioritize(unique([*(remote or []), *local]))
         return result[:200]

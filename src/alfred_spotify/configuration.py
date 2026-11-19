@@ -42,14 +42,14 @@ def read_preferences(root):
 
 
 def credential_values():
+    root = installed_root()
+    if root:
+        prefs = read_preferences(root)
+        if any(key in prefs for key in KEYS) or (data_dir() / MARKER).exists():
+            return values(prefs)
     configured = values(os.environ)
     if any(configured):
         return configured
-    root = installed_root()
-    if root:
-        configured = values(read_preferences(root))
-        if any(configured) or (data_dir() / MARKER).exists():
-            return configured
     return values(read_json(data_dir() / SEED, {}))
 
 
@@ -58,7 +58,7 @@ def apply_imported_credentials():
     root = installed_root()
     marker = data_dir() / MARKER
     imported = values(read_json(data_dir() / SEED, {}))
-    if not root or marker.exists() or not all(imported):
+    if not root or marker.exists() or not imported[0]:
         return False
     prefs = read_preferences(root)
     if any(values(prefs)):

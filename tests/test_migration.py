@@ -1,6 +1,8 @@
+import plistlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from alfred_spotify.configuration import SEED
 from alfred_spotify.migration import LEGACY_BUNDLE_IDS, MARKER, migrate
@@ -154,6 +156,48 @@ class MigrationTests(unittest.TestCase):
         self.assertTrue(report["authorization"])
         self.assertEqual(read_json(self.data / "authorization.json"), self.token)
         self.assertEqual((self.cache / "artwork/cover.img").read_bytes(), b"cached-cover")
+
+    def test_current_workflow_settings_override_an_outdated_imported_seed(self):
+        installed = self.data.parent.parent / "workflows"
+        destination = installed / "user.workflow.NEW"
+        source = installed / "user.workflow.OLD"
+        destination.mkdir(parents=True)
+        source.mkdir()
+        (source / "info.plist").write_bytes(plistlib.dumps({"bundleid": LEGACY_BUNDLE_IDS[0]}))
+        current = {"SPOTIFY_CLIENT_ID": "current-client", "SPOTIFY_CLIENT_SECRET": "current-secret"}
+        (source / "prefs.plist").write_bytes(plistlib.dumps(current))
+        write_json(
+            self.old_data / "authorization.json", self.token | {"client_id": "current-client"}
+        )
+        with patch("alfred_spotify.migration.installed_root", return_value=destination):
+            result = migrate(self.data, self.cache)
+        self.assertEqual(read_json(self.data / SEED), current)
+        self.assertTrue(result["authorization"])
+        self.assertEqual(read_json(self.old_data / SEED), self.credentials)
+
+    def test_client_id_only_settings_are_migrated(self):
+        credentials = {"SPOTIFY_CLIENT_ID": "test-client", "SPOTIFY_CLIENT_SECRET": ""}
+        write_json(self.old_data / SEED, credentials)
+        result = migrate(self.data, self.cache)
+        self.assertTrue(result["credentials"])
+        self.assertEqual(read_json(self.data / SEED), credentials)
+
+    def test_corrupt_source_credentials_do_not_abort_cache_migration(self):
+        write_json(self.old_data / SEED, ["invalid"])
+        result = migrate(self.data, self.cache)
+        self.assertEqual(result["errors"], [])
+        self.assertFalse(result["credentials"])
+        self.assertEqual((self.cache / "artwork/cover.img").read_bytes(), b"cached-cover")
+
+    def test_missing_search_snapshot_files_are_rebuilt_after_migration(self):
+        self.old.put("search:snapshot", {"version": "old-files"})
+        migrate(self.data, self.cache)
+        new = Store(self.cache / "index.sqlite3")
+        try:
+            self.assertIsNone(new.get("search:snapshot"))
+            self.assertEqual(new.get("library:synced"), 123)
+        finally:
+            new.close()
 
 
 if __name__ == "__main__":

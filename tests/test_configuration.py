@@ -50,6 +50,11 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(configuration.credential_values(), tuple(self.values.values()))
         self.assertEqual(prefs.stat().st_mode & 0o777, 0o600)
 
+    def test_client_id_only_import_does_not_require_a_secret(self):
+        write_json(self.data / configuration.SEED, self.values | {"SPOTIFY_CLIENT_SECRET": ""})
+        self.assertTrue(configuration.apply_imported_credentials())
+        self.assertEqual(configuration.credential_values(), (self.values["SPOTIFY_CLIENT_ID"], ""))
+
     def test_does_not_overwrite_existing_or_partly_configured_settings(self):
         prefs = self.root / "prefs.plist"
         prefs.write_bytes(plistlib.dumps({"SPOTIFY_CLIENT_ID": "different"}))
@@ -61,6 +66,15 @@ class ConfigurationTests(unittest.TestCase):
         (self.root / "prefs.plist").write_bytes(plistlib.dumps({key: "" for key in self.values}))
         self.assertFalse(configuration.apply_imported_credentials())
         self.assertEqual(configuration.credential_values(), ("", ""))
+
+    def test_current_settings_override_credentials_cached_by_an_open_player(self):
+        settings = {"SPOTIFY_CLIENT_ID": "b" * 32, "SPOTIFY_CLIENT_SECRET": "new-secret"}
+        prefs = self.root / "prefs.plist"
+        prefs.write_bytes(plistlib.dumps(settings))
+        with patch.dict(os.environ, self.values):
+            self.assertEqual(configuration.credential_values(), tuple(settings.values()))
+            prefs.write_bytes(plistlib.dumps({key: "" for key in settings}))
+            self.assertEqual(configuration.credential_values(), ("", ""))
 
     def test_never_writes_credentials_into_source_checkout(self):
         module = self.base / "checkout/src/alfred_spotify/configuration.py"

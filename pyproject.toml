@@ -1,6 +1,6 @@
 [project]
 name = "Spotify.alfredworkflow"
-version = "0.2.5"
+version = "0.3.9"
 description = "Spotify Mini Player"
 readme = "README.md"
 authors = [{ name = "Adam Quinn Snow" }]

@@ -3,7 +3,6 @@
 import contextlib
 import json
 import os
-import random
 import re
 import subprocess
 import sys
@@ -12,7 +11,7 @@ import uuid
 
 from . import desktop, player
 from .api import Spotify, SpotifyError, credentials
-from .library import Library
+from .library import Library, folded, native_matching, search_text
 from .storage import (
     BUNDLE_ID,
     Store,
@@ -24,15 +23,20 @@ from .storage import (
     write_json,
 )
 
+CHILDREN = []
+
 
 def spawn(*args):
-    subprocess.Popen(
+    CHILDREN[:] = [child for child in CHILDREN if child.poll() is None]
+    child = subprocess.Popen(
         [sys.executable, "-m", "alfred_spotify", *args],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    CHILDREN.append(child)
+    return child
 
 
 def session_path(session=None):
@@ -59,20 +63,24 @@ def selected(payload):
 
 
 def note(store):
-    if Spotify().connected() and store.get("library:synced", stale=True):
+    if Spotify().connected():
         return ""
     try:
-        credentials()
+        credentials(require_secret=False)
     except SpotifyError:
-        return "Connect Spotify to browse your playlists"
-    return "Connect Spotify to browse your saved library"
+        return "Add your Client ID in workflow settings"
+    return ""
 
 
 def rows_for(state, store):
     if state.get("connection") != "connected":
         return connection_rows(state)
     route = state["stack"][-1] if state["stack"] else {"kind": "home"}
-    return Library(store, Spotify()).browse(route, state.get("query", ""))
+    library = Library(store, Spotify())
+    if route["kind"] == "home" and state.get("query"):
+        # Alfred filters this dataset in-process as the user types.
+        return store.display_items()
+    return library.browse(route)
 
 
 def connection_rows(state):
@@ -96,10 +104,53 @@ def connection_rows(state):
     ]
 
 
+def rows_in(state):
+    if state.get("search_snapshot"):
+        return read_json(cache_dir() / "search" / (state["search_snapshot"] + ".rows.json"), [])
+    if state.get("rows_stored"):
+        return read_json(session_path(state["session"]).with_suffix(".rows.json"), [])
+    return state.get("rows", [])
+
+
 def set_rows(state, rows):
-    state["rows"] = rows
+    state.pop("search_snapshot", None)
+    # Large datasets live outside the frequently updated session record.
+    # Arrow keys, polling, and typing never rewrite thousands of library items.
+    state["rows_stored"] = len(rows) > 9
+    if state["rows_stored"]:
+        write_json(session_path(state["session"]).with_suffix(".rows.json"), rows)
+    state["rows"] = rows[:9]
     state["row_version"] = uuid.uuid4().hex
     state["selected"] = rows[0] if rows else {}
+    state["preview_version"] = uuid.uuid4().hex
+    state["preview_path"] = ""
+    state["preview_attempted"] = False
+
+
+def warm_search(store):
+    if store.get("search:snapshot"):
+        return
+    rows = store.display_items()
+    version = uuid.uuid4().hex
+    directory = cache_dir() / "search"
+    write_json(directory / (version + ".rows.json"), rows)
+    write_json(
+        directory / (version + ".ui.json"), [row_data(item, i) for i, item in enumerate(rows)]
+    )
+    store.put("search:snapshot", {"version": version}, 300)
+    # Keep snapshots immutable while open windows may still reference them.
+    for old in directory.glob("*.json"):
+        with contextlib.suppress(OSError):
+            if old.stat().st_mtime < time.time() - 86400:
+                old.unlink()
+
+
+def set_search_rows(state, snapshot):
+    state["search_snapshot"] = snapshot["version"]
+    state["rows"] = []
+    state["rows_stored"] = False
+    state["row_version"] = uuid.uuid4().hex
+    state["selected"] = {}
     state["preview_version"] = uuid.uuid4().hex
     state["preview_path"] = ""
     state["preview_attempted"] = False
@@ -115,10 +166,23 @@ def request(state, store):
     state["pending"] = True
     state["message"] = note(store)
     state["touched"] = time.time()
-    set_rows(state, rows_for(state, store))
+    snapshot = store.get("search:snapshot")
+    if (
+        not state["stack"]
+        and state.get("query")
+        and snapshot
+        and state.get("connection") == "connected"
+    ):
+        set_search_rows(state, snapshot)
+    else:
+        set_rows(state, rows_for(state, store))
 
 
-def row_data(item, index):
+def row_data(item, index, breadcrumb=""):
+    words = folded(search_text(item)).split()
+    # Prefix every word so the editable Music-style breadcrumb also matches
+    # searches by artist or album, not only by the first word of a track title.
+    match = " ".join([*words, *(folded(breadcrumb) + word for word in words)])
     symbol = item.get("symbol") or {
         "track": "music.note",
         "album": "square.stack",
@@ -127,10 +191,15 @@ def row_data(item, index):
     }.get(item["kind"], "info.circle")
     return {
         "uid": item["uri"],
+        "match": match,
         "row_title.text": item["name"],
         "row_icon.image": {"type": "symbol", "src": symbol},
-        "row_key.text": "⌘" + str(index + 1) if index < 9 else "",
-        "item": item,
+        "row_key.text": ("⌘" + str(index + 1) if index < 9 and item.get("target") else ""),
+        "item": (
+            item
+            if item["kind"] == "action"
+            else {key: item[key] for key in ("uri", "name", "kind", "context") if key in item}
+        ),
     }
 
 
@@ -138,29 +207,16 @@ def preview_item(item, store):
     """Use actual music for category previews, matching the Music mini player."""
     item = dict(item)
     target = item.get("target", {}).get("kind")
-    if target in {"genres", "artists", "albums", "playlists"} or item.get("action") == "random":
-        rows = Library(store, Spotify()).browse({"kind": target or "albums"})
+    if target in {"songs", "artists", "albums", "playlists"}:
+        rows = Library(store, Spotify()).browse({"kind": target})
         entries = [row for row in rows if row.get("action") not in {"none", "connect"}]
-        noun = {
-            "genres": "Genre",
-            "artists": "Artist",
-            "albums": "Album",
-            "playlists": "Playlist",
-        }.get(target, "Album")
+        noun = {"songs": "Song", "artists": "Artist", "albums": "Album", "playlists": "Playlist"}[
+            target
+        ]
         count = len(entries)
-        if item.get("action") != "random":
-            item["name"] = f"{count:,} {noun}{'' if count == 1 else 's'}"
-        item["detail"] = (
-            "Play an album from your music"
-            if item.get("action") == "random"
-            else "Connect Spotify to load playlists"
-            if target == "playlists" and not Spotify().connected()
-            else "Genre information unavailable"
-            if target == "genres" and not count
-            else ""
-        )
-        albums = entries if target == "albums" or not target else store.items("album")
-        item["image"] = next((album["image"] for album in albums if album.get("image")), "")
+        item["name"] = f"{count:,} {noun}{'' if count == 1 else 's'}"
+        item["detail"] = "Liked Songs" if target == "songs" else ""
+        item["image"] = next((entry["image"] for entry in entries if entry.get("image")), "")
     elif item.get("kind") == "artist" and not item.get("image"):
         albums = [
             album
@@ -203,11 +259,29 @@ def patch(state, store, force=False, selection_only=False):
     ):
         values["SPOTIFY_SEEN_ROWS"] = state["row_version"]
         selected_uri = state.get("selected", {}).get("uri", "")
-        values["browser_rows"] = [row_data(item, i) for i, item in enumerate(state.get("rows", []))]
+        if state.get("search_snapshot"):
+            values["browser_rows"] = read_json(
+                cache_dir() / "search" / (state["search_snapshot"] + ".ui.json"), []
+            )
+        else:
+            values["browser_rows"] = [
+                row_data(item, i, prefix(state)) for i, item in enumerate(rows_in(state))
+            ]
         updates["results"] = {
-            "data": {"type": "basic", "src": "{var:browser_rows}"},
+            "data": {
+                "type": "basic",
+                "src": "{var:browser_rows}",
+                "filter": {
+                    "type": "basic",
+                    "args": "match",
+                    "match": "{value:search.text}",
+                    "matchmode": "wordmatchanyorder",
+                },
+            },
             "select": selected_uri,
         }
+        if force:
+            updates["results"]["enabled"] = True
     if force or state.get("preview_version") != os.environ.get("SPOTIFY_SEEN_PREVIEW"):
         values["SPOTIFY_SEEN_PREVIEW"] = state.get("preview_version", "")
         item = preview_item(state.get("selected", {}), store)
@@ -221,18 +295,27 @@ def patch(state, store, force=False, selection_only=False):
                 "preview_detail": {"text": "{var:preview_detail}"},
             }
         )
-    return {"variables": values, "update": {"ids": updates}}
+    result = {"variables": values, "update": {"ids": updates}}
+    if "results" in updates:
+        # Run after both the data and any breadcrumb text update are applied.
+        result["functions"] = {"ids": {"results": "filterdata"}}
+    return result
 
 
-def now_playing(store):
+def now_playing(store, refresh=True):
     current = store.get("now-playing")
-    if current is None:
+    if current is None and refresh:
         current = player.status()
         store.put("now-playing", current, 2)
-    path = desktop.image(store, current.get("image"), download=True)
+    current = current or {}
+    path = desktop.image(store, current.get("image"))
     if not path:
         indexed = store.item(current.get("uri", "")) or {}
-        path = desktop.image(store, indexed.get("image"), download=True)
+        url = current.get("image") or indexed.get("image")
+        path = desktop.image(store, url)
+        if url and not path and not store.get("artwork-requested:" + url):
+            store.put("artwork-requested:" + url, True, 60)
+            spawn("artwork", url)
     return {
         "now_title": current.get("name", "No track currently selected"),
         "now_detail": " · ".join(filter(None, [current.get("artist"), current.get("album")])),
@@ -242,6 +325,7 @@ def now_playing(store):
         "play_symbol": {
             "type": "symbol",
             "src": "pause.fill" if current.get("playing") else "play.fill",
+            "size": {"height": 18},
         },
     }
 
@@ -261,21 +345,24 @@ def init(store):
     request(state, store)
     if not Spotify().connected():
         try:
-            credentials()
+            credentials(require_secret=False)
         except SpotifyError:
-            state["message"] = "Add your Client ID and Client Secret to continue"
+            state["message"] = "Add your Client ID to continue"
         else:
             begin_connection(state)
+    result = patch(state, store, True)
     write_json(session_path(session), state)
     # Expired player sessions are disposable. Keep them out of the library index.
     for old in (cache_dir() / "sessions").glob("*.json"):
         with contextlib.suppress(OSError):
             if old.stat().st_mtime < time.time() - 86400:
                 old.unlink()
+                old.with_suffix(".rows.json").unlink(missing_ok=True)
                 old.with_suffix(".lock").unlink(missing_ok=True)
                 old.with_suffix(".worker").unlink(missing_ok=True)
     spawn("worker", session)
-    result = patch(state, store, True)
+    result["pulse"] = {"interval": 0.1}
+    result["update"]["ids"]["search"]["focus"] = state["connection"] == "connected"
     if state["connection"] != "connected":
         result["sheet"] = connection_sheet(state)
     return result
@@ -307,6 +394,10 @@ def begin_connection(state, restart=False):
     set_rows(state, connection_rows(state))
 
 
+def close_player():
+    return {"sheet": {"close": "setup"}, "finish": {"args": ""}}
+
+
 def connection_sheet(state):
     failed = state.get("connection") == "failed"
     connecting = state.get("connection") == "connecting"
@@ -324,7 +415,7 @@ def connection_sheet(state):
         state.get("message", "")
         if failed or connecting or cleared
         else (
-            "Add your Client ID and Client Secret in workflow settings. "
+            "Add your Client ID in workflow settings. "
             "Then reopen the player to sign in through your browser."
         )
     )
@@ -384,7 +475,7 @@ def connection_sheet(state):
                             "events": [
                                 {
                                     "triggers": "actioned",
-                                    "action": {"type": "json", "src": {"finish": {}}},
+                                    "action": {"type": "json", "src": close_player()},
                                 }
                             ],
                         },
@@ -411,8 +502,8 @@ def show_configuration():
     except OSError, subprocess.TimeoutExpired:
         result = None
     if result is None or result.returncode:
-        raise SpotifyError("Open Alfred Preferences → Workflows → Spotify Mini Player → Configure.")
-    return {"finish": {}}
+        raise SpotifyError("Open Alfred Preferences → Workflows → Spotify → Configure.")
+    return close_player()
 
 
 def clear_connection(store):
@@ -423,8 +514,57 @@ def clear_connection(store):
             (data_dir() / name).unlink(missing_ok=True)
     # Preserve cached desktop music; clear account-specific membership and responses.
     store.db.execute("DELETE FROM saved")
-    store.db.execute("DELETE FROM responses WHERE key != 'desktop:scanned'")
+    store.db.execute("DELETE FROM responses WHERE key NOT LIKE 'desktop:scanned%'")
     store.commit()
+
+
+def load_preview(path, state, store, download=True):
+    item = preview_item(state.get("selected", {}), store)
+    selected_uri = state.get("selected", {}).get("uri")
+    image = desktop.image(store, item.get("image"), download=download)
+    with state_lock(path) as latest:
+        if latest.get("selected", {}).get("uri") == selected_uri:
+            latest["preview_attempted"] = download or bool(image)
+            if image and image != latest.get("preview_path"):
+                latest["preview_path"] = image
+                latest["preview_version"] = uuid.uuid4().hex
+
+
+def playback_result(store):
+    return {
+        "variables": now_playing(store, refresh=False),
+        "update": {
+            "ids": {
+                "now_title": {"text": "{var:now_title}"},
+                "now_detail": {"text": "{var:now_detail}"},
+                "now_art": {"image": "{var:now_art}"},
+                "toggle": {"image": "{var:play_symbol}"},
+            }
+        },
+    }
+
+
+def play_item(item, store):
+    if item.get("is_playable") is False or item.get("is_local"):
+        raise SpotifyError("This track cannot be played through Spotify’s catalog.")
+    # Send the command before touching session state, browsing, or artwork.
+    player.action("play", item.get("play_uri") or item["uri"], item.get("context", ""))
+    if item.get("kind") == "action":
+        current = store.get("now-playing", stale=True) or {}
+        current["playing"] = True
+        store.put("now-playing", current, 1.5)
+        return playback_result(store)
+    current = {
+        "running": True,
+        "playing": True,
+        "uri": item.get("play_uri") or item["uri"],
+        "name": item["name"],
+        "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+        "album": item.get("album", {}).get("name", ""),
+        "image": item.get("image", ""),
+    }
+    store.put("now-playing", current, 1.5)
+    return playback_result(store)
 
 
 def worker(session):
@@ -434,9 +574,18 @@ def worker(session):
             return
         store = Store()
         try:
-            if store.get("desktop:scanned") is None:
-                desktop.index(store)
-                store.put("desktop:scanned", True, 300)
+            # Artwork is visible immediately, even if a library refresh is slow.
+            state = read_json(path, {})
+            if state:
+                load_preview(path, state, store, download=False)
+            warm_search(store)
+            if store.get("desktop:scanned:v2") is None:
+                if desktop.index(store):
+                    store.db.execute("DELETE FROM responses WHERE key='search:snapshot'")
+                    store.commit()
+                store.put("desktop:scanned:v2", True, 300)
+            if state:
+                load_preview(path, state, store)
             for _ in range(20):
                 state = read_json(path, {})
                 if not state or state.get("touched", 0) < time.time() - 600:
@@ -452,12 +601,14 @@ def worker(session):
                             and (state.get("sync") or store.get("library:synced") is None)
                         ):
                             library.sync()
+                            store.db.execute("DELETE FROM responses WHERE key='search:snapshot'")
+                            store.commit()
                             message = note(store)
                         route = state["stack"][-1] if state["stack"] else {"kind": "home"}
                         rows = (
-                            library.browse(
-                                route, state.get("query", ""), network=Spotify().connected()
-                            )
+                            store.display_items()
+                            if route["kind"] == "home" and state.get("query")
+                            else library.browse(route, network=Spotify().connected())
                             if state.get("connection") == "connected"
                             else connection_rows(state)
                         )
@@ -467,38 +618,66 @@ def worker(session):
                             state.update(connection="failed", error_shown=False)
                         rows = rows_for(state, store)
                         message = str(error)
+                    warm_search(store)
                     with state_lock(path) as latest:
                         if latest.get("request") != revision:
                             continue
-                        set_rows(latest, rows)
-                        if latest.get("connection") != "connected":
-                            message = latest["message"]
                         if state.get("connection") == "failed":
                             latest.update(connection="failed", error_shown=False)
-                            rows = connection_rows({**latest, "message": message})
+                            set_rows(latest, connection_rows({**latest, "message": message}))
+                        elif latest.get("connection") == "connected":
+                            snapshot = store.get("search:snapshot")
+                            if not latest["stack"] and latest.get("query") and snapshot:
+                                if latest.get("search_snapshot") != snapshot["version"]:
+                                    set_search_rows(latest, snapshot)
+                            elif rows != rows_in(latest):
+                                set_rows(latest, rows)
+                        else:
+                            message = latest["message"]
+                            set_rows(latest, connection_rows(latest))
                         latest.update(pending=False, sync=False, message=message)
                         state = dict(latest)
-                item = preview_item(state.get("selected", {}), store)
-                selected_uri = state.get("selected", {}).get("uri")
-                image = desktop.image(store, item.get("image"), download=True)
-                with state_lock(path) as latest:
-                    if latest.get("selected", {}).get("uri") == selected_uri:
-                        latest["preview_attempted"] = True
-                        if image and image != latest.get("preview_path"):
-                            latest["preview_path"] = image
-                            latest["preview_version"] = uuid.uuid4().hex
+                load_preview(path, state, store)
+                current = store.get("now-playing", stale=True) or {}
+                desktop.image(store, current.get("image"), download=True)
                 if read_json(path, {}).get("request") == revision:
                     break
         finally:
             store.close()
 
 
-def handle(command, args, store):
+def handle(command, args, store, include_playback=True):
     if command == "init":
         return init(store)
     if command == "configure":
         return show_configuration()
+    if not os.environ.get("SPOTIFY_SESSION"):
+        return {}
+    item = selected(args[0]) if args and command == "activate" else {}
+    if command == "activate" and item.get("kind") == "track":
+        item = (store.item(item["uri"]) or {}) | item
+        return play_item(item, store)
+    if command == "activate" and item.get("action") == "play":
+        return play_item(item, store)
+    if command == "playback":
+        current = store.get("now-playing", stale=True) or {}
+        player.action(args[0])
+        if args[0] == "toggle":
+            current["playing"] = not current.get("playing", False)
+            store.put("now-playing", current, 1.5)
+        else:
+            store.db.execute("DELETE FROM responses WHERE key='now-playing'")
+            store.commit()
+        return playback_result(store)
     path = session_path()
+    if command == "query":
+        state = read_json(path, {})
+        value = args[0] if args else ""
+        breadcrumb = prefix(state)
+        if value.startswith(breadcrumb) and (breadcrumb or bool(value) == bool(state.get("query"))):
+            # Ordinary keystrokes use only Alfred's native filter. Do not write
+            # the session, rebuild rows, or queue any background work.
+            return {}
     with state_lock(path) as state:
         if not state:
             raise SpotifyError("Reopen the Spotify player to continue.")
@@ -506,17 +685,30 @@ def handle(command, args, store):
         item = selected(args[0]) if args else {}
         if command == "activate-index":
             index = int(args[0])
-            item = state.get("rows", [])[index] if index < len(state.get("rows", [])) else {}
+            value = args[1] if len(args) > 1 else prefix(state)
+            query = value.removeprefix(prefix(state))
+            rows = native_matching(rows_in(state), query)
+            item = rows[index] if 0 <= index < len(rows) else {}
             command = "activate"
+        if command == "activate" and not item:
+            return {}
         if state.get("connection") != "connected" and (
-            command in {"query", "refresh", "playback"}
+            command in {"query", "catalog", "refresh", "playback"}
             or command == "activate"
             and item.get("action") != "connect"
         ):
             return {"sheet": connection_sheet(state)}
         show_connection = False
         close_connection = False
-        if command == "query":
+        if command == "catalog":
+            value = args[0].removeprefix(prefix(state)).strip() if args else ""
+            if not value:
+                return {}
+            state["stack"].append({"kind": "catalog", "query": value, "name": "Spotify Search"})
+            state["query"] = ""
+            request(state, store)
+            extra = {"search": {"text": prefix(state), "focus": True}}
+        elif command == "query":
             value = args[0] if args else ""
             breadcrumb = prefix(state)
             if breadcrumb and value == breadcrumb[:-1]:
@@ -530,7 +722,8 @@ def handle(command, args, store):
                 state["query"] = value
             request(state, store)
         elif command in {"back", "home"}:
-            if command == "back" and state.get("query"):
+            query = args[0].removeprefix(prefix(state)) if args else state.get("query")
+            if command == "back" and query:
                 state["query"] = ""
             elif state["stack"]:
                 state["stack"] = state["stack"][:-1] if command == "back" else []
@@ -539,19 +732,23 @@ def handle(command, args, store):
         elif command == "refresh":
             state["sync"] = True
             store.db.execute(
-                "DELETE FROM responses WHERE key='desktop:scanned' "
-                "OR key LIKE 'contents:%' OR key LIKE 'artist-albums:%'"
+                "DELETE FROM responses WHERE key LIKE 'desktop:scanned%' "
+                "OR key='search:snapshot' OR key LIKE 'contents:%' OR key LIKE 'artist-albums:%'"
             )
             store.commit()
             request(state, store)
             state["message"] = "Refreshing from Spotify’s desktop cache and your library…"
         elif command == "preview":
+            if item.get("kind") != "action" and item.get("uri"):
+                item = (store.item(item["uri"]) or {}) | item
             state["selected"] = item
             state["preview_path"] = ""
             state["preview_attempted"] = False
             state["preview_version"] = uuid.uuid4().hex
             state["touched"] = time.time()
         elif command == "activate":
+            if item.get("kind") != "action" and item.get("uri"):
+                item = (store.item(item["uri"]) or {}) | item
             action = item.get("action")
             if item.get("kind") in {"album", "artist", "playlist"}:
                 state["stack"].append(item)
@@ -568,33 +765,20 @@ def handle(command, args, store):
                 state["query"] = ""
                 request(state, store)
                 extra = {"search": {"text": prefix(state), "focus": True}}
-            elif action == "random":
-                albums = Library(store, Spotify()).browse({"kind": "albums"})
-                if not albums:
-                    raise SpotifyError(
-                        "Open a few albums in Spotify, or connect your library first."
-                    )
-                player.action("play", random.choice(albums)["uri"])
             elif action == "open":
                 return {"open": {"type": "url", "src": item["play_uri"]}}
             elif action == "connect":
                 try:
-                    credentials()
+                    credentials(require_secret=False)
                 except SpotifyError:
                     return {"sheet": connection_sheet(state)}
                 begin_connection(state, restart=True)
                 show_connection = True
             elif item.get("kind") == "track" or action == "play":
-                if item.get("is_playable") is False or item.get("is_local"):
-                    raise SpotifyError("This track cannot be played through Spotify’s catalog.")
-                player.action("play", item.get("play_uri") or item["uri"], item.get("context", ""))
-        elif command == "playback":
-            player.action(args[0])
-            store.db.execute("DELETE FROM responses WHERE key='now-playing'")
-            store.commit()
+                return play_item(item, store)
         elif command == "connect":
             try:
-                credentials()
+                credentials(require_secret=False)
             except SpotifyError:
                 return {"sheet": connection_sheet(state)}
             begin_connection(state, restart=True)
@@ -647,9 +831,14 @@ def handle(command, args, store):
         needs_worker = state.get("pending") or (
             state.get("preview_image") and not state.get("preview_attempted")
         )
+    result["pulse"] = {"interval": 0.1 if needs_worker else 1}
     if needs_worker:
         spawn("worker", session)
-    if command in {"poll", "playback"} and state.get("connection") == "connected":
+    if (
+        include_playback
+        and command in {"poll", "playback"}
+        and state.get("connection") == "connected"
+    ):
         result["variables"].update(now_playing(store))
         for ident, properties in {
             "now_title": {"text": "{var:now_title}"},
@@ -685,6 +874,9 @@ def main(argv=None):
         return
     store = Store()
     try:
+        if command == "artwork":
+            desktop.image(store, args[0], download=True)
+            return
         if command == "clear-connection":
             clear_connection(store)
             print("Connection cleared. Open Spotify to sign in again.")

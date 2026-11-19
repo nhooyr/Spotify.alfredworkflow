@@ -1,4 +1,4 @@
-"""Spotify's public Web API and confidential-client OAuth flow."""
+"""Spotify Web API with PKCE and support for older confidential-client tokens."""
 
 import base64
 import json
@@ -12,7 +12,10 @@ from .configuration import credential_values
 from .storage import data_dir, lock, read_json, write_json
 
 REDIRECT_URI = "http://127.0.0.1/spotify_callback"
-SCOPES = "user-library-read playlist-read-private playlist-read-collaborative user-follow-read"
+SCOPES = (
+    "user-library-read user-library-modify "
+    "playlist-read-private playlist-read-collaborative user-follow-read"
+)
 
 
 class SpotifyError(Exception):
@@ -21,10 +24,11 @@ class SpotifyError(Exception):
         self.status = status
 
 
-def credentials():
+def credentials(require_secret=True):
     client_id, secret = credential_values()
-    if not re.fullmatch(r"[a-fA-F0-9]{32}", client_id) or not secret:
-        raise SpotifyError("Add your Client ID and Client Secret in the workflow configuration.")
+    if not re.fullmatch(r"[a-fA-F0-9]{32}", client_id) or (require_secret and not secret):
+        fields = "Client ID and Client Secret" if require_secret else "Client ID"
+        raise SpotifyError(f"Add your {fields} in the workflow configuration.")
     return client_id, secret
 
 
@@ -43,16 +47,25 @@ class Spotify:
             and token.get("client_id") == credential_values()[0]
         )
 
+    def has_scope(self, scope):
+        return scope in read_json(self.path, {}).get("scope", "").split()
+
     def token_request(self, fields):
-        client_id, secret = credentials()
-        basic = base64.b64encode(f"{client_id}:{secret}".encode()).decode()
+        client_id, _ = credentials(require_secret=False)
+        previous = read_json(self.path, {})
+        if previous.get("client_id") != client_id:
+            previous = {}
+        refreshing = fields.get("grant_type") == "refresh_token"
+        pkce = "code_verifier" in fields or (refreshing and previous.get("pkce") is True)
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if pkce:
+            fields = fields | {"client_id": client_id}
+        else:
+            _, secret = credentials()
+            basic = base64.b64encode(f"{client_id}:{secret}".encode()).decode()
+            headers["Authorization"] = "Basic " + basic
         request = Request(
-            "https://accounts.spotify.com/api/token",
-            urlencode(fields).encode(),
-            {
-                "Authorization": "Basic " + basic,
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
+            "https://accounts.spotify.com/api/token", urlencode(fields).encode(), headers
         )
         try:
             with self.opener(request, timeout=15) as response:
@@ -71,16 +84,18 @@ class Spotify:
             raise SpotifyError(
                 "Could not reach Spotify. Check your connection and try again."
             ) from None
-        if not result.get("access_token"):
+        refresh_token = result.get("refresh_token") or (
+            previous.get("refresh_token") if refreshing else None
+        )
+        if not result.get("access_token") or not refresh_token:
             raise SpotifyError("Spotify returned an incomplete sign-in response.")
-        previous = read_json(self.path, {})
-        if previous.get("client_id") != client_id:
-            previous = {}
         token = {
             "client_id": client_id,
             "access_token": result["access_token"],
-            "refresh_token": result.get("refresh_token", previous.get("refresh_token")),
+            "refresh_token": refresh_token,
             "expires_at": time.time() + result.get("expires_in", 3600),
+            "pkce": pkce,
+            "scope": result.get("scope", previous.get("scope", "") if refreshing else SCOPES),
         }
         write_json(self.path, token)
         return token["access_token"]
@@ -88,7 +103,7 @@ class Spotify:
     def access_token(self, force=False):
         with lock(data_dir() / "authorization.lock"):
             token = read_json(self.path, {})
-            client_id, _ = credentials()
+            client_id, _ = credentials(require_secret=False)
             if token.get("client_id") != client_id or not token.get("refresh_token"):
                 raise SpotifyError("Connect to Spotify to browse your saved library.", 401)
             try:

@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
-BUNDLE_ID = "com.aqsnow.alfred.spotify"
+BUNDLE_ID = "ca.aqsnow.alfred.spotify"
 
 
 def data_dir():
@@ -130,6 +130,16 @@ class Store:
             query += " WHERE kind=?"
             args = (kind,)
         return [json.loads(row[0]) for row in self.db.execute(query, args)]
+
+    def display_items(self):
+        """Metadata needed by the browser, without nested album/playlist contents."""
+        return [
+            json.loads(row[0])
+            for row in self.db.execute(
+                "SELECT json_remove(payload, '$.tracks', '$.albums', '$.album.tracks', "
+                "'$.album.albums') FROM items"
+            )
+        ]
 
     def get(self, key, stale=False):
         row = self.db.execute(

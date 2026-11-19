@@ -5,6 +5,7 @@ import SQLite3
 import Darwin
 
 let workflowID = "ca.aqsnow.alfred.spotify"
+let defaultWorkflowKeyword = "spot"
 typealias JSONObject = [String: Any]
 
 enum RepeatMode: String, CaseIterable {
@@ -39,6 +40,11 @@ func randomToken(_ count: Int = 32) -> String {
 func validTrack(_ uri: String) -> Bool { uri.range(of: #"^spotify:track:[A-Za-z0-9]{22}$"#, options: .regularExpression) != nil }
 func validURI(_ uri: String) -> Bool { uri.range(of: #"^spotify:(track|album|artist|playlist):[A-Za-z0-9]{22}$"#, options: .regularExpression) != nil }
 
+func isLikedSongsURI(_ uri: String) -> Bool {
+    uri == "spotify:collection:tracks" || uri.range(of: #"^spotify:user:[^:\s]+:collection$"#, options: .regularExpression) != nil
+}
+func validPlaybackURI(_ uri: String) -> Bool { validURI(uri) || isLikedSongsURI(uri) }
+
 struct WorkflowPaths {
     let root: URL
     let data: URL
@@ -54,11 +60,16 @@ struct WorkflowPaths {
     func prepare() throws {
         for url in [data, cache] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
     }
-    func credentials() -> (String, String) {
+    func keyword(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
         let prefs = (try? Data(contentsOf: root.appendingPathComponent("prefs.plist"))).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? JSONObject } ?? [:]
-        let env = ProcessInfo.processInfo.environment
-        let values: JSONObject = prefs.keys.contains("SPOTIFY_CLIENT_ID") || prefs.keys.contains("SPOTIFY_CLIENT_SECRET") ? prefs : env
-        return (text(values["SPOTIFY_CLIENT_ID"]).trimmingCharacters(in: .whitespacesAndNewlines), text(values["SPOTIFY_CLIENT_SECRET"]).trimmingCharacters(in: .whitespacesAndNewlines))
+        let value = text(prefs["keyword"] ?? environment["keyword"] ?? defaultWorkflowKeyword).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? defaultWorkflowKeyword : value
+    }
+    func command(_ suffix: String) -> String { keyword() + " " + suffix }
+    func clientID() -> String {
+        let prefs = (try? Data(contentsOf: root.appendingPathComponent("prefs.plist"))).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? JSONObject } ?? [:]
+        let value = prefs["SPOTIFY_CLIENT_ID"] ?? ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID"] ?? ""
+        return text(value).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
 }
@@ -175,16 +186,17 @@ final class SpotifyAPI {
         self.session = session ?? URLSession(configuration: config)
     }
     var tokenURL: URL { paths.data.appendingPathComponent("authorization.json") }
-    var connected: Bool { let token = dict(readJSON(tokenURL)); return !text(token["access_token"]).isEmpty && !text(token["refresh_token"]).isEmpty && text(token["client_id"]) == paths.credentials().0 }
+    var connected: Bool { let token = dict(readJSON(tokenURL)); return !text(token["access_token"]).isEmpty && !text(token["refresh_token"]).isEmpty && text(token["client_id"]) == paths.clientID() }
     func hasScope(_ scope: String) -> Bool { text(dict(readJSON(tokenURL))["scope"]).split(separator: " ").contains(Substring(scope)) }
     var canSave: Bool { hasScope("user-library-modify") }
     var canReadPlayback: Bool { hasScope("user-read-playback-state") }
-    func repeatState() throws -> RepeatMode? {
-        guard canReadPlayback else { throw SpotifyFailure(message: "Run spotify reauth once to allow reading repeat mode, then connect again.") }
-        return RepeatMode(rawValue: text(dict(try request("/me/player"))["repeat_state"]))
+    func playbackState() throws -> JSONObject {
+        guard canReadPlayback else { throw SpotifyFailure(message: "Run \(paths.command("reauth")) once to allow reading playback state, then open Spotify Mini Player again.") }
+        return dict(try request("/me/player"))
     }
+    func repeatState() throws -> RepeatMode? { RepeatMode(rawValue: text(try playbackState()["repeat_state"])) }
     func setRepeat(_ mode: RepeatMode) throws {
-        guard hasScope("user-modify-playback-state") else { throw SpotifyFailure(message: "Run spotify reauth once to allow changing repeat mode, then connect again.") }
+        guard hasScope("user-modify-playback-state") else { throw SpotifyFailure(message: "Run \(paths.command("reauth")) once to allow changing repeat mode, then connect again.") }
         do { _ = try request("/me/player/repeat", params: ["state": mode.rawValue], method: "PUT", expectJSON: false) }
         catch let error as SpotifyFailure where error.status == 404 { throw SpotifyFailure(message: "Start playing music in Spotify, then change repeat mode.", status: 404) }
     }
@@ -203,8 +215,8 @@ final class SpotifyAPI {
     }
     func exchange(_ fields: [String: String], valid: () -> Bool = { true }) throws -> String {
         Self.tokenLock.lock(); defer { Self.tokenLock.unlock() }
-        let (id, _) = paths.credentials()
-        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Client ID in the Workflow’s Configuration.") }
+        let id = paths.clientID()
+        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Spotify Client ID in the Workflow’s Configuration.") }
         var previous = dict(readJSON(tokenURL)); if text(previous["client_id"]) != id { previous = [:] }
         let refreshing = fields["grant_type"] == "refresh_token"
         let values = fields.merging(["client_id": id]) { _, new in new }
@@ -216,7 +228,7 @@ final class SpotifyAPI {
         let result = dict(try JSONSerialization.jsonObject(with: data))
         let access = text(result["access_token"]), refresh = text(result["refresh_token"]).isEmpty && refreshing ? text(previous["refresh_token"]) : text(result["refresh_token"])
         guard !access.isEmpty, !refresh.isEmpty else { throw SpotifyFailure(message: "Spotify returned an incomplete sign-in response.") }
-        guard valid(), paths.credentials().0 == id else { throw SpotifyFailure(message: "This sign-in was cleared. Connect again.") }
+        guard valid(), paths.clientID() == id else { throw SpotifyFailure(message: "This sign-in was cleared. Connect again.") }
         try writeJSON(["client_id": id, "access_token": access, "refresh_token": refresh, "expires_at": Date().timeIntervalSince1970 + number(result["expires_in"]), "scope": result["scope"] ?? (refreshing ? previous["scope"] ?? "" : Self.scopes)], tokenURL)
         return access
     }
@@ -231,7 +243,7 @@ final class SpotifyAPI {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         return values.sorted { $0.key < $1.key }.map { ($0.key.addingPercentEncoding(withAllowedCharacters: allowed) ?? "") + "=" + ($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "") }.joined(separator: "&")
     }
-    func request(_ path: String, params: [String: String] = [:], method: String = "GET", expectJSON: Bool = true, cancellation: RequestCancellation? = nil) throws -> Any {
+    func request(_ path: String, params: [String: String] = [:], method: String = "GET", body: JSONObject? = nil, timeout: TimeInterval? = nil, expectJSON: Bool = true, cancellation: RequestCancellation? = nil) throws -> Any {
         if cancellation?.isCancelled == true { throw URLError(.cancelled) }
         guard path.hasPrefix("/"), !path.hasPrefix("//") else { throw SpotifyFailure(message: "Invalid Spotify request.") }
         let cooldown = dict(readJSON(paths.data.appendingPathComponent("api-cooldown.json")))
@@ -239,6 +251,8 @@ final class SpotifyAPI {
         let url = URL(string: "https://api.spotify.com/v1" + path + (params.isEmpty ? "" : (path.contains("?") ? "&" : "?") + Self.form(params)))!
         for attempt in 0..<2 {
             var request = URLRequest(url: url); request.httpMethod = method
+            if let body = body { request.httpBody = try jsonData(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+            if let timeout = timeout { request.timeoutInterval = timeout }
             request.setValue("Bearer " + (try accessToken(force: attempt == 1)), forHTTPHeaderField: "Authorization")
             let (data, response) = try send(request, cancellation: cancellation)
             if response.statusCode == 401 && attempt == 0 { continue }

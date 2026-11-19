@@ -1,14 +1,68 @@
 # Spotify.alfredworkflow
 
-Search and play your Spotify music via the `spotify` keyword.
+Search and play your Spotify music with the `spot` keyword or <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
 
 ![Spotify Mini Player](./docs/ss.png)
 
+## install
+
+The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
+application.
+
+1. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+
+<PHOTO>
+
+2. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
+   **Spotify Client ID**. Enable **Web API** and set the app’s redirect URI to
+   `http://127.0.0.1:8765/spotify_callback`.
+
+<PHOTO>
+
+3. In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
+
+<PHOTO>
+
+When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access.
+The Mini Player will reopen automatically if successful. If you close the browser tab,
+press Return on **Connecting to Spotify…** to open sign-in again.
+
+If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredworkflow](https://github.com/nhooyr/Spotify.alfredworkflow/issues).
+
+## usage
+
 Browse **Playlists**, **Albums**, **Artists**, and **Songs**, or type to search.
-**Songs** contains your Liked Songs; the **＋/✓** button likes or unlikes the
-current song. Playlists use Spotify’s custom order when available; local search
-prioritises playlists, albums, artists, then songs and reuses cached music.
-Playing a song leaves Spotify in the background.
+You can type or paste these paths directly. Category names accept singular or
+plural forms and ignore case. Named folders resolve from cached music; append
+text after any folder path to filter its contents.
+
+| Typed path | Action |
+| --- | --- |
+| `Playlists/` | Browse your playlists. |
+| `Playlists/<playlist>/` | Browse a playlist’s songs. |
+| `Albums/` | Browse your albums. |
+| `Albums/<album>/` | Browse an album’s songs. |
+| `Artists/` | Browse your artists. |
+| `Artists/<artist>/` | Browse an artist’s albums, or play all their tracks. |
+| `Artists/<artist>/<album>/` | Browse an artist’s album. |
+| `Songs/` | Browse Liked Songs, with **All** at the top. |
+| `Songs/All` | Press Return to play all Liked Songs. |
+| `<playlist>/`, `<album>/`, or `<artist>/` | Open a cached folder directly, as from local search. |
+| `<artist>/<album>/` | Open a cached artist’s album directly. |
+| `/` | Open Spotify catalogue search, ready for a query. |
+| `/query` | Search Spotify’s full catalogue. |
+
+**Songs** contains your Liked Songs; choose **All** at the top to play the collection.
+The **＋/✓** button likes or unlikes the current song. Playlists use Spotify’s custom
+order when available; local search prioritises playlists, albums, artists, then
+songs and reuses cached music.
+For one-track albums, the song appears before its album in search.
+The second header line always shows the current song’s artist and album.
+The third line shows its playback source when known: playlist, album, artist,
+or Liked Songs. This source can stay the same when Spotify continues with autoplay.
+Playback uses the Web API online and starts Spotify automatically when needed.
+Offline, or when the desktop device is unavailable through the API, AppleScript
+handles playback and may bring Spotify forward.
 
 The shuffle button toggles shuffle; repeat cycles **off → all → one**
 ([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
@@ -29,23 +83,28 @@ unused artwork, protecting covers for your saved/downloaded library and anything
 used in the last day. This is a soft limit so needed offline artwork is retained;
 Spotify’s cache is never changed.
 
+The default keyword is `spot`. Change **Keyword** in the Workflow’s Configuration
+to update every command below; for example, `spotify` gives you `spotify shuf`
+and `spotify demo`.
+
 | Keyword | Action |
 | --- | --- |
-| `spotify` | Open the mini player. |
-| `spotify like` | Save the current song to Liked Songs. |
-| `spotify unlike` | Remove the current song from Liked Songs. |
-| `spotify shuffle` | Turn shuffle on. |
-| `spotify sequential` | Turn shuffle off. |
-| `spotify screenshot` | Toggle screenshot mode for macOS’s window picker. |
-| `spotify reauth` | Clear sign-in; reconnect when the player next opens. |
+| `spot` | Open the mini player. |
+| `spot like` | Save the current song to Liked Songs. |
+| `spot unlike` | Remove the current song from Liked Songs. |
+| `spot shuf` | Turn shuffle on. |
+| `spot noshuf` | Turn shuffle off. |
+| `spot demo` | Toggle demo mode for macOS’s window picker. |
+| `spot reauth` | Clear sign-in; reconnect when the player next opens. |
 
-The like, unlike, shuffle and sequential commands set a state rather than toggling it.
+The like, unlike, shuf and noshuf commands set a state rather than toggling it.
 
 * <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd> Open the player (default Hotkey).
-* <kbd>↩</kbd> Browse the selection or play a song.
-* <kbd>⌘</kbd><kbd>1</kbd> … <kbd>⌘</kbd><kbd>9</kbd> Activate one of the first nine results.
+* <kbd>↩</kbd> Browse the selection from its first item, or play a song.
+* <kbd>⌘</kbd><kbd>↓</kbd> Open the selection, restoring its previous selection and filter.
+* <kbd>⌘</kbd><kbd>↑</kbd> Go up one level, restoring the parent selection and filter.
 * <kbd>⌘</kbd><kbd>↩</kbd> Search the full Spotify catalogue.
-* <kbd>⌫</kbd> Delete selected text; at a folder path with no filter, go up one level.
+* <kbd>⌫</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
 * <kbd>⌘</kbd><kbd>R</kbd> Refresh the library and desktop cache index.
 * <kbd>⌘</kbd><kbd>,</kbd> Open the Workflow’s Configuration.
 * <kbd>Esc</kbd> / <kbd>⌘</kbd><kbd>W</kbd> Hide the player.
@@ -53,19 +112,15 @@ The like, unlike, shuffle and sequential commands set a state rather than toggli
 Configure the Hotkey for faster access. Press it again while the player is
 focused to open Spotify. The player stays ready in the background while Alfred
 is running. Reopening selects your filter so typing replaces it; using the results
-or controls clears that selection. Spotify catalogue searches resume in the same mode.
+or controls clears that selection. Editing a filter selects the first result.
+Spotify catalogue searches resume in the same mode.
 
-`spotify screenshot` keeps the player focusable and visible while using macOS’s
+Demo mode (`spot demo`) keeps the player focusable and visible while using macOS’s
 screenshot tool. Run it again, or press Esc in the player, to exit.
 
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and
 selection colours.
 
-In the Workflow’s Configuration, enter your Spotify app’s **Client ID** and set
-its redirect URI to `http://127.0.0.1/spotify_callback` (no port). **Client Secret**
-is optional.
-
-Sign-in opens in your browser automatically; use **Connect** to retry. After `spotify reauth`, choose
-**Open Spotify Mini Player** in Alfred to sign in again. Your Client ID and
-optional Client Secret are kept.
+After `spot reauth`, choose **Open Spotify Mini Player** in Alfred to sign in again.
+Your Spotify Client ID and cached music are kept.

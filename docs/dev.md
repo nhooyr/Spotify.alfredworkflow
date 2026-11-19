@@ -44,6 +44,14 @@ Catalogue normalization and sorting run off the UI thread. Typing narrows the
 previous results when possible, retaining the same Unicode matching and category
 order. Cover images decode off-thread at up to 512 pixels and are cached for reuse.
 Playback commands have their own queue so status polling cannot delay them.
+Selections use the Web API with this Mac’s cached device ID. Spotify starts in
+the background when needed; a cold launch waits briefly for its Connect device.
+Offline playback, unavailable desktop devices, and service outages fall back to
+AppleScript, which may bring Spotify forward. Superseded selections cancel their
+requests. Accessibility and clipboard automation are not used.
+The same playback-state request refreshes repeat mode and the header’s source
+label. Names come from existing metadata or a cached background lookup; source
+metadata on browse rows lets offline selections update the label immediately.
 Automatic refreshes are coalesced for 30 seconds and only rebuild the catalogue
 when data changes; ⌘R always forces a refresh.
 
@@ -52,3 +60,7 @@ scrollbar, and font families. The mini-player layout keeps its own sizes. Built-
 themes fall back to Alfred’s exported background and selection colours with
 contrasting text. Theme changes are checked when opening and while visible;
 active playback controls keep Spotify green.
+
+The bundled Liked Songs cover in `workflow/icons/liked-songs.png` comes from
+[Spotify’s public collection artwork](https://misc.scdn.co/liked-songs/liked-songs-640.png)
+and is available offline without duplicating it in the artwork cache.

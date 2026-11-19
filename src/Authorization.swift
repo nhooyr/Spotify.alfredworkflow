@@ -15,15 +15,23 @@ final class AuthorizationFlow {
     init(_ paths: WorkflowPaths, _ api: SpotifyAPI, browser: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) { self.paths = paths; self.api = api; self.browser = browser }
     deinit { cancel() }
     func cancel() { lock.lock(); let fd = descriptor; descriptor = -1; generation = ""; lock.unlock(); if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd) } }
+    @discardableResult func reopenBrowser(_ completion: @escaping (Bool) -> Void = { _ in }) -> Bool {
+        lock.lock(); let url = descriptor >= 0 ? authorizationURL : nil; lock.unlock()
+        guard let url = url else { return false }
+        DispatchQueue.main.async { [browser] in completion(browser(url)) }
+        return true
+    }
     func start(_ completion: @escaping (Result<Void, Error>) -> Void) throws {
         cancel()
-        let id = paths.credentials().0
-        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Client ID in the Workflow’s Configuration.") }
+        let id = paths.clientID()
+        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Spotify Client ID in the Workflow’s Configuration.") }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SpotifyFailure(message: "Could not start Spotify sign-in.") }
-        var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var reuse: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1"); address.sin_port = UInt16(8765).bigEndian
         let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard bound == 0, listen(fd, 4) == 0 else { Darwin.close(fd); throw SpotifyFailure(message: "Could not open the local sign-in callback.") }
+        guard bound == 0, listen(fd, 4) == 0 else { Darwin.close(fd); throw SpotifyFailure(message: "Could not open sign-in port 8765. Close any other connection attempt and try again.") }
         var size = socklen_t(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &size) } }
         let port = UInt16(bigEndian: address.sin_port), host = "127.0.0.1:\(port)", redirect = "http://\(host)/spotify_callback"
@@ -53,6 +61,7 @@ final class AuthorizationFlow {
             while current() && Date() < deadline {
                 var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
                 if poll(&pollFD, 1, 250) <= 0 { continue }
+                guard current() else { return }
                 let client = accept(fd, nil, nil); if client < 0 { continue }
                 var noSignal: Int32 = 1; setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
                 var timeout = timeval(tv_sec: 2, tv_usec: 0); setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
@@ -80,7 +89,7 @@ final class AuthorizationFlow {
                     respond(client, status: "200 OK", body: error.localizedDescription); Darwin.close(client); self.cancel(); completion(.failure(error)); return
                 }
             }
-            if current() { self.cancel(); completion(.failure(SpotifyFailure(message: "Spotify sign-in timed out. Choose Connect to try again."))) }
+            if current() { self.cancel(); completion(.failure(SpotifyFailure(message: "Spotify sign-in timed out. Press Return to try again."))) }
         }
     }
 }

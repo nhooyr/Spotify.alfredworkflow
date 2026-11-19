@@ -25,9 +25,9 @@ for arch in arm64 x86_64; do
         -module-cache-path "${TMPDIR:-/tmp}/spotify-swift-module-cache" \
         -import-objc-header "$project_dir/src/CacheCodec.h" \
         "$work/main.swift" "$work/Build.swift" \
-        src/version.swift src/Core.swift src/Theme.swift src/Artwork.swift src/Cache.swift src/DesktopMetadata.swift src/Library.swift src/Authorization.swift src/Backend.swift src/Metadata.swift src/Tests.swift \
+        src/version.swift src/Core.swift src/Theme.swift src/Artwork.swift src/Cache.swift src/DesktopMetadata.swift src/Library.swift src/Playback.swift src/Authorization.swift src/Backend.swift src/Metadata.swift src/Tests.swift \
         "$work/zstd-$arch.o" "$work/codec-$arch.o" \
-        -framework AppKit -framework ImageIO -framework Carbon -framework Security -lsqlite3 -lz -o "$work/player-$arch"
+        -framework AppKit -framework ImageIO -framework Carbon -framework Security -framework SystemConfiguration -framework Network -lsqlite3 -lz -o "$work/player-$arch"
     xcrun clang -Os -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 \
         "-DBUILD_ID=\"$identifier\"" src/launcher.c -o "$work/show-$arch"
 done

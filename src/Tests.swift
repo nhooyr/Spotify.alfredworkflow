@@ -47,6 +47,204 @@ private final class OfflineURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private func requestBody(_ request: URLRequest) -> Data {
+    if let data = request.httpBody { return data }
+    guard let stream = request.httpBodyStream else { return Data() }
+    stream.open(); defer { stream.close() }
+    var result = Data(), bytes = [UInt8](repeating: 0, count: 1024)
+    while true {
+        let count = stream.read(&bytes, maxLength: bytes.count)
+        if count <= 0 { break }
+        result.append(contentsOf: bytes.prefix(count))
+    }
+    return result
+}
+
+private func testPlaybackContexts() throws {
+    let root = tempDirectory("spotify-context-tests-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+                                                       "alfred_workflow_cache": root.appendingPathComponent("cache").path])
+    try paths.prepare()
+    let client = String(repeating: "a", count: 32)
+    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": client], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
+    let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
+    let api = SpotifyAPI(paths, session: URLSession(configuration: config)), library = MusicLibrary(store, api)
+    try writeJSON(["client_id": client, "access_token": "test", "refresh_token": "test", "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes], api.tokenURL)
+    let playlist = "spotify:playlist:" + String(repeating: "p", count: 22)
+    let album = "spotify:album:" + String(repeating: "a", count: 22)
+    let artist = "spotify:artist:" + String(repeating: "r", count: 22)
+    let track = "spotify:track:" + String(repeating: "t", count: 22)
+    let outside = "spotify:playlist:" + String(repeating: "x", count: 22)
+    let forbidden = "spotify:playlist:" + String(repeating: "f", count: 22)
+    var requests = 0
+    TestURLProtocol.response = { request in
+        requests += 1
+        check(request.url!.host == "api.spotify.com", "Context metadata stays on Spotify's API")
+        if request.url!.path.hasSuffix(String(repeating: "f", count: 22)) || request.url!.path.hasSuffix("/items") { return (403, Data()) }
+        return (200, try! jsonData(["name": "Outside playlist"]))
+    }
+    defer { TestURLProtocol.response = nil }
+    for item: JSONObject in [["uri": playlist, "kind": "playlist", "name": "My Playlist", "image": "https://i.scdn.co/image/playlist-cover"],
+                             ["uri": album, "kind": "album", "name": "My Album", "image": "https://i.scdn.co/image/album-cover"],
+                             ["uri": artist, "kind": "artist", "name": "My Artist", "image": "https://i.scdn.co/image/artist-cover"],
+                             ["uri": track, "kind": "track", "name": "Song", "album": ["uri": album, "name": "My Album"]]] { try store.putItem(item) }
+    try store.save(track, liked: true)
+    func state(_ uri: String) -> JSONObject { ["context": ["uri": uri], "item": ["uri": track]] }
+    for (uri, label) in [(playlist, "Playlist · My Playlist"), (album, "Album · My Album"), (artist, "Artist · My Artist")] {
+        check(library.playbackContext(state(uri), network: true)?.label == label, "Cached playback context has its type and name")
+    }
+    check(requests == 0, "Existing context metadata needs no network request")
+    for uri in ["spotify:collection:tracks", "spotify:user:fixture:collection"] {
+        check(library.playbackContext(state(uri), network: true)?.label == "Liked Songs", "Liked Songs collection context is recognized")
+    }
+    let snapshotAlbum = "spotify:album:" + String(repeating: "b", count: 22)
+    let snapshotArtist = "spotify:artist:" + String(repeating: "k", count: 22)
+    check(library.playbackContext(["context": ["uri": snapshotAlbum], "item": ["album": ["uri": snapshotAlbum, "name": "Current Album"]]])?.name == "Current Album", "Playback state supplies uncached album names")
+    check(library.playbackContext(["context": ["uri": snapshotArtist], "item": ["artists": [["uri": snapshotArtist, "name": "Current Artist"]]]])?.name == "Current Artist", "Playback state supplies uncached artist names")
+    check(library.playbackContext(["item": ["album": ["uri": album, "name": "My Album"]]]) == nil, "No context is invented from a track's album")
+    check(library.playbackContext(state("https://untrusted.example/context"), network: true) == nil && requests == 0, "Unsupported context identifiers are ignored")
+    check(library.playbackContext(state(outside))?.label == "Playlist" && requests == 0, "Unknown context names display their type without blocking")
+    check(library.playbackContext(state(outside), network: true)?.label == "Playlist · Outside playlist" && requests == 1, "Unknown context name resolves once")
+    check(library.playbackContext(state(outside))?.name == "Outside playlist", "Resolved context names remain available offline")
+    _ = library.playbackContext(state(outside), network: true)
+    check(requests == 1, "Resolved context metadata is reused")
+    _ = library.playbackContext(state(forbidden), network: true)
+    _ = library.playbackContext(state(forbidden), network: true)
+    check(requests == 2 && library.playbackContext(state(forbidden))?.label == "Playlist", "Unavailable metadata is cached without repeated failed requests")
+    let songs = try library.browse(["kind": "songs"])
+    check(text(songs.first?["name"]) == "All" && text(songs.first?["action"]) == "play"
+          && text(songs.first?["play_uri"]) == PlaybackContext.likedSongs.uri, "Songs starts with an action for the full Liked Songs collection")
+    check(songs.filter { text($0["kind"]) == "track" }.map { text($0["uri"]) } == [track], "All does not replace saved songs or inflate the song count")
+    check(songs.allSatisfy { PlaybackContext(dict($0["playback_context"]))?.label == "Liked Songs" && text($0["context"]).isEmpty }, "Saved-song source does not invent an API playback context")
+    let albums = try library.browse(["kind": "album", "uri": album])
+    check(albums.count == 2 && albums.allSatisfy { PlaybackContext(dict($0["playback_context"]))?.label == "Album · My Album" }, "Album play action and track rows carry the cached source")
+    let artists = try library.browse(["kind": "artist", "uri": artist, "name": "My Artist"])
+    check(PlaybackContext(dict(artists.first?["playback_context"]))?.label == "Artist · My Artist", "Artist play action carries its source")
+    check(text(albums.first?["image"]) == "https://i.scdn.co/image/album-cover", "Album play row preserves its cover")
+    check(text(artists.first?["image"]) == "https://i.scdn.co/image/artist-cover", "Artist play row preserves its portrait")
+    let playlists = try library.browse(["kind": "playlist", "uri": playlist])
+    check(text(playlists.first?["image"]) == "https://i.scdn.co/image/playlist-cover", "Playlist play row preserves its cover")
+    let restricted = try library.browse(["kind": "playlist", "uri": playlist], network: true)
+    check(text(restricted.first?["image"]) == "https://i.scdn.co/image/playlist-cover" && text(restricted.first?["play_uri"]) == playlist, "A restricted playlist retains its cover and playable context")
+    let routeOnly = try library.browse(["kind": "album", "uri": "spotify:album:" + String(repeating: "e", count: 22), "name": "Route Album", "image": "https://i.scdn.co/image/route-cover"])
+    check(text(routeOnly.first?["image"]) == "https://i.scdn.co/image/route-cover", "An album reached through nested metadata retains its cover")
+    print("Playback context and play-row cover checks passed: albums, playlists, artists, restricted playlists, and nested metadata.")
+}
+
+private func testWebPlayback() throws {
+    let root = tempDirectory("spotify-playback-tests-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+                                                       "alfred_workflow_cache": root.appendingPathComponent("cache").path])
+    try paths.prepare()
+    let client = String(repeating: "a", count: 32)
+    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": client], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
+    let api = SpotifyAPI(paths, session: URLSession(configuration: config))
+    try writeJSON(["client_id": client, "access_token": "test", "refresh_token": "test", "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes], api.tokenURL)
+    let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+    var deviceRequests = 0, emptyDevices = 0, profileRequests = 0
+    var deviceID = "desktop", response = 204
+    var bodies: [JSONObject] = [], targets: [String] = []
+    var waits: [TimeInterval] = []
+    TestURLProtocol.response = { request in
+        switch request.url!.path {
+        case "/v1/me":
+            profileRequests += 1
+            return (200, try! jsonData(["id": "fixture"]))
+        case "/v1/me/player/devices":
+            deviceRequests += 1
+            if emptyDevices > 0 { emptyDevices -= 1; return (200, try! jsonData(["devices": []])) }
+            return (200, try! jsonData(["devices": [
+                ["id": "phone", "name": "Phone", "type": "Smartphone", "is_active": true],
+                ["id": "remote", "name": "Another Mac", "type": "Computer"],
+                ["id": deviceID, "name": "Test Mac", "type": "Computer"],
+            ]]))
+        case "/v1/me/player/play":
+            check(request.httpMethod == "PUT" && request.value(forHTTPHeaderField: "Content-Type") == "application/json", "Playback sends a JSON PUT")
+            bodies.append(dict(try! JSONSerialization.jsonObject(with: requestBody(request))))
+            targets.append(request.url!.queryItemsForTesting.first { $0.name == "device_id" }?.value ?? "")
+            return (response, response == 200 ? Data("command-id".utf8) : Data())
+        default: return (500, Data())
+        }
+    }
+    defer { TestURLProtocol.response = nil }
+    let playback = WebPlayback(api, store: store, computerName: "Test Mac", online: { true }, wait: { waits.append($0) })
+    let track = "spotify:track:" + String(repeating: "t", count: 22)
+    let playlist = "spotify:playlist:" + String(repeating: "p", count: 22)
+    let album = "spotify:album:" + String(repeating: "a", count: 22)
+    let artist = "spotify:artist:" + String(repeating: "r", count: 22)
+    playback.prepare()
+    try playback.play(track)
+    check((bodies.last?["uris"] as? [String]) == [track] && bodies.last?["context_uri"] == nil, "Standalone track plays without an invented context")
+    try playback.play(track, context: playlist)
+    check(text(bodies.last?["context_uri"]) == playlist && text(dict(bodies.last?["offset"])["uri"]) == track, "Playlist track preserves its queue and selected offset")
+    try playback.play(track, context: album)
+    check(text(bodies.last?["context_uri"]) == album, "Album track preserves its album context")
+    for uri in [playlist, album, artist] {
+        try playback.play(uri)
+        check(text(bodies.last?["context_uri"]) == uri && bodies.last?["uris"] == nil && bodies.last?["offset"] == nil, "Context playback supports playlists, albums, and artists")
+    }
+    check(deviceRequests == 1 && targets.allSatisfy { $0 == "desktop" }, "Playback caches this Mac's device instead of targeting an active phone")
+    let collection = "spotify:user:fixture:collection"
+    check(WebPlayback.collectionURI(userID: "fixture/name with space") == "spotify:user:fixture%2Fname%20with%20space:collection", "Collection account IDs are URI-encoded")
+    check(WebPlayback.collectionURI(userID: "") == nil && validPlaybackURI(collection)
+          && validPlaybackURI(PlaybackContext.likedSongs.uri) && !validPlaybackURI("https://example.com/collection"), "Only supported playback identifiers are accepted")
+    try playback.play(PlaybackContext.likedSongs.uri)
+    try playback.play(PlaybackContext.likedSongs.uri)
+    check(profileRequests == 1 && text(bodies.last?["context_uri"]) == collection && bodies.last?["uris"] == nil, "All plays the full collection and reuses the account ID")
+    let reopened = WebPlayback(api, store: store, computerName: "Test Mac", online: { true }, desktopUserID: { nil })
+    try reopened.play(PlaybackContext.likedSongs.uri)
+    check(profileRequests == 1, "The collection account ID survives reopening")
+    let beforeOffline = bodies.count
+    let offlineCollection = WebPlayback(api, store: store, online: { false }, desktopUserID: { nil })
+    do { try offlineCollection.play(PlaybackContext.likedSongs.uri); check(false, "Offline collection uses the local fallback") }
+    catch { check(WebPlayback.shouldUseAppleScript(error) && bodies.count == beforeOffline && profileRequests == 1, "Offline collection does not wait for the network") }
+    let cachedCollection = try offlineCollection.fallbackURI(PlaybackContext.likedSongs.uri)
+    check(cachedCollection == collection, "Offline collection can use its persisted account ID")
+    let localAccount = WebPlayback(api, online: { false }, desktopUserID: { "desktop-fixture" })
+    let desktopCollection = try localAccount.fallbackURI(PlaybackContext.likedSongs.uri)
+    check(desktopCollection == "spotify:user:desktop-fixture:collection", "Offline collection can use Spotify's desktop account")
+    let emptyAccount = WebPlayback(api, online: { false }, desktopUserID: { nil })
+    do { _ = try emptyAccount.fallbackURI(PlaybackContext.likedSongs.uri); check(false, "A missing account must produce an actionable error") }
+    catch { check(error.localizedDescription.contains("Spotify desktop app"), "Missing account explains how to play the collection") }
+    let prefs = root.appendingPathComponent("spotify-prefs")
+    try Data("autologin.username=\"email@example.com\"\nautologin.canonical_username=\"desktop-fixture\"\n".utf8).write(to: prefs)
+    check(DesktopAccount.userID(at: prefs) == "desktop-fixture", "Desktop account reads the canonical ID instead of an email")
+    try Data("autologin.username=\"email@example.com\"\n".utf8).write(to: prefs)
+    check(DesktopAccount.userID(at: prefs) == nil, "An email is not guessed to be a collection account ID")
+    response = 200; try playback.play(track)
+    check(bodies.last?["position_ms"] as? Int == 0, "Playback accepts command-ID responses and starts at the beginning")
+    emptyDevices = 2; deviceID = "restarted-desktop"
+    try playback.play(track, recentlyLaunched: true)
+    check(waits.count == 2 && targets.last == "restarted-desktop", "A newly launched Spotify gets time to register its desktop device")
+    response = 403
+    do { try playback.play(track); check(false, "Playback must retain API errors") }
+    catch { check(!WebPlayback.shouldUseAppleScript(error), "Permission failures do not silently activate Spotify") }
+    response = 404
+    do { try playback.play(track); check(false, "Unavailable desktop device should fall back") }
+    catch { check(WebPlayback.shouldUseAppleScript(error), "Unavailable desktop device allows the local fallback") }
+    let requests = deviceRequests
+    let offline = WebPlayback(api, computerName: "Test Mac", online: { false })
+    do { try offline.play(track); check(false, "Offline playback must use the local fallback") }
+    catch { check(WebPlayback.shouldUseAppleScript(error) && deviceRequests == requests, "Offline playback immediately falls back without a network request") }
+    let cancellation = RequestCancellation(); cancellation.cancel()
+    do { try playback.play(track, cancellation: cancellation); check(false, "A superseded selection must not play") }
+    catch { check((error as? URLError)?.code == .cancelled && !WebPlayback.shouldUseAppleScript(error), "A superseded selection cannot trigger the local fallback") }
+    let offlineConfig = URLSessionConfiguration.ephemeral; offlineConfig.protocolClasses = [OfflineURLProtocol.self]
+    let failedNetwork = WebPlayback(SpotifyAPI(paths, session: URLSession(configuration: offlineConfig)), computerName: "Test Mac", online: { true })
+    do { try failedNetwork.play(track); check(false, "Network outage must use the local fallback") }
+    catch { check(WebPlayback.shouldUseAppleScript(error), "Transport failures allow the local fallback") }
+    check(!WebPlayback.shouldUseAppleScript(SpotifyFailure(message: "Rate limited", status: 429)), "Rate limits remain visible API failures")
+    do { try playback.play("invalid"); check(false, "Invalid playback URI must be rejected") }
+    catch { check(!WebPlayback.shouldUseAppleScript(error), "Invalid selections do not reach AppleScript") }
+    try NativeBackend.clearConnection(paths)
+    check(store.get("playback:liked-songs-uri", stale: true) == nil, "Reauth clears the previous account's collection ID")
+    print("Web playback targeting, full Liked Songs collection, startup, cancellation, and offline fallback passed.")
+}
+
 private func writeTable(_ records: [(Data, Data)], to file: URL) throws {
     var data = Data(), index = Data()
     for (key, value) in records.sorted(by: { $0.0.lexicographicallyPrecedes($1.0) }) {
@@ -61,7 +259,109 @@ private func writeTable(_ records: [(Data, Data)], to file: URL) throws {
     try (data + index + Data(repeating: 0, count: 5) + footer).write(to: file)
 }
 
+private func testWorkflowKeyword() throws {
+    let root = tempDirectory("spotify-keyword-tests-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+                                                       "alfred_workflow_cache": root.appendingPathComponent("cache").path])
+    try paths.prepare()
+    check(paths.keyword(environment: [:]) == "spot", "Default command prefix is spot")
+    check(paths.keyword(environment: ["keyword": " spotify "]) == "spotify", "Alfred's configured keyword is used and trimmed")
+    func save(_ keyword: String) throws {
+        try PropertyListSerialization.data(fromPropertyList: ["keyword": keyword], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
+    }
+    try save("music")
+    check(paths.keyword(environment: ["keyword": "old"]) == "music" && paths.command("reauth") == "music reauth", "Saved keyword overrides a warm process's old environment")
+    let api = SpotifyAPI(paths), store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3")), library = MusicLibrary(store, api)
+    for command in ["state", "repeat", "like", "play"] {
+        do {
+            switch command {
+            case "state": _ = try api.playbackState()
+            case "repeat": try api.setRepeat(.context)
+            case "like": try library.setLiked("spotify:track:" + String(repeating: "t", count: 22), liked: true)
+            default: try WebPlayback(api, online: { true }).play("spotify:track:" + String(repeating: "t", count: 22))
+            }
+            check(false, "Missing playback scopes must produce an actionable error")
+        } catch { check(error.localizedDescription.contains("music reauth"), "Reauth guidance follows the customized keyword") }
+    }
+    try save(" ")
+    check(paths.keyword(environment: ["keyword": "old"]) == "spot", "Clearing a keyword restores the default")
+    print("Shared keyword checks passed: defaults, preferences, live changes, and customized reauth guidance.")
+}
+
+private func testPlaintextPaths() throws {
+    let root = tempDirectory("spotify-path-tests-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+                                                       "alfred_workflow_cache": root.appendingPathComponent("cache").path])
+    try paths.prepare()
+    let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [OfflineURLProtocol.self]
+    let library = MusicLibrary(store, SpotifyAPI(paths, session: URLSession(configuration: config)))
+    let artistURI = "spotify:artist:" + String(repeating: "r", count: 22)
+    let albumURI = "spotify:album:" + String(repeating: "a", count: 22)
+    let playlistURI = "spotify:playlist:" + String(repeating: "p", count: 22)
+    let trackURI = "spotify:track:" + String(repeating: "t", count: 22)
+    let album: JSONObject = ["uri": albumURI, "kind": "album", "name": "Side / A", "artists": [["uri": artistURI, "name": "AC/DC"]]]
+    let artist: JSONObject = ["uri": artistURI, "kind": "artist", "name": "AC/DC", "albums": [album]]
+    let playlist: JSONObject = ["uri": playlistURI, "kind": "playlist", "name": "Road / Trip"]
+    let track: JSONObject = ["uri": trackURI, "kind": "track", "name": "Song", "album": album]
+    for item in [artist, album, playlist, track] { try store.putItem(item); try store.save(text(item["uri"]), liked: true) }
+    let requests = OfflineURLProtocol.requests
+    for (name, kind) in [("Playlists", "playlists"), ("Albums", "albums"), ("Artists", "artists"), ("Songs", "songs")] {
+        for spelling in [name, name.lowercased(), String(name.dropLast())] {
+            let input = spelling + "/filter"
+            let resolved = try library.resolvePath(input)
+            check(resolved.routes.count == 1 && text(resolved.routes[0]["kind"]) == kind, "Typed category paths and singular aliases select the correct view")
+            check(String(input.dropFirst(resolved.consumed.count)) == "filter", "Typed category filters stay separate from the folder path")
+            let rows = try library.browse(resolved.routes.last!)
+            check(!rows.isEmpty, "Typed category paths use the actual saved library")
+        }
+    }
+    let nested = "Artists/AC/DC/Side / A/Song"
+    let resolved = try library.resolvePath(nested)
+    check(resolved.routes.map { text($0["kind"]) } == ["artists", "artist", "album"]
+          && text(resolved.routes.last?["uri"]) == albumURI
+          && resolved.consumed == "Artists/AC/DC/Side / A/", "Typed nested paths support slashes inside artist and album names")
+    check(String(nested.dropFirst(resolved.consumed.count)) == "Song", "Nested paths leave a filter for the final view")
+    let direct = try library.resolvePath("Side / A/")
+    check(direct.routes.count == 1 && text(direct.routes.last?["uri"]) == albumURI, "A breadcrumb opened from search can be typed directly")
+    let playlistPath = try library.resolvePath("Playlists/Road / Trip/")
+    check(text(playlistPath.routes.last?["uri"]) == playlistURI, "Playlist paths preserve names containing slashes")
+    let partial = try library.resolvePath("Artists/AC/D")
+    check(partial.routes.count == 1 && partial.consumed == "Artists/", "Incomplete folder names remain filters until their delimiter is entered")
+    let unknown = try library.resolvePath("Unknown/Album/")
+    check(unknown.routes.isEmpty && unknown.consumed.isEmpty, "An unknown path remains a literal local query")
+    let all = try library.resolvePath("Songs/All/")
+    check(all.routes.count == 1, "Typing a play action never starts playback or turns it into a folder")
+    check(OfflineURLProtocol.requests == requests, "Typed paths resolve from cached metadata without HTTP requests")
+    print("Plaintext paths passed: all categories, aliases, nested folders, slash names, filters, and offline resolution.")
+}
+
+private func testAlbumTrackCounts() {
+    let albumURI = "spotify:album:" + String(repeating: "a", count: 22)
+    let api = fromAPI(["uri": albumURI, "name": "Single", "total_tracks": 1], kind: "album")!
+    check(number(api["total"]) == 1, "API album track count survives normalization")
+    let track: JSONObject = ["gid": String(repeating: "01", count: 16), "name": "Song"]
+    let stub: JSONObject = ["gid": String(repeating: "02", count: 16)]
+    let album: JSONObject = ["gid": String(repeating: "03", count: 16), "name": "Album"]
+    let single = fromDesktop(album.merging(["disc": [["track": [track]]]]) { _, new in new }, kind: "album")!
+    let multiple = fromDesktop(album.merging(["disc": [["track": [track]], ["track": [stub]]]]) { _, new in new }, kind: "album")!
+    check(number(single["total"]) == 1 && number(multiple["total"]) == 2, "Desktop album totals count all discs, including incomplete track metadata")
+    check((multiple["tracks"] as? [JSONObject])?.count == 1 && fromDesktop(album, kind: "album")?["total"] == nil, "Partial track details and unknown album totals are distinct")
+    let base = proto(1, Data(repeating: 3, count: 16)) + proto(2, Data("Album".utf8))
+    let song = proto(1, Data(repeating: 1, count: 16)) + proto(2, Data("Song".utf8))
+    let incomplete = proto(1, Data(repeating: 2, count: 16))
+    let singleProto = fromProto(base + proto(11, proto(1, song)), kind: "album")!
+    let multipleProto = fromProto(base + proto(11, proto(1, song)) + proto(11, proto(1, incomplete)), kind: "album")!
+    check(number(singleProto["total"]) == 1 && number(multipleProto["total"]) == 2
+          && (multipleProto["tracks"] as? [JSONObject])?.count == 1, "Protobuf album totals do not undercount incomplete track records")
+    check(fromProto(base, kind: "album")?["total"] == nil, "A protobuf album without disc metadata has an unknown count")
+    print("Album track counts passed: API, desktop JSON, protobuf, multiple discs, and incomplete metadata.")
+}
+
 private func testOfflineCache() throws {
+    OfflineURLProtocol.requests = 0
     let root = tempDirectory("spotify-offline-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("http").path])
@@ -191,13 +491,19 @@ private func testThemes() {
 }
 
 func runModelTests() {
+    do { try testWorkflowKeyword() } catch { check(false, "Shared keyword: " + error.localizedDescription) }
+    do { try testPlaintextPaths() } catch { check(false, "Plaintext paths: " + error.localizedDescription) }
+    testAlbumTrackCounts()
+    do { try testPlaybackContexts() } catch { check(false, "Playback context tests: " + error.localizedDescription) }
+    do { try testWebPlayback() } catch { check(false, "Web playback tests: " + error.localizedDescription) }
+
     do { try testOfflineCache() } catch { fputs("FAILED: offline cache: \(error)\n", stderr); exit(1) }
     testThemes()
     let root = tempDirectory("spotify-model-tests-"); defer { try? FileManager.default.removeItem(at: root) }
     do {
         let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path])
         try paths.prepare()
-        try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "SPOTIFY_CLIENT_SECRET": "test-secret"], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
+        try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32)], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
         let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
         let api = SpotifyAPI(paths, session: URLSession(configuration: config)), library = MusicLibrary(store, api)
@@ -307,9 +613,9 @@ func runModelTests() {
         check(!store.isSaved(text(track["uri"])), "An in-flight library refresh cannot re-like a removed song")
         staleLibrary = false
         var token = dict(readJSON(api.tokenURL)); token["scope"] = "user-library-read"; try writeJSON(token, api.tokenURL)
-        do { try library.setLiked(text(track["uri"]), liked: true); check(false, "Save must require granted scope") } catch { check(error.localizedDescription.contains("spotify reauth"), "Save permission error is actionable") }
+        do { try library.setLiked(text(track["uri"]), liked: true); check(false, "Save must require granted scope") } catch { check(error.localizedDescription.contains(paths.command("reauth")), "Save permission error is actionable") }
         do { try api.setRepeat(.context); check(false, "Repeat must require playback scope") }
-        catch { check(error.localizedDescription.contains("spotify reauth"), "Repeat explains the missing playback permission") }
+        catch { check(error.localizedDescription.contains(paths.command("reauth")), "Repeat explains the missing playback permission") }
         token["expires_at"] = 0; try writeJSON(token, api.tokenURL)
         _ = try api.accessToken()
         check(tokenRequests == 2, "Refresh PKCE without client authentication")
@@ -337,13 +643,18 @@ func runModelTests() {
         check(finishedSearch.wait(timeout: .now() + 2) == .success && cancelledInFlight, "Superseded in-flight search cancels immediately")
         try NativeBackend.clearConnection(paths)
         check(!api.connected && store.items().count == 5, "Reauth preserves music metadata")
-        check(paths.credentials().0 == String(repeating: "a", count: 32), "Reauth preserves Client ID")
+        check(paths.clientID() == String(repeating: "a", count: 32), "Reauth preserves Client ID")
         check(homeItems.map { text($0["name"]) } == ["Playlists", "Albums", "Artists", "Songs", "Spotify"], "Menu priority")
         let finished = DispatchSemaphore(value: 0)
         var connected = false
-        let flow = AuthorizationFlow(paths, api, browser: { _ in true })
+        var browserURLs: [URL] = []
+        let flow = AuthorizationFlow(paths, api, browser: { browserURLs.append($0); return true })
         try flow.start { result in if case .success = result { connected = true }; finished.signal() }
+        check(flow.reopenBrowser(), "A pending sign-in can reopen its browser")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+        check(browserURLs.count == 2 && browserURLs[0] == browserURLs[1], "Reopening sign-in reuses the pending state and callback")
         let query = Dictionary(flow.authorizationURL!.queryItemsForTesting.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+        check(query["redirect_uri"] == "http://127.0.0.1:8765/spotify_callback", "Sign-in uses the registered fixed-port callback")
         func callback(_ state: String) -> Int {
             var url = URLComponents(string: query["redirect_uri"]!)!
             url.queryItems = [URLQueryItem(name: "state", value: state), URLQueryItem(name: "code", value: "test-code")]
@@ -354,6 +665,7 @@ func runModelTests() {
         check(callback("invalid") == 400 && !api.connected, "Reject invalid callback state")
         check(callback(query["state"]!) == 200, "Accept valid loopback callback")
         check(finished.wait(timeout: .now() + 2) == .success && connected && api.connected, "PKCE callback returns a usable native connection")
+        check(!flow.reopenBrowser(), "Completed sign-in does not reopen an expired browser URL")
         if ProcessInfo.processInfo.environment["SPOTIFY_TEST_REAL_CACHE"] == "1", let directory = PlaylistOrder.desktopDirectory() {
             let start = Date(), order = PlaylistOrder.read(directory)
             check(!(order ?? []).isEmpty, "Read real desktop custom order")
@@ -389,8 +701,24 @@ func runIntegrationTests() {
     let executable = currentExecutable(), workflow = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let info = try! PropertyListSerialization.propertyList(from: Data(contentsOf: workflow.appendingPathComponent("info.plist")), format: nil) as! JSONObject
     let objects = info["objects"] as! [JSONObject]
+    let settings = info["userconfigurationconfig"] as? [JSONObject] ?? []
+    check(settings.map { text($0["variable"]) } == ["SPOTIFY_CLIENT_ID", "keyword"], "Client ID and the shared keyword are the only settings")
+    check(text(settings.first?["label"]) == "Spotify Client ID", "Connection setting is labelled Spotify Client ID")
+    let keywordSetting = settings.first { text($0["variable"]) == "keyword" }
+    check(text(dict(keywordSetting?["config"])["default"]) == "spot" && dict(keywordSetting?["config"])["trim"] as? Bool == true, "The shared keyword defaults to spot and trims whitespace")
     let keywords = objects.compactMap { dict($0["config"])["keyword"] as? String }
-    for command in ["like", "unlike", "shuffle", "sequential", "screenshot"] { check(keywords.contains("spotify " + command), "Alfred keyword for " + command) }
+    check(keywords.contains("{var:keyword}") && keywords.contains("{var:keyword} reauth"), "Opening and reauth use the shared keyword")
+    for (verb, suffix) in [("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "noshuf"), ("screenshot", "demo")] {
+        let input = objects.first { text($0["uid"]) == "COMMAND_" + verb.uppercased() }
+        let action = objects.first { text($0["uid"]) == "ACTION_" + verb.uppercased() }
+        check(text(dict(input?["config"])["keyword"]) == "{var:keyword} " + suffix, "Short keyword inherits its prefix: " + suffix)
+        check(text(dict(action?["config"])["script"]) == "exec ./show --" + verb, "Short keyword preserves its action: " + suffix)
+    }
+    for prefix in ["spot", "spotify", "music"] {
+        let resolved = keywords.map { $0.replacingOccurrences(of: "{var:keyword}", with: prefix) }
+        check(Set(resolved) == Set([prefix, prefix + " reauth", prefix + " like", prefix + " unlike", prefix + " shuf", prefix + " noshuf", prefix + " demo"]), "Changing one keyword updates every command")
+    }
+    check(keywords.allSatisfy { $0.hasPrefix("{var:keyword}") }, "No input hardcodes a separate command prefix")
     check(Set(objects.map { text($0["uid"]) }).count == objects.count, "Workflow object identifiers remain unique")
     check(!objects.contains { text($0["type"]) == "alfred.workflow.output.notification" }, "Reauth has no notification output")
     let feedback = objects.first { text($0["uid"]) == "REAUTH_RESULT" }
@@ -408,7 +736,7 @@ func runIntegrationTests() {
     env["alfred_workflow_cache"] = root.appendingPathComponent("cache").path
     env["SPOTIFY_DESKTOP_CACHE"] = root.appendingPathComponent("desktop").path
     env["SPOTIFY_DESKTOP_USER_CACHE"] = root.appendingPathComponent("empty").path
-    env["SPOTIFY_CLIENT_ID"] = ""; env["SPOTIFY_CLIENT_SECRET"] = ""
+    env["SPOTIFY_CLIENT_ID"] = ""
     env["alfred_theme"] = "theme.custom.quoted\"\\name\nfixture"
     let ready = dict(try! JSONSerialization.jsonObject(with: Data(run(executable, ["--reauth-result"], environment: env).utf8)))
     check(((ready["items"] as? [JSONObject])?.first?["title"] as? String) == "Open Spotify Mini Player", "Inline reauth CLI emits valid Alfred JSON")
@@ -439,7 +767,7 @@ func runIntegrationTests() {
     for _ in 0..<50 { let start = DispatchTime.now().uptimeNanoseconds; spawnClient(workflow.appendingPathComponent("show"), environment: env); timings.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
     check(number(request("state")["pid"]) == number(initial["pid"]), "Hotkey keeps the same process")
     check(dict(request("state")["theme"])["id"] as? String == env["alfred_theme"], "C launcher safely forwards theme context")
-    for command in ["test-ui", "test-editing", "test-navigation", "test-controls", "test-repeat", "test-theme", "test-screenshot-mode", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
+    for command in ["test-ui", "test-editing", "test-navigation", "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui", "test-controls", "test-repeat", "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
         let initial = request(command)
         var result = initial
         let deadline = Date().addingTimeInterval(3)
@@ -452,13 +780,13 @@ func runIntegrationTests() {
         print("\(command): \(String(decoding: try! jsonData(result), as: UTF8.self))")
     }
     let showsBeforeCommands = number(request("state")["shows"])
-    for (command, key, expected) in [("like", "liked", true), ("unlike", "liked", false), ("shuffle", "shuffling", true), ("sequential", "shuffling", false)] {
+    for (command, key, expected) in [("like", "liked", true), ("unlike", "liked", false), ("shuffle", "shuffling", true), ("noshuffle", "shuffling", false)] {
         spawnClient(workflow.appendingPathComponent("show"), ["--" + command], environment: env)
         spawnClient(workflow.appendingPathComponent("show"), ["--" + command], environment: env)
         check(request("state")[key] as? Bool == expected, "Repeated " + command + " command is idempotent")
     }
     check(number(request("state")["shows"]) == showsBeforeCommands, "State commands do not open the player")
-    print("Idempotent like, unlike, shuffle, and sequential launcher commands passed.")
+    print("Idempotent like, unlike, shuffle, and noshuffle launcher commands passed.")
     spawnClient(workflow.appendingPathComponent("show"), ["--screenshot"], environment: env)
     check(request("state")["screenshot_mode"] as? Bool == true, "Screenshot command enables persistent visibility")
     _ = request("hide")

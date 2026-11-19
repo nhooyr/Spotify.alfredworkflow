@@ -86,7 +86,9 @@ func fromDesktop(_ value: JSONObject, kind: String, depth: Int = 0) -> JSONObjec
         item["duration_ms"] = value["duration"]; item["track_number"] = value["number"]; item["disc_number"] = value["disc_number"]
     } else if kind == "album" {
         item["year"] = dict(value["date"])["year"].map { String(describing: $0) } ?? ""
-        var tracks = (value["disc"] as? [JSONObject] ?? []).flatMap { $0["track"] as? [JSONObject] ?? [] }.compactMap { fromDesktop($0, kind: "track", depth: depth + 1) }
+        let entries = (value["disc"] as? [JSONObject] ?? []).flatMap { $0["track"] as? [JSONObject] ?? [] }
+        if !entries.isEmpty { item["total"] = entries.count }
+        var tracks = entries.compactMap { fromDesktop($0, kind: "track", depth: depth + 1) }
         for i in tracks.indices { tracks[i]["album"] = item; tracks[i]["image"] = item["image"] }
         item["tracks"] = tracks
     } else if kind == "artist" {
@@ -112,7 +114,9 @@ func fromProto(_ data: Data, kind: String, depth: Int = 0) -> JSONObject? {
     if kind == "album" {
         let year = p.values[6]?.first.flatMap { try? Proto($0).integers[1]?.first } ?? 0
         item["year"] = String(year >> 1)
-        var tracks = (p.values[11] ?? []).flatMap { (try? Proto($0).values[1]) ?? [] }.compactMap { fromProto($0, kind: "track", depth: depth + 1) }
+        let entries = (p.values[11] ?? []).flatMap { (try? Proto($0).values[1]) ?? [] }
+        if !entries.isEmpty { item["total"] = entries.count }
+        var tracks = entries.compactMap { fromProto($0, kind: "track", depth: depth + 1) }
         for i in tracks.indices { tracks[i]["album"] = item; tracks[i]["image"] = item["image"] }
         item["tracks"] = tracks
     }

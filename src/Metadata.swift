@@ -5,7 +5,18 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     var workflow = try PropertyListSerialization.propertyList(from: original, format: nil) as! JSONObject
     workflow["version"] = workflowVersion
     workflow["readme"] = try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8)
+    var settings = workflow["userconfigurationconfig"] as? [JSONObject] ?? []
+    settings.removeAll { text($0["variable"]) == "keyword" }
+    settings.append(["variable": "keyword", "label": "Keyword", "type": "textfield",
+                     "description": "Shared prefix for every command. Set to spotify if you prefer.",
+                     "config": ["default": defaultWorkflowKeyword, "placeholder": "", "required": false, "trim": true]])
+    workflow["userconfigurationconfig"] = settings
     var objects = workflow["objects"] as! [JSONObject]
+    for i in objects.indices where ["OPEN", "REAUTH"].contains(text(objects[i]["uid"])) {
+        var config = dict(objects[i]["config"])
+        config["keyword"] = "{var:keyword}" + (text(objects[i]["uid"]) == "REAUTH" ? " reauth" : "")
+        objects[i]["config"] = config
+    }
     for i in objects.indices where text(objects[i]["uid"]) == "CLEAR_ACTION" {
         var config = dict(objects[i]["config"])
         config["script"] = "exec './Spotify Mini Player.app/Contents/MacOS/SpotifyMiniPlayer' --clear-connection"
@@ -18,9 +29,9 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
                                "type": 0, "scriptargtype": 1, "escaping": 0, "queuedelaymode": 0,
                                "queuedelayimmediatelyinitially": true, "queuemode": 1,
                                "title": "Open Spotify Mini Player", "runningsubtext": ""]])
-    let commands = [("like", "Like current song"), ("unlike", "Unlike current song"),
-                    ("shuffle", "Turn shuffle on"), ("sequential", "Turn shuffle off"),
-                    ("screenshot", "Toggle screenshot mode")]
+    let commands = [("like", "like", "Like current song"), ("unlike", "unlike", "Unlike current song"),
+                    ("shuffle", "shuf", "Turn shuffle on"), ("noshuffle", "noshuf", "Turn shuffle off"),
+                    ("screenshot", "demo", "Toggle demo mode")]
     let commandIDs = Set(commands.flatMap { ["COMMAND_" + $0.0.uppercased(), "ACTION_" + $0.0.uppercased()] })
     objects.removeAll { commandIDs.contains(text($0["uid"])) }
     var connections = workflow["connections"] as? [String: Any] ?? [:]
@@ -34,8 +45,8 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     for (index, command) in commands.enumerated() {
         let input = "COMMAND_" + command.0.uppercased(), action = "ACTION_" + command.0.uppercased()
         objects.append(["uid": input, "type": "alfred.workflow.input.keyword", "version": 1,
-                        "config": ["keyword": "spotify " + command.0, "argumenttype": 2,
-                                   "withspace": false, "text": command.1, "subtext": command.0 == "screenshot" ? "Keep the mini player visible for screenshots; Esc exits" : "Set the current playback state"]])
+                        "config": ["keyword": "{var:keyword} " + command.1, "argumenttype": 2,
+                                   "withspace": false, "text": command.2, "subtext": command.0 == "screenshot" ? "Keep the mini player visible for screenshots; Esc exits" : "Set the current playback state"]])
         objects.append(["uid": action, "type": "alfred.workflow.action.script", "version": 2,
                         "config": ["script": "exec ./show --" + command.0, "type": 0,
                                    "scriptargtype": 1, "scriptfile": "", "escaping": 0, "concurrently": true]])
@@ -46,12 +57,6 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     workflow["connections"] = connections
     workflow["uidata"] = layout
     workflow["objects"] = objects
-    if var settings = workflow["userconfigurationconfig"] as? [JSONObject] {
-        for i in settings.indices where text(settings[i]["variable"]) == "SPOTIFY_CLIENT_SECRET" {
-            settings[i]["description"] = "Optional. PKCE sign-in does not require it."
-        }
-        workflow["userconfigurationconfig"] = settings
-    }
     try PropertyListSerialization.data(fromPropertyList: workflow, format: .xml, options: 0).write(to: stage.appendingPathComponent("info.plist"))
     let app: JSONObject = ["CFBundleIdentifier": workflowID + ".player", "CFBundleName": "Spotify Mini Player", "CFBundleDisplayName": "Spotify Mini Player", "CFBundleExecutable": "SpotifyMiniPlayer", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": workflowVersion, "CFBundleVersion": workflowVersion, "LSUIElement": true, "LSMinimumSystemVersion": "13.0", "NSHighResolutionCapable": true, "NSAppleEventsUsageDescription": "Control playback in the Spotify desktop app.", "CFBundleIconFile": "icon.png"]
     try PropertyListSerialization.data(fromPropertyList: app, format: .xml, options: 0).write(to: stage.appendingPathComponent("Spotify Mini Player.app/Contents/Info.plist"))

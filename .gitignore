@@ -1,7 +1,3 @@
-__pycache__/
-*.py[cod]
-.venv/
-.ruff_cache/
 .DS_Store
 .env
 prefs.plist

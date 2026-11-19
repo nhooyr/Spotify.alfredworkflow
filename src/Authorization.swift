@@ -1,0 +1,86 @@
+import Foundation
+import CryptoKit
+
+import AppKit
+import Darwin
+
+final class AuthorizationFlow {
+    private let paths: WorkflowPaths
+    private let api: SpotifyAPI
+    private var descriptor: Int32 = -1
+    private let lock = NSLock()
+    private var generation = ""
+    private let browser: (URL) -> Bool
+    private(set) var authorizationURL: URL?
+    init(_ paths: WorkflowPaths, _ api: SpotifyAPI, browser: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) { self.paths = paths; self.api = api; self.browser = browser }
+    deinit { cancel() }
+    func cancel() { lock.lock(); let fd = descriptor; descriptor = -1; generation = ""; lock.unlock(); if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd) } }
+    func start(_ completion: @escaping (Result<Void, Error>) -> Void) throws {
+        cancel()
+        let id = paths.credentials().0
+        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Client ID in the Workflow’s Configuration.") }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw SpotifyFailure(message: "Could not start Spotify sign-in.") }
+        var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        guard bound == 0, listen(fd, 4) == 0 else { Darwin.close(fd); throw SpotifyFailure(message: "Could not open the local sign-in callback.") }
+        var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &size) } }
+        let port = UInt16(bigEndian: address.sin_port), host = "127.0.0.1:\(port)", redirect = "http://\(host)/spotify_callback"
+        let state = randomToken(), verifier = randomToken(64), gen = UUID().uuidString
+        lock.lock(); descriptor = fd; generation = gen; lock.unlock()
+        var parts = URLComponents(string: "https://accounts.spotify.com/authorize")!
+        parts.queryItems = ["client_id": id, "response_type": "code", "redirect_uri": redirect, "scope": SpotifyAPI.scopes, "state": state, "code_challenge_method": "S256", "code_challenge": base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))].map { URLQueryItem(name: $0.key, value: $0.value) }
+        let url = parts.url!
+        authorizationURL = url
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if !self.browser(url) { self.cancel(); completion(.failure(SpotifyFailure(message: "Could not open your browser. Try connecting again."))) }
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let deadline = Date().addingTimeInterval(180)
+            func current() -> Bool { self.lock.lock(); defer { self.lock.unlock() }; return self.generation == gen && self.descriptor == fd }
+            func respond(_ client: Int32, status: String, body: String, html: Bool = false) {
+                let bytes = Data(body.utf8)
+                let header = "HTTP/1.1 \(status)\r\nContent-Type: \(html ? "text/html" : "text/plain"); charset=utf-8\r\nContent-Length: \(bytes.count)\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n"
+                let packet = Data(header.utf8) + bytes
+                packet.withUnsafeBytes { pointer in
+                    var offset = 0
+                    while offset < pointer.count { let count = Darwin.send(client, pointer.baseAddress!.advanced(by: offset), pointer.count - offset, 0); if count <= 0 { break }; offset += count }
+                }
+            }
+            while current() && Date() < deadline {
+                var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                if poll(&pollFD, 1, 250) <= 0 { continue }
+                let client = accept(fd, nil, nil); if client < 0 { continue }
+                var noSignal: Int32 = 1; setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+                var timeout = timeval(tv_sec: 2, tv_usec: 0); setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                var request = Data(), bytes = [UInt8](repeating: 0, count: 2048)
+                while request.count < 16384 {
+                    let n = Darwin.read(client, &bytes, bytes.count); if n <= 0 { break }; request.append(contentsOf: bytes.prefix(n)); if request.range(of: Data("\r\n\r\n".utf8)) != nil { break }
+                }
+                let lines = String(decoding: request, as: UTF8.self).components(separatedBy: "\r\n")
+                let first = lines.first?.split(separator: " ") ?? []
+                let suppliedHost = lines.first(where: { $0.lowercased().hasPrefix("host:") })?.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                let parsed = first.count > 1 ? URLComponents(string: "http://" + host + String(first[1])) : nil
+                let query = Dictionary((parsed?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+                guard first.first == "GET", suppliedHost == host, parsed?.path == "/spotify_callback", query["state"] == state else { respond(client, status: "400 Bad Request", body: "Invalid sign-in callback."); Darwin.close(client); continue }
+                do {
+                    if let reason = query["error"] {
+                        let sanitized = reason.range(of: #"^[a-zA-Z0-9_.-]{1,80}$"#, options: .regularExpression) != nil ? reason : "unknown_error"
+                        throw SpotifyFailure(message: sanitized == "server_error" ? "Spotify’s sign-in server encountered an error. Try again. (server_error)" : "Spotify could not complete sign-in. Try again. (\(sanitized))")
+                    }
+                    guard let code = query["code"], !code.isEmpty, current() else { throw SpotifyFailure(message: "This sign-in was cancelled. Connect again.") }
+                    _ = try self.api.exchange(["grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": redirect], valid: current)
+                    guard current() else { Darwin.close(client); return }
+                    respond(client, status: "200 OK", body: "<!doctype html><meta charset=utf-8><title>Spotify connected</title><p>Opening Spotify Mini Player…</p><script>history.replaceState(null,'',location.pathname);window.close();</script>", html: true)
+                    Darwin.close(client); self.cancel(); completion(.success(())); return
+                } catch {
+                    respond(client, status: "200 OK", body: error.localizedDescription); Darwin.close(client); self.cancel(); completion(.failure(error)); return
+                }
+            }
+            if current() { self.cancel(); completion(.failure(SpotifyFailure(message: "Spotify sign-in timed out. Choose Connect to try again."))) }
+        }
+    }
+}

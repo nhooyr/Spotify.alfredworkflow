@@ -4,214 +4,21 @@
 <dict>
 	<key>bundleid</key>
 	<string>ca.aqsnow.alfred.spotify</string>
-	<key>name</key>
-	<string>Spotify</string>
 	<key>category</key>
 	<string>Productivity</string>
-	<key>description</key>
-	<string>Spotify Mini Player</string>
-	<key>createdby</key>
-	<string>Adam Quinn Snow</string>
-	<key>version</key>
-	<string>0.3.9</string>
-	<key>webaddress</key>
-	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
-	<key>disabled</key>
-	<false/>
-	<key>objects</key>
-	<array>
-		<dict>
-			<key>uid</key>
-			<string>OPEN</string>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>version</key>
-			<integer>1</integer>
-			<key>config</key>
-			<dict>
-				<key>keyword</key>
-				<string>spotify</string>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>withspace</key>
-				<false/>
-				<key>text</key>
-				<string>Show Spotify Mini Player</string>
-				<key>subtext</key>
-				<string>Browse and play music</string>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>HOTKEY</string>
-			<key>type</key>
-			<string>alfred.workflow.trigger.hotkey</string>
-			<key>version</key>
-			<integer>2</integer>
-			<key>config</key>
-			<dict>
-				<key>hotkey</key>
-				<integer>0</integer>
-				<key>hotmod</key>
-				<integer>0</integer>
-				<key>hotstring</key>
-				<string></string>
-				<key>action</key>
-				<integer>0</integer>
-				<key>argument</key>
-				<integer>0</integer>
-				<key>focusedappvariable</key>
-				<false/>
-				<key>focusedappvariablename</key>
-				<string></string>
-				<key>leftcursor</key>
-				<false/>
-				<key>modsmode</key>
-				<integer>2</integer>
-				<key>relatedAppsMode</key>
-				<integer>0</integer>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>PLAYER</string>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>version</key>
-			<integer>2</integer>
-			<key>config</key>
-			<dict>
-				<key>script</key>
-				<string>exec ./show</string>
-				<key>type</key>
-				<integer>0</integer>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>concurrently</key>
-				<true/>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>REAUTH</string>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>version</key>
-			<integer>1</integer>
-			<key>config</key>
-			<dict>
-				<key>keyword</key>
-				<string>spotify reauth</string>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>withspace</key>
-				<false/>
-				<key>text</key>
-				<string>Reset Spotify Sign-In</string>
-				<key>subtext</key>
-				<string>Clear saved login and reconnect on next open; keep client settings</string>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>CLEAR_CONNECTION</string>
-			<key>type</key>
-			<string>alfred.workflow.trigger.external</string>
-			<key>version</key>
-			<integer>1</integer>
-			<key>config</key>
-			<dict>
-				<key>triggerid</key>
-				<string>clear-connection</string>
-				<key>availableviaurlhandler</key>
-				<true/>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>CLEAR_ACTION</string>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>version</key>
-			<integer>2</integer>
-			<key>config</key>
-			<dict>
-				<key>script</key>
-				<string>exec ./run clear-connection</string>
-				<key>type</key>
-				<integer>0</integer>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>concurrently</key>
-				<false/>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>CLEAR_NOTICE</string>
-			<key>type</key>
-			<string>alfred.workflow.output.notification</string>
-			<key>version</key>
-			<integer>1</integer>
-			<key>config</key>
-			<dict>
-				<key>title</key>
-				<string>Spotify connection cleared</string>
-				<key>text</key>
-				<string>{query}</string>
-				<key>lastpathcomponent</key>
-				<false/>
-				<key>removeextension</key>
-				<false/>
-				<key>onlyshowifquerypopulated</key>
-				<true/>
-			</dict>
-		</dict>
-		<dict>
-			<key>uid</key>
-			<string>HOTKEY_PLAYER</string>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>version</key>
-			<integer>2</integer>
-			<key>config</key>
-			<dict>
-				<key>script</key>
-				<string>exec ./show --hotkey</string>
-				<key>type</key>
-				<integer>0</integer>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>concurrently</key>
-				<true/>
-			</dict>
-		</dict>
-	</array>
 	<key>connections</key>
 	<dict>
-		<key>REAUTH</key>
+		<key>CLEAR_ACTION</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
-				<string>CLEAR_ACTION</string>
+				<string>REAUTH_RESULT</string>
 				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
 				<string></string>
 				<key>vitoclose</key>
-				<true/>
+				<false/>
 			</dict>
 		</array>
 		<key>CLEAR_CONNECTION</key>
@@ -227,24 +34,63 @@
 				<false/>
 			</dict>
 		</array>
-		<key>CLEAR_ACTION</key>
+		<key>COMMAND_LIKE</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
-				<string>CLEAR_NOTICE</string>
+				<string>ACTION_LIKE</string>
 				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
 				<string></string>
 				<key>vitoclose</key>
-				<false/>
+				<true/>
 			</dict>
 		</array>
-		<key>OPEN</key>
+		<key>COMMAND_SCREENSHOT</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
-				<string>PLAYER</string>
+				<string>ACTION_SCREENSHOT</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
+		<key>COMMAND_SEQUENTIAL</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_SEQUENTIAL</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
+		<key>COMMAND_SHUFFLE</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_SHUFFLE</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
+		<key>COMMAND_UNLIKE</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_UNLIKE</string>
 				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
@@ -266,55 +112,564 @@
 				<true/>
 			</dict>
 		</array>
+		<key>OPEN</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>PLAYER</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
+		<key>REAUTH</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>CLEAR_ACTION</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>REAUTH_RESULT</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>PLAYER</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
 	</dict>
+	<key>createdby</key>
+	<string>Adam Quinn Snow</string>
+	<key>description</key>
+	<string>Spotify Mini Player</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Spotify</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify</string>
+				<key>subtext</key>
+				<string>Browse and play music</string>
+				<key>text</key>
+				<string>Show Spotify Mini Player</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>OPEN</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>49</integer>
+				<key>hotmod</key>
+				<integer>1310720</integer>
+				<key>hotstring</key>
+				<string>Space</string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>2</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>HOTKEY</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>PLAYER</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify reauth</string>
+				<key>subtext</key>
+				<string>Clear saved login and reconnect on next open; keep client settings</string>
+				<key>text</key>
+				<string>Reset Spotify Sign-In</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>REAUTH</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>availableviaurlhandler</key>
+				<true/>
+				<key>triggerid</key>
+				<string>clear-connection</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.external</string>
+			<key>uid</key>
+			<string>CLEAR_CONNECTION</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec './Spotify Mini Player.app/Contents/MacOS/SpotifyMiniPlayer' --clear-connection</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>CLEAR_ACTION</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --hotkey</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>HOTKEY_PLAYER</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>alfredfiltersresults</key>
+				<false/>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>queuedelayimmediatelyinitially</key>
+				<true/>
+				<key>queuedelaymode</key>
+				<integer>0</integer>
+				<key>queuemode</key>
+				<integer>1</integer>
+				<key>runningsubtext</key>
+				<string></string>
+				<key>script</key>
+				<string>exec './Spotify Mini Player.app/Contents/MacOS/SpotifyMiniPlayer' --reauth-result</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>title</key>
+				<string>Open Spotify Mini Player</string>
+				<key>type</key>
+				<integer>0</integer>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>REAUTH_RESULT</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify like</string>
+				<key>subtext</key>
+				<string>Set the current playback state</string>
+				<key>text</key>
+				<string>Like current song</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_LIKE</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --like</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_LIKE</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify unlike</string>
+				<key>subtext</key>
+				<string>Set the current playback state</string>
+				<key>text</key>
+				<string>Unlike current song</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_UNLIKE</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --unlike</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_UNLIKE</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify shuffle</string>
+				<key>subtext</key>
+				<string>Set the current playback state</string>
+				<key>text</key>
+				<string>Turn shuffle on</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_SHUFFLE</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --shuffle</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_SHUFFLE</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify sequential</string>
+				<key>subtext</key>
+				<string>Set the current playback state</string>
+				<key>text</key>
+				<string>Turn shuffle off</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_SEQUENTIAL</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --sequential</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_SEQUENTIAL</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>spotify screenshot</string>
+				<key>subtext</key>
+				<string>Keep the mini player visible for screenshots; Esc exits</string>
+				<key>text</key>
+				<string>Toggle screenshot mode</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_SCREENSHOT</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --screenshot</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_SCREENSHOT</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string># Spotify.alfredworkflow
+
+Search and play your Spotify music via the `spotify` keyword.
+
+![Spotify Mini Player](./docs/ss.png)
+
+Browse **Playlists**, **Albums**, **Artists**, and **Songs**, or type to search.
+**Songs** contains your Liked Songs; the **＋/✓** button likes or unlikes the
+current song. Playlists use Spotify’s custom order when available; local search
+prioritises playlists, albums, artists, then songs and reuses cached music.
+Playing a song leaves Spotify in the background.
+
+The shuffle button toggles shuffle; repeat cycles **off → all → one**
+([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
+Active like, shuffle and repeat controls stay Spotify green.
+
+Choose **Spotify** (`⌘5`) to search the full catalogue, or press `⌘↩` to carry over
+your current query. Type after `/` in this mode for live results; a slash typed
+in the home view does not switch modes.
+
+| Keyword | Action |
+| --- | --- |
+| `spotify` | Open the mini player. |
+| `spotify like` | Save the current song to Liked Songs. |
+| `spotify unlike` | Remove the current song from Liked Songs. |
+| `spotify shuffle` | Turn shuffle on. |
+| `spotify sequential` | Turn shuffle off. |
+| `spotify screenshot` | Toggle screenshot mode for macOS’s window picker. |
+| `spotify reauth` | Clear sign-in; reconnect when the player next opens. |
+
+The like, unlike, shuffle and sequential commands set a state rather than toggling it.
+
+* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt; Open the player (default Hotkey).
+* &lt;kbd&gt;↑&lt;/kbd&gt; / &lt;kbd&gt;↓&lt;/kbd&gt; Select a result and preview its artwork.
+* &lt;kbd&gt;↩&lt;/kbd&gt; Browse the selection or play a song.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;1&lt;/kbd&gt; … &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;9&lt;/kbd&gt; Activate one of the first nine results.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; Search the full Spotify catalogue.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;[&lt;/kbd&gt; Go back or clear the filter; Backspace at a folder path goes up a folder.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;R&lt;/kbd&gt; Refresh the library and desktop cache index.
+* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↓&lt;/kbd&gt; Play or pause; &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;←&lt;/kbd&gt; / &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;→&lt;/kbd&gt; Previous or next song.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;,&lt;/kbd&gt; Open the Workflow’s Configuration.
+* &lt;kbd&gt;Esc&lt;/kbd&gt; / &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;W&lt;/kbd&gt; Hide the player.
+
+Configure the Hotkey for faster access. Press it again while the player is
+focused to open Spotify. The player stays ready in the background while Alfred
+is running.
+
+`spotify screenshot` keeps the player focusable and visible while using macOS’s
+screenshot tool. Run it again, or press Esc in the player, to exit.
+
+The player follows your Alfred theme’s colours, cursor, fonts and window styling,
+while retaining its layout. Built-in themes use the available background and
+selection colours.
+
+Sign-in opens in your browser automatically; use **Connect** to retry. After `spotify reauth`, choose
+**Open Spotify Mini Player** in Alfred to sign in again. Your Client ID and
+optional Client Secret are kept.
+</string>
 	<key>uidata</key>
 	<dict>
-		<key>OPEN</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>50</integer>
-		</dict>
-		<key>HOTKEY</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>180</integer>
-			<key>note</key>
-			<string>Launch Spotify Mini Player
-Double-click to set your keyboard shortcut</string>
-		</dict>
-		<key>PLAYER</key>
+		<key>ACTION_LIKE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>280</integer>
 			<key>ypos</key>
-			<integer>80</integer>
+			<integer>550</integer>
 		</dict>
-		<key>HOTKEY_PLAYER</key>
+		<key>ACTION_SCREENSHOT</key>
 		<dict>
 			<key>xpos</key>
 			<integer>280</integer>
 			<key>ypos</key>
-			<integer>210</integer>
+			<integer>1070</integer>
 		</dict>
-		<key>REAUTH</key>
+		<key>ACTION_SEQUENTIAL</key>
 		<dict>
 			<key>xpos</key>
-			<integer>50</integer>
+			<integer>280</integer>
 			<key>ypos</key>
-			<integer>300</integer>
+			<integer>940</integer>
 		</dict>
-		<key>CLEAR_CONNECTION</key>
+		<key>ACTION_SHUFFLE</key>
 		<dict>
 			<key>xpos</key>
-			<integer>50</integer>
+			<integer>280</integer>
 			<key>ypos</key>
-			<integer>420</integer>
-			<key>note</key>
-			<string>External reset trigger</string>
+			<integer>810</integer>
+		</dict>
+		<key>ACTION_UNLIKE</key>
+		<dict>
+			<key>xpos</key>
+			<integer>280</integer>
+			<key>ypos</key>
+			<integer>680</integer>
 		</dict>
 		<key>CLEAR_ACTION</key>
 		<dict>
@@ -323,7 +678,89 @@ Double-click to set your keyboard shortcut</string>
 			<key>ypos</key>
 			<integer>340</integer>
 		</dict>
-		<key>CLEAR_NOTICE</key>
+		<key>CLEAR_CONNECTION</key>
+		<dict>
+			<key>note</key>
+			<string>External reset trigger</string>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>420</integer>
+		</dict>
+		<key>COMMAND_LIKE</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>550</integer>
+		</dict>
+		<key>COMMAND_SCREENSHOT</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>1070</integer>
+		</dict>
+		<key>COMMAND_SEQUENTIAL</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>940</integer>
+		</dict>
+		<key>COMMAND_SHUFFLE</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>810</integer>
+		</dict>
+		<key>COMMAND_UNLIKE</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>680</integer>
+		</dict>
+		<key>HOTKEY</key>
+		<dict>
+			<key>note</key>
+			<string>Launch Spotify Mini Player
+Double-click to set your keyboard shortcut</string>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>180</integer>
+		</dict>
+		<key>HOTKEY_PLAYER</key>
+		<dict>
+			<key>xpos</key>
+			<integer>280</integer>
+			<key>ypos</key>
+			<integer>210</integer>
+		</dict>
+		<key>OPEN</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>50</integer>
+		</dict>
+		<key>PLAYER</key>
+		<dict>
+			<key>xpos</key>
+			<integer>280</integer>
+			<key>ypos</key>
+			<integer>80</integer>
+		</dict>
+		<key>REAUTH</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>300</integer>
+		</dict>
+		<key>REAUTH_RESULT</key>
 		<dict>
 			<key>xpos</key>
 			<integer>510</integer>
@@ -334,46 +771,46 @@ Double-click to set your keyboard shortcut</string>
 	<key>userconfigurationconfig</key>
 	<array>
 		<dict>
-			<key>type</key>
-			<string>textfield</string>
-			<key>label</key>
-			<string>Client ID</string>
-			<key>variable</key>
-			<string>SPOTIFY_CLIENT_ID</string>
-			<key>description</key>
-			<string>From your Spotify Developer Dashboard app. Set its redirect URI to http://127.0.0.1/spotify_callback (no port).</string>
 			<key>config</key>
 			<dict>
 				<key>default</key>
 				<string></string>
-				<key>required</key>
-				<false/>
-				<key>trim</key>
-				<true/>
 				<key>placeholder</key>
 				<string>Client ID</string>
-			</dict>
-		</dict>
-		<dict>
-			<key>type</key>
-			<string>textfield</string>
-			<key>label</key>
-			<string>Client Secret</string>
-			<key>variable</key>
-			<string>SPOTIFY_CLIENT_SECRET</string>
-			<key>description</key>
-			<string>Optional. Only needed for connections imported from older builds.</string>
-			<key>config</key>
-			<dict>
-				<key>default</key>
-				<string></string>
 				<key>required</key>
 				<false/>
 				<key>trim</key>
 				<true/>
+			</dict>
+			<key>description</key>
+			<string>From your Spotify Developer Dashboard app. Set its redirect URI to http://127.0.0.1/spotify_callback (no port).</string>
+			<key>label</key>
+			<string>Client ID</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>SPOTIFY_CLIENT_ID</string>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
 				<key>placeholder</key>
 				<string>Client Secret</string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
 			</dict>
+			<key>description</key>
+			<string>Optional. PKCE sign-in does not require it.</string>
+			<key>label</key>
+			<string>Client Secret</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>SPOTIFY_CLIENT_SECRET</string>
 		</dict>
 	</array>
 	<key>variablesdontexport</key>
@@ -381,29 +818,9 @@ Double-click to set your keyboard shortcut</string>
 		<string>SPOTIFY_CLIENT_ID</string>
 		<string>SPOTIFY_CLIENT_SECRET</string>
 	</array>
-	<key>readme</key>
-	<string>## Usage
-
-Search and play your Spotify music via the `spotify` keyword.
-
-![Spotify Mini Player](images/player.png)
-
-Browse **Playlists**, **Albums**, **Artists**, and **Songs**, or type to search.
-**Songs** contains your Liked Songs. Use the **＋** beside the current song to
-save it; a green checkmark means it’s already liked. The shuffle button toggles
-shuffle, and the Spotify icon opens the desktop app.
-
-* &lt;kbd&gt;↩&lt;/kbd&gt; Browse the selection or play a song.
-* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; Search the full Spotify catalogue.
-* &lt;kbd&gt;Esc&lt;/kbd&gt; Hide the player.
-
-Configure the Hotkey for faster access. Press it again while the player is
-focused to open Spotify. The player stays ready in the background while Alfred
-is running.
-
-Use the gear to open the Workflow’s Configuration. If you need to sign in again,
-use the `spotify reauth` keyword, then reopen the player. Existing connections
-need this once to enable saving songs.
-</string>
+	<key>version</key>
+	<string>0.4.17</string>
+	<key>webaddress</key>
+	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>
 </plist>

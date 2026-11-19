@@ -190,6 +190,7 @@ private final class PlayerPanel: NSPanel {
         return super.makeFirstResponder(responder)
     }
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, keyAction?(event) == true { return }
         interaction?(event)
         super.sendEvent(event)
     }
@@ -211,6 +212,21 @@ private final class SearchField: NSTextField {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if keyAction?(event) == true { return true }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+private struct LaunchHotkey {
+    let code: UInt16
+    let modifiers: NSEvent.ModifierFlags
+    static func read(_ workflow: JSONObject) -> LaunchHotkey? {
+        guard let object = (workflow["objects"] as? [JSONObject])?.first(where: { text($0["uid"]) == "HOTKEY" }),
+              text(object["type"]) == "alfred.workflow.trigger.hotkey" else { return nil }
+        let config = dict(object["config"]), code = number(config["hotkey"]), modifiers = number(config["hotmod"])
+        guard code >= 0, code <= Double(UInt16.max), modifiers >= 0, code != 0 || modifiers != 0 else { return nil }
+        return LaunchHotkey(code: UInt16(code), modifiers: NSEvent.ModifierFlags(rawValue: UInt(modifiers)))
+    }
+    func matches(_ event: NSEvent) -> Bool {
+        event.keyCode == code && event.modifierFlags.intersection([.command, .control, .option, .shift]) == modifiers
     }
 }
 
@@ -704,6 +720,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var selectedSourceTrack = ""
     private var observedPlaybackContext: (track: String, context: PlaybackContext?)?
     private let status = NSTextField(labelWithString: "Loading your Spotify library…")
+    private let offlineStatus = NSTextField(labelWithString: "offline")
+    private var offline = false
     private let toggle = IconButton()
     private let like = IconButton()
     private let shuffle = IconButton()
@@ -721,6 +739,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var repeatPending = false
     private var lastRepeatPoll = Date.distantPast
     private var openedSpotify = 0
+    private var lastTransportCommand = ""
+    private var transportCommands = 0
+    private var refreshRequests = 0
+    private var launchHotkey: LaunchHotkey?
+    private var launchHotkeyStamp: Date?
+    private var loadedLaunchHotkey = false
     private var lastResignedKey = Date.distantPast
     private var hotkeyHandoffAllowed = false
     private var screenshotMode = false
@@ -791,7 +815,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         buildPanel()
+        refreshLaunchHotkey()
         installEditingMenu()
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeSpaceChanged(_:)), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         backend.receive = { [weak self] value in self?.receive(value) }
         spotify.failed = { [weak self] message in self?.showError(message) }
         spotify.status = { [weak self] values in self?.updatePlayback(values) }
@@ -854,7 +880,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         panel.interaction = { [weak self] event in self?.handleInteraction(event) }
         panel.input = { [weak self] in guard let self = self, self.search.isEnabled else { return nil }; return self.search }
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
         panel.isReleasedWhenClosed = false
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
@@ -917,6 +943,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         search.isBordered = false
         search.drawsBackground = false
         search.focusRingType = .none
+        search.maximumNumberOfLines = 1
+        search.cell?.usesSingleLineMode = true
+        search.cell?.isScrollable = true
         search.isEnabled = false
         search.delegate = self
         search.target = self
@@ -970,6 +999,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
         root.addSubview(status)
+        offlineStatus.frame = NSRect(x: 488, y: 10, width: 84, height: 16)
+        offlineStatus.font = .systemFont(ofSize: 10)
+        offlineStatus.alignment = .right
+        offlineStatus.isHidden = true
+        offlineStatus.setAccessibilityLabel("Offline")
+        root.addSubview(offlineStatus)
         applyTheme(PlayerTheme())
         refreshTheme()
         // Force layout and raster caches now; showing this panel never rebuilds it.
@@ -1001,6 +1036,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         previewTitle.font = theme.font(theme.resultFont, size: 13)
         previewDetail.font = theme.font(theme.secondaryFont, size: 11)
         status.font = theme.font(theme.secondaryFont, size: 10)
+        offlineStatus.font = theme.font(theme.secondaryFont, size: 10)
+        offlineStatus.textColor = theme.secondary
         search.font = theme.font(theme.searchFont, size: 28)
         search.textColor = theme.searchText
         search.drawsBackground = theme.searchBackground.alphaComponent > 0
@@ -1014,7 +1051,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         nowArt.contentTintColor = theme.secondary
         previewTitle.textColor = theme.text
         previewDetail.textColor = theme.secondary
-        preview.contentTintColor = theme.secondary
+        updatePreviewTint()
         for button in playbackButtons { button.contentTintColor = theme.control; button.needsDisplay = true }
         updateLike(); updateShuffle(); updateRepeat(); renderStatus()
         table.enumerateAvailableRowViews { row, index in
@@ -1057,6 +1094,11 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     private func receive(_ value: [String: Any]) {
         let type = value["type"] as? String ?? ""
+        if let offline = value["offline"] as? Bool {
+            self.offline = offline
+            offlineStatus.isHidden = !offline
+            if offline { catalogPending = false }
+        }
         if let request = value["navigation"] as? Int, request != navigationRequest { return }
         // A queued home refresh must not turn an in-flight catalogue query into
         // a literal local search when the panel is reopened.
@@ -1132,7 +1174,10 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 DispatchQueue.main.async {
                     guard let self = self, revision == self.catalogRevision else { return }
                     self.catalog = prepared
-                    if self.breadcrumb.isEmpty && !self.search.stringValue.isEmpty { self.filter() }
+                    if self.offline && self.routeKind == "catalog" {
+                        self.source = self.localCatalogResults(String(self.search.stringValue.dropFirst()))
+                        self.filter()
+                    } else if self.breadcrumb.isEmpty && !self.search.stringValue.isEmpty { self.filter() }
                 }
             }
             return
@@ -1170,7 +1215,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             if let kind = value["route_kind"] as? String { routeKind = kind }
             if routeKind == "catalog" { catalogPending = value["searching"] as? Bool == true }
             else { catalogSearchWork?.cancel(); catalogPending = false; updateSearchStatus() }
-            source = routeKind == "catalog" && catalogPending
+            source = routeKind == "catalog" && (catalogPending || offline)
                 ? localCatalogResults(value["query"] as? String ?? "") : rows.map(MusicItem.init)
             if value["route_kind"] as? String == "catalog" { source = MusicItem.prioritized(source) }
             breadcrumb = value["prefix"] as? String ?? ""
@@ -1303,10 +1348,16 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private func previewPlaceholder(_ item: MusicItem) -> NSImage? {
         symbol(item.kind == "action" && (item.payload["action"] as? String) != "play" ? item.symbol : "questionmark", height: 150)
     }
+    private func updatePreviewTint() {
+        let isSearch = selectedItem()?.payload["action"] as? String == "catalog" && preview.image?.isTemplate == true
+        preview.contentTintColor = isSearch ? .black : playerTheme.secondary
+    }
     private func setPreviewImage(_ image: NSImage?) {
-        guard preview.image !== image else { return }
-        preview.image = image
-        previewImageChanges += 1
+        if preview.image !== image {
+            preview.image = image
+            previewImageChanges += 1
+        }
+        updatePreviewTint()
     }
     private func clearPreview() {
         previewWork?.cancel(); previewWork = nil
@@ -1347,7 +1398,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private func applyPreview(_ item: MusicItem) {
         guard connection == "connected", selectedItem()?.uri == item.uri else { return }
         previewURI = item.uri
-        previewTitle.stringValue = item.name
+        previewTitle.stringValue = item.payload["action"] as? String == "catalog" ? "Search Spotify" : item.name
         previewDetail.stringValue = item.detail
         previewDetail.textColor = playerTheme.secondary
         let path = previewPaths[item.uri] ?? item.art
@@ -1370,7 +1421,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let terms = MusicItem.normalize(query).split(whereSeparator: { $0.isWhitespace })
         return terms.isEmpty ? [] : liveSearchFilter.matching(catalog, terms: terms, catalog: true)
     }
-    private func setSearchText(_ text: String) {
+    private func singleLineQuery(_ text: String) -> String {
+        guard text.rangeOfCharacter(from: .newlines) != nil else { return text }
+        return text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).joined(separator: " ")
+    }
+    private func setSearchText(_ value: String) {
+        let text = singleLineQuery(value)
         updatingSearchField = true
         defer { updatingSearchField = false }
         search.stringValue = text
@@ -1423,7 +1479,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         breadcrumb = "/"
         setSearchText("/" + query)
         source = localCatalogResults(query)
-        catalogPending = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        catalogPending = !offline && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         filter(preferredURI: restored?.uri, resetSelection: !preservingSelection)
         send("catalog", args: [query])
         placeSearchCaretAtEnd()
@@ -1432,7 +1488,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         catalogSearchWork?.cancel()
         let query = String(search.stringValue.dropFirst())
         source = localCatalogResults(query)
-        catalogPending = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        catalogPending = !offline && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         statusMessage = ""
         renderStatus()
         let work = DispatchWorkItem { [weak self] in
@@ -1462,6 +1518,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     func controlTextDidChange(_ obj: Notification) {
         guard !updatingSearchField else { return }
+        let text = singleLineQuery(search.stringValue)
+        if text != search.stringValue { setSearchText(text) }
         restoreOpeningSelection = false
         if search.stringValue.hasPrefix("/") {
             let wasResolvingPath = pendingPlaintextPath != nil
@@ -1504,16 +1562,58 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveDown(_:)) { move(1); return true }
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveUp(_:)) { move(-1); return true }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) { hide(); return true }
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) { activateSelection(); return true }
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            openSelection(preservingSelection: false, playDirectly: modifiers == .option); return true
+        }
+        if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+            if modifiers == .option { openSelection(preservingSelection: false, playDirectly: true) }
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertLineBreak(_:))
+            || commandSelector == #selector(NSResponder.insertParagraphSeparator(_:)) { return true }
         if modifiers.isEmpty, commandSelector == #selector(NSResponder.deleteBackward(_:)),
            textView.selectedRange().length == 0, !breadcrumb.isEmpty, search.stringValue == breadcrumb {
             navigateUp(); return true
         }
         return false
     }
+    private func refreshLaunchHotkey() {
+        let file = workflowRoot().appendingPathComponent("info.plist")
+        let stamp = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        guard !loadedLaunchHotkey || stamp != launchHotkeyStamp else { return }
+        let workflow = (try? Data(contentsOf: file)).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? JSONObject } ?? [:]
+        launchHotkey = LaunchHotkey.read(workflow)
+        launchHotkeyStamp = stamp; loadedLaunchHotkey = true
+    }
     private func key(_ event: NSEvent) -> Bool {
+        if launchHotkey?.matches(event) == true {
+            collapseSearchSelection(); showForHotkey(focused: true); return true
+        }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let key = event.charactersIgnoringModifiers ?? ""
+        if modifiers == .option && [36, 76].contains(event.keyCode) {
+            openSelection(preservingSelection: false, playDirectly: true); return true
+        }
+        let transport: String?
+        if modifiers == .command {
+            switch key.lowercased() {
+            case "s": transport = "toggle"
+            case "p": transport = "previous"
+            case "n": transport = "next"
+            case "r": transport = "refresh"
+            default: transport = nil
+            }
+        } else if modifiers == [.control, .command] {
+            switch event.keyCode {
+            case 123: transport = "previous"
+            case 124: transport = "next"
+            case 125, 126: transport = "toggle"
+            default: transport = nil
+            }
+        } else { transport = nil }
+        if let transport = transport {
+            collapseSearchSelection(); performExternal(transport); return true
+        }
         if modifiers == .command {
             if event.keyCode == 126 { navigateUp(); return true }
             if event.keyCode == 125 { openSelection(preservingSelection: true); return true }
@@ -1527,7 +1627,6 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             }
             if key == "w" { hide(); return true }
             if key == "," { openSettings(); return true }
-            if key == "r" { send("refresh"); return true }
             if event.keyCode == 36 {
                 let value = search.stringValue
                 enterCatalog(value.hasPrefix(breadcrumb) ? String(value.dropFirst(breadcrumb.count)) : value)
@@ -1546,17 +1645,21 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         table.scrollRowToVisible(index)
     }
     @objc private func activateSelection() { openSelection(preservingSelection: false) }
-    private func openSelection(preservingSelection: Bool) {
+    private func openSelection(preservingSelection: Bool, playDirectly: Bool = false) {
         collapseSearchSelection()
         guard pendingPlaintextPath == nil, let item = selectedItem() else { return }
         let action = item.payload["action"] as? String ?? ""
         if action == "catalog" { enterCatalog("", preservingSelection: preservingSelection); return }
         if action == "connect" { send("connect"); return }
-        if item.kind == "track" || action == "play" || action == "open" {
+        let directURI: String?
+        if playDirectly, ["album", "artist", "playlist"].contains(item.kind), validURI(item.uri) { directURI = item.uri }
+        else if playDirectly, action == "browse", text(dict(item.payload["target"])["kind"]) == "songs" { directURI = PlaybackContext.likedSongs.uri }
+        else { directURI = nil }
+        if item.kind == "track" || action == "play" || action == "open" || directURI != nil {
             if item.payload["is_local"] as? Bool == true || item.payload["is_playable"] as? Bool == false {
                 showError("This track cannot be played through Spotify’s catalog."); return
             }
-            let uri = item.payload["play_uri"] as? String ?? item.uri
+            let uri = directURI ?? item.payload["play_uri"] as? String ?? item.uri
             playbackRequest += 1
             observedPlaybackContext = nil
             if !testMode {
@@ -1577,7 +1680,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 setNowArt(previewPaths[item.uri] ?? item.art)
             }
             let contextURI = item.payload["context"] as? String ?? (validTrack(uri) ? "" : uri)
-            currentPlaybackContext = PlaybackContext(dict(item.payload["playback_context"]))
+            currentPlaybackContext = directURI.flatMap { PlaybackContext(uri: $0, name: item.name) }
+                ?? PlaybackContext(dict(item.payload["playback_context"]))
                 ?? PlaybackContext(uri: contextURI, name: catalog.first { $0.uri == contextURI }?.name ?? "")
             selectedSourceTrack = currentPlaybackContext?.kind == "collection" ? uri : ""
             updateContextLabel()
@@ -1700,6 +1804,19 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if !testMode { send("repeat-state", args: [String(repeatRequest), String(playbackRequest)]) }
     }
     private func performExternal(_ command: String) {
+        if ["toggle", "previous", "next"].contains(command) {
+            lastTransportCommand = command; transportCommands += 1
+            if command == "toggle", panel.isVisible {
+                playing.toggle(); optimisticUntil = Date().addingTimeInterval(1); updateToggle()
+            }
+            if !testMode { spotify.play(command) }
+            return
+        }
+        if command == "refresh" {
+            refreshRequests += 1
+            send("refresh")
+            return
+        }
         if command == "shuffle" || command == "noshuffle" {
             setShuffle(command == "shuffle")
             return
@@ -1811,6 +1928,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         renderStatus()
     }
     private func show() {
+        refreshLaunchHotkey()
         refreshTheme()
         hotkeyHandoffAllowed = true
         showCount += 1
@@ -1841,8 +1959,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         screenshotMode = enabled
         panel.level = enabled ? .normal : .floating
         panel.collectionBehavior = enabled
-            ? [.canJoinAllSpaces, .fullScreenAuxiliary, .managed]
-            : [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            ? [.moveToActiveSpace, .fullScreenAuxiliary, .managed]
+            : [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
     }
     private func toggleScreenshotMode() {
         setScreenshotMode(!screenshotMode)
@@ -1857,6 +1975,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         setScreenshotMode(false)
         if let sheet = panel.attachedSheet { panel.endSheet(sheet) }
         panel.orderOut(nil)
+    }
+    @objc private func activeSpaceChanged(_ notification: Notification) {
+        if hotkeyHandoffAllowed { hide() }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
     func windowDidResignKey(_ notification: Notification) {
@@ -1876,8 +1997,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
         if let theme = value["theme"] as? [String: String] { themeContext = theme }
         if testMode && value["command"] as? String == "test-screenshot-mode" { return screenshotModeChecks() }
+        if testMode && value["command"] as? String == "test-spaces" { return spaceChecks() }
         if testMode && value["command"] as? String == "test-theme" { return themeChecks() }
         if testMode && value["command"] as? String == "test-controls" { return controlChecks() }
+        if testMode && value["command"] as? String == "test-direct-play" { return directPlaybackChecks() }
+        if testMode && value["command"] as? String == "test-single-line" { return singleLineChecks() }
+        if testMode && value["command"] as? String == "test-offline-ui" { return offlineUIChecks() }
         if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
         if testMode && value["command"] as? String == "test-playback-context" { return playbackContextChecks() }
         if testMode && value["command"] as? String == "test-search" { return searchChecks() }
@@ -1892,6 +2017,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if testMode && value["command"] as? String == "test-play-artwork-result" { return playArtworkCheckResult() }
         if testMode && value["command"] as? String == "test-artwork" { return artworkChecks() }
         if testMode && value["command"] as? String == "test-artwork-result" { return artworkCheckResult() }
+        if testMode && value["command"] as? String == "test-local-bindings" { return localBindingChecks() }
         if testMode && value["command"] as? String == "test-navigation" { return navigationChecks() }
         if testMode && value["command"] as? String == "test-input-focus" { return inputFocusChecks() }
         if testMode && value["command"] as? String == "test-plaintext-paths" { return plaintextPathChecks() }
@@ -1913,7 +2039,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                     "filter_ms": Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000]
         }
         let start = DispatchTime.now().uptimeNanoseconds
-        if let command = value["command"] as? String, ["like", "unlike", "shuffle", "noshuffle"].contains(command) { performExternal(command) }
+        if let command = value["command"] as? String,
+           ["like", "unlike", "shuffle", "noshuffle", "refresh"].contains(command) { performExternal(command) }
         if value["command"] as? String == "reset" { backend.send(["command": "reset"]) }
         if value["command"] as? String == "hotkey" { showForHotkey() }
         if value["command"] as? String == "screenshot" { toggleScreenshotMode() }
@@ -1923,6 +2050,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "panel": String(describing: ObjectIdentifier(panel)), "shows": showCount,
                 "visible": panel.isVisible, "shown_before": wasShown, "connection": connection, "rows": source.count,
                 "liked": likedTracks[currentTrackURI] ?? false, "shuffling": shuffling, "screenshot_mode": screenshotMode,
+                "transport_command": lastTransportCommand, "transport_commands": transportCommands, "refresh_requests": refreshRequests,
                 "theme": themeContext, "dispatch_ms": Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000]
     }
     private func recordFiles() {
@@ -1947,6 +2075,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     func applicationWillTerminate(_ notification: Notification) {
         lifeTimer?.invalidate(); statusTimer?.invalidate()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         server.close(); backend.stop()
     }
     private func editingChecks() -> [String: Any] {
@@ -1986,7 +2115,43 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "word_movement": wordMovement,
                 "clipboard_bindings": ["copy:", "cut:", "paste:", "pasteAsPlainText:"].allSatisfy { editSelectors.contains($0) }]
     }
+    private func localBindingChecks() -> [String: Any] {
+        let original = launchHotkey
+        defer { launchHotkey = original }
+        // A fresh import may clear Alfred's launch key; local keys still work.
+        launchHotkey = LaunchHotkey.read(["objects": []])
+        demo(); search.isEnabled = true; placeSearchCaretAtEnd()
+        let definitions: [(String, UInt16, String, NSEvent.ModifierFlags)] = [
+            ("toggle", 1, "s", .command), ("previous", 35, "p", .command), ("next", 45, "n", .command), ("refresh", 15, "r", .command),
+            ("previous", 123, "", [.control, .command]), ("next", 124, "", [.control, .command]),
+            ("toggle", 125, "", [.control, .command]), ("toggle", 126, "", [.control, .command])]
+        func event(_ code: UInt16, _ character: String, _ modifiers: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                            windowNumber: panel.windowNumber, context: nil, characters: character,
+                            charactersIgnoringModifiers: character, isARepeat: false, keyCode: code)!
+        }
+        let beforeShows = showCount, beforeOpened = openedSpotify
+        var fixed = true
+        for (command, code, character, modifiers) in definitions {
+            let transports = transportCommands, refreshes = refreshRequests
+            panel.sendEvent(event(code, character, modifiers))
+            fixed = fixed && (command == "refresh" ? refreshRequests == refreshes + 1 : transportCommands == transports + 1 && lastTransportCommand == command)
+        }
+        let objects: [JSONObject] = [["uid": "HOTKEY", "type": "alfred.workflow.trigger.hotkey", "config": ["hotkey": 7, "hotmod": 1048576]]]
+        launchHotkey = LaunchHotkey.read(["objects": objects])
+        show()
+        let opened = openedSpotify
+        _ = key(event(7, "x", .command))
+        let customized = openedSpotify == opened + 1
+        let fixedAfterChange = key(event(1, "s", .command)) && lastTransportCommand == "toggle"
+        return ["status": "ok", "fixed_shortcuts_work_without_alfred_assignments": fixed,
+                "only_launch_hotkey_is_configurable": customized && fixedAfterChange,
+                "fixed_keys_do_not_open_apps_or_rebuild_window": beforeShows + 1 == showCount && beforeOpened + 1 == openedSpotify]
+    }
     private func navigationChecks() -> [String: Any] {
+        let binding = launchHotkey
+        launchHotkey = nil
+        defer { launchHotkey = binding }
         demo()
         search.isEnabled = true
         routeKind = "artist"; breadcrumb = "Artists/7!!/"
@@ -2021,7 +2186,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                                        charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
             return !key(event)
         }
-        let removed = unhandled(33, "[", .command) && [UInt16(123), 124, 125].allSatisfy { unhandled($0, "", [.control, .command]) }
+        let removed = unhandled(33, "[", .command)
+            && [(UInt16(35), "p"), (45, "n")].allSatisfy { unhandled($0.0, $0.1, [.control, .command]) }
         demo(); setSearchText("")
         return ["status": "ok", "reopen_selects_filter": reopening, "arrows_clear_text_selection": arrows,
                 "mouse_clears_text_selection": mouseClears, "backspace_deletes_selected_path": selectedDelete && deleted,
@@ -2614,7 +2780,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             context.fill(CGRect(x: 0, y: 0, width: 1024, height: 512))
             try! bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
         }
-        connection = "connected"; breadcrumb = "Artwork/"; search.stringValue = breadcrumb
+        connection = "connected"; breadcrumb = "Artwork/"; setSearchText(breadcrumb)
         source = paths.enumerated().map { MusicItem(["uri": "art:\($0.offset)", "name": "Art \($0.offset)", "art": $0.element]) }
         setCurrentTrack("spotify:track:" + String(repeating: "x", count: 22), refresh: false)
         currentImageURL = "https://old-artwork.example/image"
@@ -2654,7 +2820,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         updatePlayback(["paused", "Known cover", "Artist", "Album", cachedURL, uri])
         let reused = nowArt.image === cover
         let item = MusicItem(["uri": uri, "kind": "track", "name": "No cover"])
-        breadcrumb = "Missing/"; routeKind = "songs"; search.stringValue = breadcrumb
+        breadcrumb = "Missing/"; routeKind = "songs"; setSearchText(breadcrumb)
         source = [item]; filter(); previewSelection()
         setPreviewImage(cover); previewIsCover = true
         receive(["selected": uri, "preview_complete": true, "variables": [:]])
@@ -2666,7 +2832,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let path = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("spotify-invalid-art-" + UUID().uuidString)
         try! Data("Not an image".utf8).write(to: path)
         missingArtworkTestPath = path.path
-        source = [MusicItem(["uri": uri, "kind": "track", "name": "Invalid cover", "art": path.path])]
+        let invalidURI = "spotify:track:" + String(repeating: "j", count: 22)
+        setCurrentTrack(invalidURI, refresh: false)
+        source = [MusicItem(["uri": invalidURI, "kind": "track", "name": "Invalid cover", "art": path.path])]
         previewURI = ""; filter(); previewSelection()
         nowArt.image = cover; setNowArt(path.path)
         return ["status": "pending", "missing_header_art_uses_placeholder": missingHeader,
@@ -2678,11 +2846,112 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let path = missingArtworkTestPath
         guard !path.isEmpty, !loadingImages.contains(path) else { return ["status": "pending"] }
         defer { try? FileManager.default.removeItem(atPath: path); missingArtworkTestPath = "" }
-        return ["status": "ok", "invalid_art_uses_placeholders": failedImages.contains(path)
-                && nowArt.image === symbol("questionmark", height: 64)
-                && preview.image === symbol("questionmark", height: 150) && !previewIsCover]
+        return ["status": "ok", "invalid_art_decode_failed": failedImages.contains(path),
+                "invalid_header_uses_placeholder": nowArt.image === symbol("questionmark", height: 64),
+                "invalid_preview_uses_placeholder": preview.image === symbol("questionmark", height: 150) && !previewIsCover]
     }
 
+    private func directPlaybackChecks() -> [String: Any] {
+        demo(); search.isEnabled = true
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .option, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+        var result: [String: Any] = ["status": "ok"]
+        for kind in ["track", "album", "playlist", "artist"] {
+            for searchResult in [false, true] {
+                let uri = "spotify:" + kind + ":" + String(repeating: "a", count: 22)
+                routeKind = searchResult ? "catalog" : kind + "s"
+                breadcrumb = searchResult ? "/" : kind.capitalized + "s/"
+                let query = breadcrumb + (searchResult ? "Example" : "")
+                setSearchText(query)
+                source = [MusicItem(["uri": uri, "name": "Example", "kind": kind,
+                                     "item": ["uri": uri, "kind": kind, "name": "Example"]])]
+                filter(resetSelection: true)
+                placeSearchCaretAtEnd()
+                let before = playbackRequest
+                panel.sendEvent(event)
+                result[kind + (searchResult ? "_search_plays_directly" : "_browse_plays_directly")] = playbackRequest == before + 1 && search.stringValue == query
+                    && (kind == "track" ? currentTrackURI == uri : currentPlaybackContext?.uri == uri)
+            }
+        }
+        routeKind = "home"; breadcrumb = ""; setSearchText("")
+        source = [MusicItem(["uri": "action:Songs", "name": "Songs", "kind": "action",
+                             "item": ["action": "browse", "target": ["kind": "songs"]]])]
+        filter(resetSelection: true)
+        let before = playbackRequest
+        placeSearchCaretAtEnd(); panel.sendEvent(event)
+        result["home_songs_plays_liked_collection"] = playbackRequest == before + 1
+            && currentPlaybackContext == PlaybackContext.likedSongs && breadcrumb.isEmpty
+        source = [MusicItem(["uri": "action:Search", "name": "Search", "kind": "action", "item": ["action": "catalog"]])]
+        filter(resetSelection: true)
+        placeSearchCaretAtEnd(); panel.sendEvent(event)
+        result["search_falls_back_to_enter"] = routeKind == "catalog" && search.stringValue == "/"
+            && playbackRequest == before + 1
+        demo()
+        return result
+    }
+    private func singleLineChecks() -> [String: Any] {
+        demo(); search.isEnabled = true
+        setSearchText("one\r\ntwo\u{2028}three")
+        placeSearchCaretAtEnd()
+        guard let editor = search.currentEditor() as? NSTextView, panel.firstResponder === editor else {
+            return ["status": "error", "message": "Search editor must have focus"]
+        }
+        let normalized = search.stringValue == "one two three" && editor.string == search.stringValue
+        editor.insertText("four\nfive\r\nsix", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        let paste = search.stringValue.rangeOfCharacter(from: .newlines) == nil && editor.string.rangeOfCharacter(from: .newlines) == nil
+        let query = search.stringValue
+        var ignored = true
+        for selector in [#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), #selector(NSResponder.insertLineBreak(_:)), #selector(NSResponder.insertParagraphSeparator(_:))] {
+            ignored = control(search, textView: editor, doCommandBy: selector) && ignored
+        }
+        let noSeparators = ignored && search.stringValue == query && editor.string == query
+        let uri = "spotify:album:" + String(repeating: "k", count: 22)
+        routeKind = "catalog"; breadcrumb = "/"; setSearchText("/Album")
+        source = [MusicItem(["uri": uri, "name": "Album", "kind": "album", "item": ["uri": uri, "name": "Album", "kind": "album"]])]
+        filter(resetSelection: true); placeSearchCaretAtEnd()
+        let before = playbackRequest
+        let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .option, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "\u{3}", charactersIgnoringModifiers: "\u{3}", isARepeat: false, keyCode: 76)!
+        panel.sendEvent(enter)
+        let keypad = playbackRequest == before + 1 && currentPlaybackContext?.uri == uri && search.stringValue == "/Album"
+        demo()
+        return ["status": "ok", "programmatic_queries_are_single_line": normalized,
+                "pasted_queries_are_single_line": paste, "line_separator_commands_are_consumed": noSeparators,
+                "option_keypad_enter_plays_from_focused_editor": keypad]
+    }
+    private func offlineUIChecks() -> [String: Any] {
+        demo()
+        receive(["type": "update", "offline": true])
+        let visible = !offlineStatus.isHidden && offlineStatus.stringValue == "offline"
+            && offlineStatus.textColor == playerTheme.secondary
+            && offlineStatus.alignment == .right && offlineStatus.frame.maxX == preview.frame.maxX
+            && offlineStatus.frame.minX > status.frame.maxX
+        enterCatalog("downloaded")
+        let noLoading = !catalogPending && !searchStatusVisible && status.stringValue != "Searching Spotify…"
+        receive(["type": "update", "offline": false])
+        let hidden = offlineStatus.isHidden
+        demo()
+        return ["status": "ok", "offline_label_small_and_right_aligned": visible,
+                "offline_search_has_no_network_loading_status": noLoading, "online_hides_offline_label": hidden]
+    }
+    private func spaceChecks() -> [String: Any] {
+        demo(); setSearchText("keep my filter"); show()
+        let window = ObjectIdentifier(panel)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        let hidden = !hotkeyHandoffAllowed && !panel.isVisible
+            && search.stringValue == "keep my filter"
+            && !panel.collectionBehavior.contains(.canJoinAllSpaces)
+            && panel.collectionBehavior.contains(.moveToActiveSpace)
+        let before = openedSpotify
+        showForHotkey(focused: true)
+        let reopens = hotkeyHandoffAllowed && openedSpotify == before && ObjectIdentifier(panel) == window
+        setScreenshotMode(true)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        let demoHides = !hotkeyHandoffAllowed && !screenshotMode
+        return ["status": "ok", "space_change_hides_without_losing_filter": hidden,
+                "reopening_reuses_warm_panel": reopens, "demo_mode_also_hides_on_space_change": demoHides]
+    }
     private func screenshotModeChecks() -> [String: Any] {
         demo()
         placeSearchCaretAtEnd()
@@ -2737,6 +3006,13 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let edge = pixel(0), inside = pixel(1), background = pixel(2)
         let visibleBorder = abs(edge.redComponent - background.redComponent) > 0.02
         let onePixelBorder = abs(inside.redComponent - background.redComponent) < 0.01
+        previewIsCover = false; previewURI = ""
+        table.selectRowIndexes(IndexSet(integer: 4), byExtendingSelection: false)
+        previewSelection(); applyTheme(theme)
+        let searchBlack = preview.image === symbol("magnifyingglass", height: 150) && preview.contentTintColor == .black
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        previewSelection()
+        let otherPreviewsThemed = preview.contentTintColor == theme.secondary
         return ["status": "ok", "theme_applied_to_rows": selection && normal,
                 "theme_applied_to_header": nowTitle.textColor == theme.text && nowDetail.textColor == theme.secondary,
                 "theme_applied_to_cursor": editor?.insertionPointColor == theme.searchText,
@@ -2745,7 +3021,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "theme_window_radius": panel.contentView?.layer?.cornerRadius == 12,
                 "theme_border_renders_in_captures": visibleBorder, "theme_border_is_one_pixel": onePixelBorder,
                 "theme_controls": toggle.contentTintColor == theme.control && shuffle.contentTintColor == theme.secondary,
-                "spotify_green_preserved": green]
+                "spotify_green_preserved": green, "large_search_preview_stays_black": searchBlack,
+                "other_preview_symbols_follow_theme": otherPreviewsThemed]
     }
 
     private func repeatChecks() -> [String: Any] {
@@ -2811,6 +3088,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             && SpotifyCommands.playbackOptions.contains(.neverInteract)
             && !SpotifyCommands.playbackOptions.contains(.canSwitchLayer)
             && !SpotifyCommands.backgroundLaunchConfiguration().activates
+        let transportEvents = [("toggle", AEEventID(0x506c5073)), ("previous", AEEventID(0x50726576)), ("next", AEEventID(0x4e657874))].allSatisfy { command, code in
+            guard let event = SpotifyCommands.playbackEvent(command, uri: "", context: ""),
+                  let target = event.attributeDescriptor(forKeyword: AEKeyword(keyAddressAttr)) else { return false }
+            return event.eventClass == 0x73706679 && event.eventID == code
+                && String(data: target.data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) == "com.spotify.client"
+        }
         let first = "spotify:track:" + String(repeating: "a", count: 22)
         let second = "spotify:track:" + String(repeating: "b", count: 22)
         setCurrentTrack(first)
@@ -2865,7 +3148,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let escapeReopens = openedSpotify == openedBefore + 1 && showCount == showsAfterEscape + 1
         showForHotkey(focused: true)
         let repeatedOpens = openedSpotify == openedBefore + 2
-        return ["status": "ok", "tinted_icons_have_no_edge_lines": tintHasNoEdgeLines(), "local_fallback_uses_background_delivery": backgroundPlayback, "play_pause_equal_gaps": playAligned, "play_gap_difference_pt": playError, "pause_gap_difference_pt": pauseError, "held_playback_controls_green": pressesGreen, "like_unsaved": initiallyUnsaved, "like_pending": pending, "like_pending_stays_green": pendingGreen, "like_saved": saved,
+        return ["status": "ok", "tinted_icons_have_no_edge_lines": tintHasNoEdgeLines(), "local_fallback_uses_background_delivery": backgroundPlayback, "transport_events_target_spotify_only": transportEvents, "play_pause_equal_gaps": playAligned, "play_gap_difference_pt": playError, "pause_gap_difference_pt": pauseError, "held_playback_controls_green": pressesGreen, "like_unsaved": initiallyUnsaved, "like_pending": pending, "like_pending_stays_green": pendingGreen, "like_saved": saved,
                 "like_stale_reply_safe": staleSafe, "checkmark_unlikes": togglesOff && unliked, "held_like_green": likePressesGreen, "held_shuffle_green": shufflePressesGreen, "shuffle_geometry_stable": shuffleStable, "like_failure_recoverable": failure,
                 "shuffle_on": shuffleOn, "shuffle_off": shuffleOff, "shuffle_icon_loaded": shuffle.image != nil,
                 "hotkey_opens_spotify_when_focused": hotkeyOpened,
@@ -2882,12 +3165,13 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         updateRepeat()
         inlineError = nil
         statusMessage = ""
+        offline = false; offlineStatus.isHidden = true
         routeKind = "home"
         breadcrumb = ""
         catalogPending = false
         updateSearchStatus()
         catalogSearchWork?.cancel()
-        source = ["Playlists", "Albums", "Artists", "Songs", "Spotify"].enumerated().map { index, name in
+        source = ["Playlists", "Albums", "Artists", "Songs", "Search"].enumerated().map { index, name in
             MusicItem(["name": name, "kind": "action", "uri": "action:\(name)", "symbol": ["music.note.list", "square.stack", "person.fill", "music.note", "magnifyingglass"][index], "match": name,
                        "item": ["action": index == 4 ? "catalog" : "browse"]])
         }

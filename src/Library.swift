@@ -2,7 +2,7 @@ import Foundation
 
 func stableUnique(_ items: [JSONObject]) -> [JSONObject] { var seen = Set<String>(); return items.filter { let uri = text($0["uri"]); return !uri.isEmpty && seen.insert(uri).inserted } }
 func actionItem(_ name: String, _ action: String, _ extra: JSONObject = [:]) -> JSONObject { ["name": name, "kind": "action", "action": action, "uri": "action:\(action):\(name)"].merging(extra) { _, new in new } }
-let homeItems = [actionItem("Playlists", "browse", ["target": ["kind": "playlists"], "symbol": "music.note.list"]), actionItem("Albums", "browse", ["target": ["kind": "albums"], "symbol": "square.stack"]), actionItem("Artists", "browse", ["target": ["kind": "artists"], "symbol": "person.fill"]), actionItem("Songs", "browse", ["target": ["kind": "songs"], "symbol": "music.note"]), actionItem("Spotify", "catalog", ["symbol": "magnifyingglass", "detail": "Search Spotify’s catalogue"])]
+let homeItems = [actionItem("Playlists", "browse", ["target": ["kind": "playlists"], "symbol": "music.note.list"]), actionItem("Albums", "browse", ["target": ["kind": "albums"], "symbol": "square.stack"]), actionItem("Artists", "browse", ["target": ["kind": "artists"], "symbol": "person.fill"]), actionItem("Songs", "browse", ["target": ["kind": "songs"], "symbol": "music.note"]), actionItem("Search", "catalog", ["symbol": "magnifyingglass", "detail": "Search Spotify’s catalogue"])]
 
 struct LibraryPath {
     let routes: [JSONObject]
@@ -12,26 +12,47 @@ struct LibraryPath {
 final class MusicLibrary {
     let store: MusicStore
     let api: SpotifyAPI
-    init(_ store: MusicStore, _ api: SpotifyAPI) { self.store = store; self.api = api }
+    static let syncKey = "library:synced:v2"
+    private let online: () -> Bool
+    init(_ store: MusicStore, _ api: SpotifyAPI, online: @escaping () -> Bool = { true }) {
+        self.store = store; self.api = api; self.online = online
+    }
+    private var followedArtists: Set<String> { Set(store.get("library:followed-artists", stale: true) as? [String] ?? []) }
+    private func available(_ items: [JSONObject]) -> [JSONObject] {
+        guard !online() else { return items }
+        let downloaded = Set(store.get("desktop:downloaded-uris", stale: true) as? [String] ?? [])
+        let followed = followedArtists
+        let hasSongs = items.contains { text($0["kind"]) == "track" && downloaded.contains(text($0["uri"])) }
+        return items.filter { item in
+            if text(item["kind"]) == "action" {
+                let uri = text(item["play_uri"])
+                return uri.isEmpty || (isLikedSongsURI(uri) ? hasSongs : downloaded.contains(uri))
+            }
+            return downloaded.contains(text(item["uri"])) && (text(item["kind"]) != "artist" || followed.contains(text(item["uri"])))
+        }
+    }
+    func catalog() -> [JSONObject] { available(stableUnique(orderedPlaylists() + store.items())) }
     func sync() throws {
         var items = try api.pages("/me/tracks").compactMap { fromAPI(dict($0["track"]), kind: "track") }
         let albums = try api.pages("/me/albums").compactMap { fromAPI(dict($0["album"]), kind: "album") }
         items += albums
-        items += try api.pages("/me/following", params: ["type": "artist"], nested: "artists").compactMap { fromAPI($0, kind: "artist") }
+        let artists = try api.pages("/me/following", params: ["type": "artist"], nested: "artists").compactMap { fromAPI($0, kind: "artist") }
+        items += artists
         let playlists = try api.pages("/me/playlists").compactMap { fromAPI($0, kind: "playlist") }
         items += playlists
         try store.transaction {
             try store.execute("DELETE FROM saved")
             for item in items {
                 try store.putItem(item); try store.save(text(item["uri"]), liked: true)
-                for artist in item["artists"] as? [JSONObject] ?? [] { try store.putItem(artist); try store.save(text(artist["uri"]), liked: true) }
+                for artist in item["artists"] as? [JSONObject] ?? [] { try store.putItem(artist) }
             }
             for row in try store.rows("SELECT key,payload FROM responses WHERE key LIKE 'native:saved-recent:%' AND expires>?", [Date().timeIntervalSince1970]) {
                 let uri = String(text(row["key"]).dropFirst("native:saved-recent:".count))
                 if validTrack(uri) { try store.save(uri, liked: text(row["payload"]) == "true") }
             }
+            try store.put("library:followed-artists", artists.map { text($0["uri"]) }, ttl: 365 * 86400)
             try store.put("library:playlist-order", playlists.map { text($0["uri"]) }, ttl: 365 * 86400)
-            try store.put("library:synced", Date().timeIntervalSince1970, ttl: 86400)
+            try store.put(Self.syncKey, Date().timeIntervalSince1970, ttl: 86400)
         }
     }
     func orderedPlaylists() -> [JSONObject] {
@@ -63,7 +84,7 @@ final class MusicLibrary {
         while remaining.contains("/") {
             let choices: [JSONObject]
             if let route = routes.last { choices = try browse(route) }
-            else { choices = ["playlist", "album", "artist"].flatMap { store.items($0) } + (try browse(["kind": "albums"])) }
+            else { choices = catalog().filter { ["playlist", "album", "artist"].contains(text($0["kind"])) } + (try browse(["kind": "albums"])) }
             let folders = choices.filter { ["playlist", "album", "artist"].contains(text($0["kind"])) }
             guard let (raw, route) = match(folders.map { (text($0["name"]), $0) }) else { break }
             consumed += raw; remaining.removeFirst(raw.count); routes.append(route)
@@ -74,10 +95,10 @@ final class MusicLibrary {
         store.get("search:" + query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), stale: stale) as? [JSONObject]
     }
     func browse(_ route: JSONObject, network: Bool = false, cancellation: RequestCancellation? = nil) throws -> [JSONObject] {
-        do { return try load(route, network: network, cancellation: cancellation) }
+        do { return available(try load(route, network: network && online(), cancellation: cancellation)) }
         catch let error as SpotifyFailure where network && error.isNetworkError {
             if text(route["kind"]) == "catalog" && cachedSearch(text(route["query"])) == nil { throw error }
-            return try load(route, network: false, cancellation: cancellation)
+            return available(try load(route, network: false, cancellation: cancellation))
         }
     }
     private func load(_ route: JSONObject, network: Bool, cancellation: RequestCancellation?) throws -> [JSONObject] {
@@ -91,8 +112,10 @@ final class MusicLibrary {
             return [actionItem("All", "play", ["play_uri": PlaybackContext.likedSongs.uri, "playback_context": context,
                                                "symbol": "play.fill", "detail": "Play all Liked Songs"])]
                 + songs.map { $0.merging(["playback_context": context]) { _, new in new } }
-        case "artists": return store.items("artist", saved: true).sorted { text($0["name"]).localizedStandardCompare(text($1["name"])) == .orderedAscending }
-        case "albums": return stableUnique(store.items("album", saved: true) + store.items("track", saved: true).compactMap { $0["album"] as? JSONObject }).sorted { text($0["name"]).localizedStandardCompare(text($1["name"])) == .orderedAscending }
+        case "artists":
+            let followed = followedArtists
+            return store.items("artist", saved: true).filter { followed.contains(text($0["uri"])) }.sorted { text($0["name"]).localizedStandardCompare(text($1["name"])) == .orderedAscending }
+        case "albums": return store.items("album", saved: true).sorted { text($0["name"]).localizedStandardCompare(text($1["name"])) == .orderedAscending }
         case "catalog":
             let query = text(route["query"]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else { return [] }

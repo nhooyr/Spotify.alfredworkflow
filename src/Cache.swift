@@ -196,7 +196,7 @@ final class DesktopCache {
         let playlists = Set(saved.filter { text($0["kind"]) == "playlist" }.map { text($0["uri"]) })
             .union(store.get("desktop:playlist-order", stale: true) as? [String] ?? [])
             .union(store.get("desktop:offline-playlists", stale: true) as? [String] ?? [])
-        var needed = Set(saved.map { text($0["uri"]) }), urls = Set(saved.map { text($0["image"]) })
+        var needed = Set(saved.map { text($0["uri"]) }).union(store.get("desktop:offline-tracks", stale: true) as? [String] ?? []), urls = Set(saved.map { text($0["image"]) })
         for uri in playlists {
             needed.formUnion(dict(store.get("desktop:contents:" + uri, stale: true))["uris"] as? [String] ?? [])
             for item in store.get("contents:" + uri, stale: true) as? [JSONObject] ?? [] {

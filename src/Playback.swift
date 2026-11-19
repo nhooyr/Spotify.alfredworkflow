@@ -35,19 +35,33 @@ enum DesktopAccount {
     }
 }
 
-private final class NetworkAvailability {
+final class NetworkAvailability {
     static let shared = NetworkAvailability()
     private let monitor = NWPathMonitor()
     private let lock = NSLock()
     private var available = true
+    private var observers: [UUID: (Bool) -> Void] = [:]
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self = self else { return }
-            self.lock.lock(); self.available = path.status != .unsatisfied; self.lock.unlock()
+            self.lock.lock()
+            let available = path.status != .unsatisfied
+            let changed = self.available != available
+            self.available = available
+            let observers = Array(self.observers.values)
+            self.lock.unlock()
+            if changed { for observer in observers { observer(available) } }
         }
         monitor.start(queue: DispatchQueue(label: "spotify.network", qos: .utility))
     }
     func isOnline() -> Bool { lock.lock(); defer { lock.unlock() }; return available }
+    func observe(_ observer: @escaping (Bool) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock(); observers[id] = observer; let current = available; lock.unlock()
+        observer(current)
+        return id
+    }
+    func removeObserver(_ id: UUID) { lock.lock(); observers.removeValue(forKey: id); lock.unlock() }
 }
 
 // Kept on the backend's playback queue, separate from library sync and status polling.

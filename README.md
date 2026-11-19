@@ -53,6 +53,9 @@ text after any folder path to filter its contents.
 | `/query` | Search Spotify’s full catalogue. |
 
 **Songs** contains your Liked Songs; choose **All** at the top to play the collection.
+**Artists** lists only artists you follow. Offline, browsing and search show
+downloaded music only, including artists with downloaded songs. A small grey
+**offline** label appears at the bottom right.
 The **＋/✓** button likes or unlikes the current song. Playlists use Spotify’s custom
 order when available; local search prioritises playlists, albums, artists, then
 songs and reuses cached music.
@@ -68,7 +71,7 @@ The shuffle button toggles shuffle; repeat cycles **off → all → one**
 ([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
 Active like, shuffle and repeat controls stay Spotify green.
 
-Choose **Spotify** (`⌘5`), press `⌘↩` to carry over your current query, or start
+Choose **Search** (`⌘5`), press `⌘↩` to carry over your current query, or start
 with `/` to search the full catalogue (for example, `/meow`). Results update as
 you type. Reopening resumes the query; removing the leading `/` returns to local
 search.
@@ -95,25 +98,37 @@ and `spotify demo`.
 | `spot shuf` | Turn shuffle on. |
 | `spot noshuf` | Turn shuffle off. |
 | `spot demo` | Toggle demo mode for macOS’s window picker. |
+| `spot refresh` | Refresh the desktop cache index and connected library. |
 | `spot reauth` | Clear sign-in; reconnect when the player next opens. |
 
 The like, unlike, shuf and noshuf commands set a state rather than toggling it.
 
-* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd> Open the player (default Hotkey).
+* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd> Open the player from any app (the only global Hotkey).
+* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>←</kbd> / <kbd>⌃</kbd><kbd>⌘</kbd><kbd>→</kbd> Previous / next Spotify track in the mini player.
+* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>↑</kbd> / <kbd>⌃</kbd><kbd>⌘</kbd><kbd>↓</kbd> Play/pause Spotify in the mini player.
+* <kbd>⌘</kbd><kbd>S</kbd> Play/pause Spotify in the mini player.
+* <kbd>⌘</kbd><kbd>P</kbd> / <kbd>⌘</kbd><kbd>N</kbd> Previous / next track in the mini player.
 * <kbd>↩</kbd> Browse the selection from its first item, or play a song.
+* <kbd>⌥</kbd><kbd>↩</kbd> Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
 * <kbd>⌘</kbd><kbd>↓</kbd> Open the selection, restoring its previous selection and filter.
 * <kbd>⌘</kbd><kbd>↑</kbd> Go up one level, restoring the parent selection and filter.
 * <kbd>⌘</kbd><kbd>↩</kbd> Search the full Spotify catalogue.
 * <kbd>⌫</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
-* <kbd>⌘</kbd><kbd>R</kbd> Refresh the library and desktop cache index.
+* <kbd>⌘</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
 * <kbd>⌘</kbd><kbd>,</kbd> Open the Workflow’s Configuration.
 * <kbd>Esc</kbd> / <kbd>⌘</kbd><kbd>W</kbd> Hide the player.
 
-Configure the Hotkey for faster access. Press it again while the player is
-focused to open Spotify. The player stays ready in the background while Alfred
+Only the launch Hotkey at the top of the workflow canvas is configurable
+(default: `⌃⌘Space`). All other shortcuts are fixed and active only in the mini
+player. Alfred clears the launch assignment on a fresh import; set it once in
+that Hotkey object.
+
+Open the player with `spot` or the launch Hotkey. Press that Hotkey again while
+the player is focused to open Spotify. The player stays ready in the background while Alfred
 is running. Reopening selects your filter so typing replaces it; using the results
 or controls clears that selection. Editing a filter selects the first result.
 Spotify catalogue searches resume in the same mode.
+Switching Spaces hides the player while keeping its filter and window ready.
 
 Demo mode (`spot demo`) keeps the player focusable and visible while using macOS’s
 screenshot tool. Run it again, or press Esc in the player, to exit.

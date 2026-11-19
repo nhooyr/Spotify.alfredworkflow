@@ -12,6 +12,17 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
                      "config": ["default": defaultWorkflowKeyword, "placeholder": "", "required": false, "trim": true]])
     workflow["userconfigurationconfig"] = settings
     var objects = workflow["objects"] as! [JSONObject]
+    for i in objects.indices where text(objects[i]["uid"]) == "HOTKEY" {
+        var config = dict(objects[i]["config"])
+        config["hotkey"] = 49; config["hotmod"] = 1310720; config["hotstring"] = "Space"
+        config["action"] = 0; config["argument"] = 0; config["modsmode"] = 2
+        config["relatedAppsMode"] = 0; config.removeValue(forKey: "relatedApps")
+        objects[i]["config"] = config
+    }
+    for i in objects.indices where text(objects[i]["uid"]) == "HOTKEY_PLAYER" {
+        var config = dict(objects[i]["config"]); config["script"] = "exec ./show --hotkey"
+        objects[i]["config"] = config
+    }
     for i in objects.indices where ["OPEN", "REAUTH"].contains(text(objects[i]["uid"])) {
         var config = dict(objects[i]["config"])
         config["keyword"] = "{var:keyword}" + (text(objects[i]["uid"]) == "REAUTH" ? " reauth" : "")
@@ -31,7 +42,7 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
                                "title": "Open Spotify Mini Player", "runningsubtext": ""]])
     let commands = [("like", "like", "Like current song"), ("unlike", "unlike", "Unlike current song"),
                     ("shuffle", "shuf", "Turn shuffle on"), ("noshuffle", "noshuf", "Turn shuffle off"),
-                    ("screenshot", "demo", "Toggle demo mode")]
+                    ("screenshot", "demo", "Toggle demo mode"), ("refresh", "refresh", "Refresh music library")]
     let commandIDs = Set(commands.flatMap { ["COMMAND_" + $0.0.uppercased(), "ACTION_" + $0.0.uppercased()] })
     objects.removeAll { commandIDs.contains(text($0["uid"])) }
     var connections = workflow["connections"] as? [String: Any] ?? [:]
@@ -41,18 +52,29 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     connections["REAUTH"] = [["destinationuid": "CLEAR_ACTION", "modifiers": 0, "modifiersubtext": "", "vitoclose": false]]
     connections["CLEAR_ACTION"] = [["destinationuid": "REAUTH_RESULT", "modifiers": 0, "modifiersubtext": "", "vitoclose": false]]
     connections["REAUTH_RESULT"] = [["destinationuid": "PLAYER", "modifiers": 0, "modifiersubtext": "", "vitoclose": true]]
-    layout["REAUTH_RESULT"] = ["xpos": 510, "ypos": 340]
-    for (index, command) in commands.enumerated() {
+    for command in commands {
         let input = "COMMAND_" + command.0.uppercased(), action = "ACTION_" + command.0.uppercased()
         objects.append(["uid": input, "type": "alfred.workflow.input.keyword", "version": 1,
                         "config": ["keyword": "{var:keyword} " + command.1, "argumenttype": 2,
-                                   "withspace": false, "text": command.2, "subtext": command.0 == "screenshot" ? "Keep the mini player visible for screenshots; Esc exits" : "Set the current playback state"]])
+                                   "withspace": false, "text": command.2, "subtext": command.0 == "screenshot" ? "Keep the mini player visible for screenshots; Esc exits" : command.0 == "refresh" ? "Refresh the desktop cache index and connected library" : "Set the current playback state"]])
         objects.append(["uid": action, "type": "alfred.workflow.action.script", "version": 2,
                         "config": ["script": "exec ./show --" + command.0, "type": 0,
                                    "scriptargtype": 1, "scriptfile": "", "escaping": 0, "concurrently": true]])
         connections[input] = [["destinationuid": action, "modifiers": 0, "modifiersubtext": "", "vitoclose": true]]
-        layout[input] = ["xpos": 50, "ypos": 550 + index * 130]
-        layout[action] = ["xpos": 280, "ypos": 550 + index * 130]
+    }
+    var launchLayout = dict(layout["HOTKEY"])
+    launchLayout["xpos"] = 50; launchLayout["ypos"] = 20
+    launchLayout["note"] = "Launch Spotify Mini Player — global\nDefault: ⌃⌘Space; press again in the player to open Spotify"
+    layout["HOTKEY"] = launchLayout
+    layout["HOTKEY_PLAYER"] = ["xpos": 300, "ypos": 20]
+    layout["PLAYER"] = ["xpos": 300, "ypos": 180]
+    layout["OPEN"] = ["xpos": 50, "ypos": 180]
+    layout["REAUTH"] = ["xpos": 50, "ypos": 320]
+    layout["CLEAR_ACTION"] = ["xpos": 300, "ypos": 320]
+    layout["REAUTH_RESULT"] = ["xpos": 550, "ypos": 320]
+    for (index, command) in commands.enumerated() {
+        layout["COMMAND_" + command.0.uppercased()] = ["xpos": 50, "ypos": 500 + index * 130]
+        layout["ACTION_" + command.0.uppercased()] = ["xpos": 300, "ypos": 500 + index * 130]
     }
     workflow["connections"] = connections
     workflow["uidata"] = layout

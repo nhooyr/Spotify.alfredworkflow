@@ -64,3 +64,10 @@ active playback controls keep Spotify green.
 The bundled Liked Songs cover in `workflow/icons/liked-songs.png` comes from
 [Spotify’s public collection artwork](https://misc.scdn.co/liked-songs/liked-songs-640.png)
 and is available offline without duplicating it in the artwork cache.
+
+Only the launch Hotkey is configurable in Alfred. Playback, refresh, navigation,
+and Option–Return shortcuts are handled directly by the focused native panel.
+The panel reads the launch binding from `info.plist` to support pressing it again
+to open Spotify. Playback events target Spotify directly. Switching Spaces hides
+the window without destroying it; the next launch shows the same warm panel in
+the current Space.

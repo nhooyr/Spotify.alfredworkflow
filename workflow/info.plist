@@ -60,6 +60,19 @@
 				<true/>
 			</dict>
 		</array>
+		<key>COMMAND_REFRESH</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_REFRESH</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
 		<key>COMMAND_SCREENSHOT</key>
 		<array>
 			<dict>
@@ -574,6 +587,50 @@
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>{var:keyword} refresh</string>
+				<key>subtext</key>
+				<string>Refresh the desktop cache index and connected library</string>
+				<key>text</key>
+				<string>Refresh music library</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_REFRESH</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --refresh</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_REFRESH</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
 	</array>
 	<key>readme</key>
 	<string># Spotify.alfredworkflow
@@ -631,6 +688,9 @@ text after any folder path to filter its contents.
 | `/query` | Search Spotify’s full catalogue. |
 
 **Songs** contains your Liked Songs; choose **All** at the top to play the collection.
+**Artists** lists only artists you follow. Offline, browsing and search show
+downloaded music only, including artists with downloaded songs. A small grey
+**offline** label appears at the bottom right.
 The **＋/✓** button likes or unlikes the current song. Playlists use Spotify’s custom
 order when available; local search prioritises playlists, albums, artists, then
 songs and reuses cached music.
@@ -646,7 +706,7 @@ The shuffle button toggles shuffle; repeat cycles **off → all → one**
 ([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
 Active like, shuffle and repeat controls stay Spotify green.
 
-Choose **Spotify** (`⌘5`), press `⌘↩` to carry over your current query, or start
+Choose **Search** (`⌘5`), press `⌘↩` to carry over your current query, or start
 with `/` to search the full catalogue (for example, `/meow`). Results update as
 you type. Reopening resumes the query; removing the leading `/` returns to local
 search.
@@ -673,25 +733,37 @@ and `spotify demo`.
 | `spot shuf` | Turn shuffle on. |
 | `spot noshuf` | Turn shuffle off. |
 | `spot demo` | Toggle demo mode for macOS’s window picker. |
+| `spot refresh` | Refresh the desktop cache index and connected library. |
 | `spot reauth` | Clear sign-in; reconnect when the player next opens. |
 
 The like, unlike, shuf and noshuf commands set a state rather than toggling it.
 
-* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt; Open the player (default Hotkey).
+* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt; Open the player from any app (the only global Hotkey).
+* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;←&lt;/kbd&gt; / &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;→&lt;/kbd&gt; Previous / next Spotify track in the mini player.
+* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↑&lt;/kbd&gt; / &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↓&lt;/kbd&gt; Play/pause Spotify in the mini player.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;S&lt;/kbd&gt; Play/pause Spotify in the mini player.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;P&lt;/kbd&gt; / &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;N&lt;/kbd&gt; Previous / next track in the mini player.
 * &lt;kbd&gt;↩&lt;/kbd&gt; Browse the selection from its first item, or play a song.
+* &lt;kbd&gt;⌥&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↓&lt;/kbd&gt; Open the selection, restoring its previous selection and filter.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↑&lt;/kbd&gt; Go up one level, restoring the parent selection and filter.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; Search the full Spotify catalogue.
 * &lt;kbd&gt;⌫&lt;/kbd&gt; Delete text; at a folder path with no filter, go up and restore the parent selection.
-* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;R&lt;/kbd&gt; Refresh the library and desktop cache index.
+* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;R&lt;/kbd&gt; Refresh the library and desktop cache index in the mini player.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;,&lt;/kbd&gt; Open the Workflow’s Configuration.
 * &lt;kbd&gt;Esc&lt;/kbd&gt; / &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;W&lt;/kbd&gt; Hide the player.
 
-Configure the Hotkey for faster access. Press it again while the player is
-focused to open Spotify. The player stays ready in the background while Alfred
+Only the launch Hotkey at the top of the workflow canvas is configurable
+(default: `⌃⌘Space`). All other shortcuts are fixed and active only in the mini
+player. Alfred clears the launch assignment on a fresh import; set it once in
+that Hotkey object.
+
+Open the player with `spot` or the launch Hotkey. Press that Hotkey again while
+the player is focused to open Spotify. The player stays ready in the background while Alfred
 is running. Reopening selects your filter so typing replaces it; using the results
 or controls clears that selection. Editing a filter selects the first result.
 Spotify catalogue searches resume in the same mode.
+Switching Spaces hides the player while keeping its filter and window ready.
 
 Demo mode (`spot demo`) keeps the player focusable and visible while using macOS’s
 screenshot tool. Run it again, or press Esc in the player, to exit.
@@ -708,44 +780,51 @@ Your Spotify Client ID and cached music are kept.
 		<key>ACTION_LIKE</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>550</integer>
+			<integer>500</integer>
 		</dict>
 		<key>ACTION_NOSHUFFLE</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>940</integer>
+			<integer>890</integer>
+		</dict>
+		<key>ACTION_REFRESH</key>
+		<dict>
+			<key>xpos</key>
+			<integer>300</integer>
+			<key>ypos</key>
+			<integer>1150</integer>
 		</dict>
 		<key>ACTION_SCREENSHOT</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>1070</integer>
+			<integer>1020</integer>
 		</dict>
 		<key>ACTION_SHUFFLE</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>810</integer>
+			<integer>760</integer>
 		</dict>
 		<key>ACTION_UNLIKE</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>680</integer>
+			<integer>630</integer>
 		</dict>
 		<key>CLEAR_ACTION</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>340</integer>
+			<integer>320</integer>
 		</dict>
 		<key>CLEAR_CONNECTION</key>
 		<dict>
@@ -761,80 +840,87 @@ Your Spotify Client ID and cached music are kept.
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>550</integer>
+			<integer>500</integer>
 		</dict>
 		<key>COMMAND_NOSHUFFLE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>940</integer>
+			<integer>890</integer>
+		</dict>
+		<key>COMMAND_REFRESH</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>1150</integer>
 		</dict>
 		<key>COMMAND_SCREENSHOT</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>1070</integer>
+			<integer>1020</integer>
 		</dict>
 		<key>COMMAND_SHUFFLE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>810</integer>
+			<integer>760</integer>
 		</dict>
 		<key>COMMAND_UNLIKE</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>680</integer>
+			<integer>630</integer>
 		</dict>
 		<key>HOTKEY</key>
 		<dict>
 			<key>note</key>
-			<string>Launch Spotify Mini Player
-Double-click to set your keyboard shortcut</string>
+			<string>Launch Spotify Mini Player — global
+Default: ⌃⌘Space; press again in the player to open Spotify</string>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>180</integer>
+			<integer>20</integer>
 		</dict>
 		<key>HOTKEY_PLAYER</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>210</integer>
+			<integer>20</integer>
 		</dict>
 		<key>OPEN</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>50</integer>
+			<integer>180</integer>
 		</dict>
 		<key>PLAYER</key>
 		<dict>
 			<key>xpos</key>
-			<integer>280</integer>
+			<integer>300</integer>
 			<key>ypos</key>
-			<integer>80</integer>
+			<integer>180</integer>
 		</dict>
 		<key>REAUTH</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>300</integer>
+			<integer>320</integer>
 		</dict>
 		<key>REAUTH_RESULT</key>
 		<dict>
 			<key>xpos</key>
-			<integer>510</integer>
+			<integer>550</integer>
 			<key>ypos</key>
-			<integer>340</integer>
+			<integer>320</integer>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>
@@ -887,7 +973,7 @@ Double-click to set your keyboard shortcut</string>
 		<string>SPOTIFY_CLIENT_ID</string>
 	</array>
 	<key>version</key>
-	<string>0.4.29</string>
+	<string>0.4.35</string>
 	<key>webaddress</key>
 	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>

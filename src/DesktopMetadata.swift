@@ -85,12 +85,62 @@ enum DesktopDatabase {
 enum DesktopMetadata {
     static func playlistKey(_ uri: String) -> Data { Data("!pl#slc#".utf8) + Data([UInt8(uri.utf8.count)]) + Data((uri + "#").utf8) }
     static func trackKey(_ uri: String) -> Data { Data("!xmeta#cache#".utf8) + Data([1, 42, 35, UInt8(uri.utf8.count)]) + Data((uri + "#").utf8) }
-    static func offlineReferences(_ directory: URL) -> Set<String> {
+    struct Downloads {
+        let collections: [String: [String]]
+        var tracks: Set<String> { Set(collections.values.flatMap { $0 }) }
+    }
+    // Spotify's download manifest is separate from its metadata and streaming cache.
+    // Read bounded, complete records; unknown or unfinished entries are not playable.
+    static func downloads(_ data: Data) throws -> Downloads {
+        guard data.count <= 8 * 1024 * 1024 else { throw SpotifyFailure(message: "Download manifest is too large.") }
+        var reader = Bytes(data)
+        func tag(_ expected: UInt8) throws {
+            guard try reader.take(1).first == expected else { throw SpotifyFailure(message: "Unknown download manifest format.") }
+        }
+        func blob(_ type: UInt8) throws -> Data {
+            try tag(type)
+            let size = try reader.varint()
+            guard size <= 1024 * 1024 else { throw SpotifyFailure(message: "Invalid download manifest field.") }
+            return try reader.take(Int(size))
+        }
+        func count() throws -> Int {
+            let value = try reader.varint()
+            guard value & 7 == 4, value >> 3 <= 100000 else { throw SpotifyFailure(message: "Invalid download manifest count.") }
+            return Int(value >> 3)
+        }
+        try tag(5)
+        let collections = try count()
+        var result: [String: [String]] = [:]
+        for _ in 0..<collections {
+            let uri = String(decoding: try blob(1), as: UTF8.self)
+            guard try blob(9) == Data("_playlist".utf8) else { throw SpotifyFailure(message: "Unknown download manifest entry.") }
+            try tag(13)
+            let tracks = try count()
+            var ready: [String] = []
+            for _ in 0..<tracks {
+                let gid = try blob(1)
+                guard gid.count == 16 else { throw SpotifyFailure(message: "Invalid downloaded song ID.") }
+                try tag(16); let state = try reader.varint(); try tag(120)
+                if state == 0 { ready.append("spotify:track:" + spotifyID(gid)) }
+            }
+            try tag(8); _ = try reader.varint()
+            try tag(8); let enabled = try reader.varint()
+            let error = try blob(9)
+            try tag(8); _ = try reader.varint()
+            if reader.bytes.indices.contains(reader.position), reader.bytes[reader.position] == 17 { _ = try blob(17) }
+            try tag(120)
+            if enabled == 1, error.isEmpty, !ready.isEmpty,
+               (validURI(uri) && !validTrack(uri)) || isLikedSongsURI(uri) {
+                result[uri] = ready
+            }
+        }
+        return Downloads(collections: result)
+    }
+    static func readDownloads(_ directory: URL) -> Downloads? {
         let file = directory.deletingLastPathComponent().appendingPathComponent("offline_lists.bnk")
-        guard let data = try? Data(contentsOf: file), data.count <= 8 * 1024 * 1024 else { return [] }
-        let string = String(decoding: data, as: UTF8.self)
-        let regex = try! NSRegularExpression(pattern: #"spotify:playlist:[A-Za-z0-9]{22}"#)
-        return Set(regex.matches(in: string, range: NSRange(string.startIndex..., in: string)).compactMap { Range($0.range, in: string).map { String(string[$0]) } })
+        guard FileManager.default.fileExists(atPath: file.path) else { return Downloads(collections: [:]) }
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? downloads(data)
     }
     struct Playlist {
         let item: JSONObject
@@ -116,11 +166,12 @@ enum DesktopMetadata {
         return fromProto(value, kind: "track")
     }
     @discardableResult static func index(_ directory: URL, store: MusicStore) throws -> Int {
-        let offline = offlineReferences(directory)
+        let downloads = readDownloads(directory)
+        let offline = Set(downloads?.collections.keys.filter { $0.hasPrefix("spotify:playlist:") } ?? store.get("desktop:offline-playlists", stale: true) as? [String] ?? [])
         let wanted = Set(store.items("playlist", saved: true).map { text($0["uri"]) }).union(store.get("desktop:playlist-order", stale: true) as? [String] ?? []).union(offline)
         let records = DesktopDatabase.read(directory, prefixes: wanted.map(playlistKey))
         let lists = wanted.compactMap { uri in records[playlistKey(uri)].flatMap { playlist($0.value, uri: uri) } }
-        let uris = Set(lists.flatMap { $0.uris }).union(store.items("track").map { text($0["uri"]) })
+        let uris = Set(lists.flatMap { $0.uris }).union(store.items("track").map { text($0["uri"]) }).union(downloads?.tracks ?? [])
         let missing = uris.filter { uri in guard let item = store.item(uri) else { return true }; return text(item["image"]).isEmpty }
         let metadata = DesktopDatabase.read(directory, prefixes: missing.map(trackKey))
         var changed = 0
@@ -140,6 +191,21 @@ enum DesktopMetadata {
                 if store.get(key, stale: true).map({ NSDictionary(dictionary: dict($0)).isEqual(to: snapshot) }) != true { changed += 1 }
                 try store.putItem(list.item)
                 try store.put(key, snapshot, ttl: 365 * 86400)
+            }
+            if let downloads = downloads {
+                let tracks = downloads.tracks
+                var available = tracks.union(downloads.collections.keys)
+                for item in store.items("track") where tracks.contains(text(item["uri"])) {
+                    let album = dict(item["album"])
+                    if !text(album["uri"]).isEmpty { available.insert(text(album["uri"])) }
+                    for artist in (item["artists"] as? [JSONObject] ?? []) + (album["artists"] as? [JSONObject] ?? []) {
+                        if !text(artist["uri"]).isEmpty { available.insert(text(artist["uri"])) }
+                    }
+                }
+                let ordered = Array(available).sorted()
+                if store.get("desktop:downloaded-uris", stale: true) as? [String] != ordered { changed += 1 }
+                try store.put("desktop:downloaded-uris", ordered, ttl: 365 * 86400)
+                try store.put("desktop:offline-tracks", Array(tracks).sorted(), ttl: 365 * 86400)
             }
         }
         return changed

@@ -15,6 +15,8 @@ final class NativeBackend {
     private var warmingArtwork = false
     private var cleaningCache = false
     private var cacheMaintenance: DispatchSourceTimer?
+    private var networkObserver: UUID?
+    private var offline = false
     private let paths: WorkflowPaths
     private var store: MusicStore!
     private var api: SpotifyAPI!
@@ -30,6 +32,7 @@ final class NativeBackend {
     private var navigationRequest = 0
     private var catalogRequest: RequestCancellation?
     private var syncing = false
+    private var refreshAfterSync = false
     private var lastRefresh = Date.distantPast
     private static let rowKeys: Set<String> = ["uri", "name", "kind", "context", "playback_context", "action", "target", "play_uri", "image", "query", "is_local", "is_playable"]
     private static let rowSymbols = ["playlist": "music.note.list", "album": "square.stack", "artist": "person.fill", "track": "music.note"]
@@ -44,8 +47,12 @@ final class NativeBackend {
             do {
                 try self.paths.prepare()
                 self.store = try MusicStore(self.paths.cache.appendingPathComponent("index.sqlite3"))
-                self.api = SpotifyAPI(self.paths); self.cache = DesktopCache(self.paths, self.store); self.library = MusicLibrary(self.store, self.api)
+                self.api = SpotifyAPI(self.paths); self.cache = DesktopCache(self.paths, self.store); self.library = MusicLibrary(self.store, self.api, online: WebPlayback.networkAvailable)
                 self.playback = WebPlayback(self.api, store: self.store)
+                self.offline = !WebPlayback.networkAvailable()
+                self.networkObserver = NetworkAvailability.shared.observe { [weak self] online in
+                    self?.queue.async { self?.networkChanged(online) }
+                }
                 self.reloadArt()
                 let timer = DispatchSource.makeTimerSource(queue: self.queue)
                 timer.schedule(deadline: .now() + 3600, repeating: 3600, leeway: .seconds(60))
@@ -63,7 +70,17 @@ final class NativeBackend {
             } catch { self.connection = "failed"; self.message = error.localizedDescription; self.running = false; self.publishRows(command: "init") }
         }
     }
-    func stop() { running = false; playbackCancellation?.cancel(); auth?.cancel(); cacheMaintenance?.cancel(); cacheMaintenance = nil }
+    func stop() {
+        running = false; playbackCancellation?.cancel(); auth?.cancel(); cacheMaintenance?.cancel(); cacheMaintenance = nil
+        if let observer = networkObserver { NetworkAvailability.shared.removeObserver(observer); networkObserver = nil }
+    }
+    private func networkChanged(_ online: Bool) {
+        guard offline == online, store != nil, running else { return }
+        offline = !online
+        revision += 1; catalogRequest?.cancel(); catalogRequest = nil
+        sendCatalog(); publishRows(command: "refresh")
+        if connection == "connected" { refresh(force: true) }
+    }
     private var validCredentials: Bool { paths.clientID().range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil }
     private var route: JSONObject { stack.last ?? ["kind": "home"] }
     private var prefix: String {
@@ -74,7 +91,10 @@ final class NativeBackend {
             return name.isEmpty ? text($0["kind"]).capitalized : name
         }.joined(separator: "/") + (stack.isEmpty ? "" : "/")
     }
-    private func output(_ value: JSONObject) { DispatchQueue.main.async { [weak self] in self?.receive?(value) } }
+    private func output(_ value: JSONObject) {
+        let value = value.merging(["offline": !WebPlayback.networkAvailable()]) { _, latest in latest }
+        DispatchQueue.main.async { [weak self] in self?.receive?(value) }
+    }
     private func outputError(_ error: Error) { output(["type": "error", "message": error.localizedDescription]) }
     private func reloadArt() {
         artwork = Set(((try? FileManager.default.contentsOfDirectory(at: paths.cache.appendingPathComponent("artwork"), includingPropertiesForKeys: nil)) ?? []).map { $0.lastPathComponent })
@@ -112,14 +132,14 @@ final class NativeBackend {
         if text(route["kind"]) == "catalog" {
             let query = text(route["query"])
             value["query"] = query
-            value["searching"] = connection == "connected" && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && library.cachedSearch(query) == nil
+            value["searching"] = connection == "connected" && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && WebPlayback.networkAvailable() && library.cachedSearch(query) == nil
         }
         if resetText { value["search_text"] = text(route["kind"]) == "catalog" ? "/" + text(route["query"]) : prefix }
         output(value)
     }
     private func sendCatalog() {
         guard store != nil else { return }; reloadArt()
-        output(["type": "catalog", "rows": stableUnique(library.orderedPlaylists() + store.items()).map(nativeRow)])
+        output(["type": "catalog", "rows": library.catalog().map(nativeRow)])
     }
     private func connect() {
         if connection == "connecting", auth?.reopenBrowser({ [weak self] opened in
@@ -166,7 +186,7 @@ final class NativeBackend {
         artworkWork.async { [weak self] in
             guard let self = self else { return }
             let local = (try? self.cache.preserveArtwork()) ?? 0
-            let copied = local + ((try? self.cache.preserveArtwork(downloadMissing: true)) ?? 0)
+            let copied = local + (WebPlayback.networkAvailable() ? ((try? self.cache.preserveArtwork(downloadMissing: true)) ?? 0) : 0)
             self.queue.async {
                 self.warmingArtwork = false
                 if copied > 0 { self.sendCatalog(); self.publishRows(command: "artwork") }
@@ -174,15 +194,16 @@ final class NativeBackend {
         }
     }
     private func refresh(force: Bool) {
-        guard !syncing, force || Date().timeIntervalSince(lastRefresh) >= 30 else { return }
+        if syncing { refreshAfterSync = refreshAfterSync || force; return }
+        guard force || Date().timeIntervalSince(lastRefresh) >= 30 else { return }
         syncing = true
         lastRefresh = Date()
-        let doSync = api.connected && (force || store.get("library:synced") == nil)
+        let doSync = WebPlayback.networkAvailable() && api.connected && (force || store.get(MusicLibrary.syncKey) == nil)
         work.async { [weak self] in
             guard let self = self else { return }
             var error: Error?, changed = force
             do {
-                if force || self.store.get("desktop:scanned:v3") == nil {
+                if force || self.store.get("desktop:scanned:v4") == nil {
                     changed = try self.cache.index() > 0 || changed
                     if let root = PlaylistOrder.desktopDirectory() {
                         if let order = PlaylistOrder.read(root), order != self.store.get("desktop:playlist-order", stale: true) as? [String] {
@@ -192,7 +213,7 @@ final class NativeBackend {
                         changed = try DesktopMetadata.index(root, store: self.store) > 0 || changed
                     }
                     changed = try self.cache.preserveArtwork() > 0 || changed
-                    try self.store.put("desktop:scanned:v3", true, ttl: 60)
+                    try self.store.put("desktop:scanned:v4", true, ttl: 60)
                 }
                 // Publish local data before any network request or token refresh.
                 if changed {
@@ -210,6 +231,10 @@ final class NativeBackend {
                 }
                 self.warmArtwork()
                 self.cleanCache()
+                if self.refreshAfterSync, self.running {
+                    self.refreshAfterSync = false
+                    self.refresh(force: true)
+                }
             }
         }
     }
@@ -217,7 +242,7 @@ final class NativeBackend {
         catalogRequest?.cancel()
         catalogRequest = nil
         let current = route, generation = revision
-        guard ["artist", "album", "playlist", "catalog"].contains(text(current["kind"])) else { return }
+        guard WebPlayback.networkAvailable(), ["artist", "album", "playlist", "catalog"].contains(text(current["kind"])) else { return }
         if text(current["kind"]) == "catalog" && text(current["query"]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
         let cancellation = text(current["kind"]) == "catalog" ? RequestCancellation() : nil
         catalogRequest = cancellation
@@ -244,7 +269,7 @@ final class NativeBackend {
     private func preview(_ thin: JSONObject) {
         var item = previewItem(thin)
         let selectedURI = text(thin["uri"])
-        var title = text(item["name"]), detail = text(item["detail"])
+        var title = text(item["action"]) == "catalog" ? "Search Spotify" : text(item["name"]), detail = text(item["detail"])
         if text(item["kind"]) == "action", text(item["action"]) == "browse" {
             let kind = text(dict(item["target"])["kind"])
             let rows = (try? library.browse(["kind": kind])) ?? []
@@ -272,6 +297,10 @@ final class NativeBackend {
     private func likes(_ uri: String, target: Bool?) {
         guard validTrack(uri) else { return }
         if target == nil { output(["type": "liked", "uri": uri, "liked": store.isSaved(uri), "cached": true]) }
+        guard WebPlayback.networkAvailable() else {
+            if target != nil { output(["type": "liked", "uri": uri, "liked": store.isSaved(uri), "error": "Connect to the internet to update Liked Songs."]) }
+            return
+        }
         likeWork.async { [weak self] in
             guard let self = self else { return }
             do {
@@ -284,6 +313,10 @@ final class NativeBackend {
         }
     }
     private func repeatCommand(_ mode: RepeatMode?, request: Int, playbackRequest: Int = 0) {
+        guard WebPlayback.networkAvailable() else {
+            if let mode = mode { output(["type": "repeat", "mode": mode.rawValue, "request": request, "error": "Connect to the internet to change repeat."]) }
+            return
+        }
         if mode == nil {
             guard api.canReadPlayback, !repeatPolling else { return }
             repeatPolling = true
@@ -315,7 +348,7 @@ final class NativeBackend {
         playbackContextSnapshot = (state, request)
         let context = library.playbackContext(state)
         output(["type": "playback-context", "request": request, "track": track, "context": context?.object ?? [:]])
-        guard resolve, let context = context, context.kind != "collection", context.name.isEmpty,
+        guard resolve, WebPlayback.networkAvailable(), let context = context, context.kind != "collection", context.name.isEmpty,
               resolvingContexts.insert(context.uri).inserted else { return }
         work.async {
             _ = self.library.playbackContext(state, network: true)
@@ -380,7 +413,7 @@ final class NativeBackend {
                 case "save": self.likes(argument, target: true)
                 case "unsave": self.likes(argument, target: false)
                 case "image":
-                    self.work.async { let path = (try? self.cache.image(argument, download: true)) ?? nil; self.output(["type": "artwork", "url": argument, "path": path ?? ""]) }
+                    self.work.async { let path = (try? self.cache.image(argument, download: WebPlayback.networkAvailable())) ?? nil; self.output(["type": "artwork", "url": argument, "path": path ?? ""]) }
                 case "preview": self.preview(argument.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) as? JSONObject } ?? [:])
                 case "path":
                     guard self.connection == "connected" else { break }

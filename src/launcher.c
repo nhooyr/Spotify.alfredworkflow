@@ -110,7 +110,7 @@ static int launch(void) {
 
 int main(int argc, char **argv) {
     if (argc > 1) {
-        const char *choices[] = {"hotkey", "like", "unlike", "shuffle", "noshuffle", "screenshot"};
+        const char *choices[] = {"hotkey", "like", "unlike", "shuffle", "noshuffle", "screenshot", "refresh"};
         int found = 0;
         for (size_t i = 0; i < sizeof(choices) / sizeof(*choices); i++) {
             if (strncmp(argv[1], "--", 2) == 0 && strcmp(argv[1] + 2, choices[i]) == 0) {

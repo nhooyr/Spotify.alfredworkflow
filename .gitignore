@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+dist/
+build/
+.DS_Store
+.env
+prefs.plist
+client-credentials.json
+

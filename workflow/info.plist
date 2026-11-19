@@ -1,0 +1,439 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.aqsnow.alfred.spotify</string>
+	<key>name</key>
+	<string>Spotify</string>
+	<key>category</key>
+	<string>Productivity</string>
+	<key>description</key>
+	<string>Spotify Mini Player</string>
+	<key>createdby</key>
+	<string>Adam Quinn Snow</string>
+	<key>version</key>
+	<string>0.2.5</string>
+	<key>webaddress</key>
+	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
+	<key>disabled</key>
+	<false/>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>uid</key>
+			<string>OPEN</string>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>keyword</key>
+				<string>spotify</string>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>withspace</key>
+				<false/>
+				<key>text</key>
+				<string>Show Spotify Mini Player</string>
+				<key>subtext</key>
+				<string>Browse and play music</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>uid</key>
+			<string>HOTKEY</string>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>version</key>
+			<integer>2</integer>
+			<key>config</key>
+			<dict>
+				<key>hotkey</key>
+				<integer>0</integer>
+				<key>hotmod</key>
+				<integer>0</integer>
+				<key>hotstring</key>
+				<string></string>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+		</dict>
+		<dict>
+			<key>uid</key>
+			<string>PLAYER</string>
+			<key>type</key>
+			<string>alfred.workflow.userinterface.alfredui</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>path</key>
+				<string>Spotify.alfredui</string>
+				<key>launchmode</key>
+				<integer>0</integer>
+				<key>stackview</key>
+				<false/>
+			</dict>
+		</dict>
+		<dict>
+			<key>uid</key>
+			<string>CLEAR_CONNECTION</string>
+			<key>type</key>
+			<string>alfred.workflow.trigger.external</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>triggerid</key>
+				<string>clear-connection</string>
+				<key>availableviaurlhandler</key>
+				<true/>
+			</dict>
+		</dict>
+		<dict>
+			<key>uid</key>
+			<string>CLEAR_ACTION</string>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>version</key>
+			<integer>2</integer>
+			<key>config</key>
+			<dict>
+				<key>script</key>
+				<string>exec ./Spotify.alfredui/run clear-connection</string>
+				<key>type</key>
+				<integer>0</integer>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>concurrently</key>
+				<false/>
+			</dict>
+		</dict>
+		<dict>
+			<key>uid</key>
+			<string>CLEAR_NOTICE</string>
+			<key>type</key>
+			<string>alfred.workflow.output.notification</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>title</key>
+				<string>Spotify connection cleared</string>
+				<key>text</key>
+				<string>{query}</string>
+				<key>lastpathcomponent</key>
+				<false/>
+				<key>removeextension</key>
+				<false/>
+				<key>onlyshowifquerypopulated</key>
+				<true/>
+			</dict>
+		</dict>
+	</array>
+	<key>connections</key>
+	<dict>
+		<key>CLEAR_CONNECTION</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>CLEAR_ACTION</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>CLEAR_ACTION</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>CLEAR_NOTICE</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>OPEN</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>PLAYER</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
+		<key>HOTKEY</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>PLAYER</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
+	</dict>
+	<key>uidata</key>
+	<dict>
+		<key>OPEN</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>50</integer>
+		</dict>
+		<key>HOTKEY</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>180</integer>
+			<key>note</key>
+			<string>Launch Spotify Mini Player
+Double-click to set your keyboard shortcut</string>
+		</dict>
+		<key>PLAYER</key>
+		<dict>
+			<key>xpos</key>
+			<integer>280</integer>
+			<key>ypos</key>
+			<integer>80</integer>
+		</dict>
+		<key>CLEAR_CONNECTION</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>340</integer>
+			<key>note</key>
+			<string>Clear Connection link in Configure Workflow</string>
+		</dict>
+		<key>CLEAR_ACTION</key>
+		<dict>
+			<key>xpos</key>
+			<integer>280</integer>
+			<key>ypos</key>
+			<integer>340</integer>
+		</dict>
+		<key>CLEAR_NOTICE</key>
+		<dict>
+			<key>xpos</key>
+			<integer>510</integer>
+			<key>ypos</key>
+			<integer>340</integer>
+		</dict>
+	</dict>
+	<key>userconfigurationconfig</key>
+	<array>
+		<dict>
+			<key>type</key>
+			<string>textfield</string>
+			<key>label</key>
+			<string>Client ID</string>
+			<key>variable</key>
+			<string>SPOTIFY_CLIENT_ID</string>
+			<key>description</key>
+			<string>From your Spotify Developer Dashboard app.</string>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+				<key>placeholder</key>
+				<string>Client ID</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>type</key>
+			<string>textfield</string>
+			<key>label</key>
+			<string>Client Secret</string>
+			<key>variable</key>
+			<string>SPOTIFY_CLIENT_SECRET</string>
+			<key>description</key>
+			<string>From the same app. Set its redirect URI to http://127.0.0.1/spotify_callback (no port).</string>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string></string>
+				<key>required</key>
+				<false/>
+				<key>trim</key>
+				<true/>
+				<key>placeholder</key>
+				<string>Client Secret</string>
+			</dict>
+		</dict>
+	</array>
+	<key>variablesdontexport</key>
+	<array>
+		<string>SPOTIFY_CLIENT_ID</string>
+		<string>SPOTIFY_CLIENT_SECRET</string>
+	</array>
+	<key>readme</key>
+	<string># Spotify
+
+A Python Spotify workflow in the style of Alfred’s built-in Music Mini Player:
+playback above, keyboard browsing on the left, artwork on the right.
+
+Requires **Alfred 6 with Powerpack**, **Python 3.14+**, and the **Spotify desktop app**.
+No pip packages, PHP runtime, background service, or separate installer.
+
+**[Clear Connection](alfred://runtrigger/com.aqsnow.alfred.spotify/clear-connection/)**
+clears saved authorization and pending sign-in. Your Client ID and Client Secret
+stay configured. The browser opens for a fresh sign-in the next time you launch
+the player. This action is also available here in **Configure Workflow**.
+
+## Install
+
+Build with `./build.sh`, then open
+`dist/Spotify.alfredworkflow` and import it into Alfred.
+If Python is missing, install it with `brew install python`.
+
+Type **`spotify`** in Alfred. On first use, connect your Spotify account as described
+below. The workflow reuses music metadata and artwork already cached by the
+Spotify desktop app; the first cache scan runs in the background.
+
+## Connect your library
+
+There are just two workflow settings: **Client ID** and **Client Secret**.
+
+1. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+   Set its redirect URI to **`http://127.0.0.1/spotify_callback`** (without a port)
+   and enable the Web API. Each sign-in uses a dynamically assigned local port.
+   Spotify requires a loopback IP address; `localhost` is not accepted.
+2. Paste its Client ID and Client Secret into this workflow’s configuration.
+3. Open `spotify`. Sign-in opens automatically when both credentials are present.
+   Approve access in your browser, then return to Alfred.
+
+Missing credentials open a setup screen. A failed or cancelled sign-in shows an
+error with **Try Again** and **Workflow Settings** actions. The player stays on
+the connection screen until authorization succeeds. Initial sign-in is automatic.
+If you close the browser tab before finishing, reopen the player and choose
+**Connect** to open a fresh sign-in tab. This recovery button disappears after
+you connect successfully.
+
+To set a global launch shortcut, open **Alfred Preferences → Workflows → Spotify**
+and double-click the **Hotkey** object labelled **Launch Spotify
+Mini Player**. Press your preferred key combination and save it. No shortcut is
+pre-assigned, so importing the workflow does not replace another app’s hotkey.
+
+Tokens refresh automatically. Spotify currently requires the owner of a
+Development Mode app to have Premium. Additional users must be allowed in that
+app’s dashboard. See Spotify’s [development-mode rules](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
+The workflow never asks for your Spotify password.
+
+## Use
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Select a row and preview its artwork |
+| `↩` | Browse the selection or play a track |
+| `⌘1` … `⌘9` | Open one of the first nine rows |
+| Type | Filter the current view; search cached music from the home view |
+| `⌫` at the end of a folder path | Go up one folder |
+| `⌘[` | Go back, or clear the current filter |
+| `⌘R` | Refresh the desktop cache index and connected library |
+| `⌘,` | Open workflow settings |
+| `⌃⌘↓` | Play / pause |
+| `⌃⌘←` / `⌃⌘→` | Previous / next track |
+
+Use **Search Spotify for …** at the end of home search results to search the
+full catalog. Local searches do not call the Web API. Playback uses the Spotify
+desktop app and stays in the player. A configurable launch hotkey is available
+in Alfred’s workflow editor.
+
+## Cache behavior and limits
+
+- Spotify’s desktop cache is **read-only**. A small SQLite index contains the
+  names, Spotify URIs, and file offsets needed for browsing. The original HTTP
+  cache is not copied. Only artwork that is displayed is extracted into a file
+  Alfred can load; existing cached artwork is preferred over a download.
+- Library membership comes from the public API after connecting. Previously
+  cached metadata and artwork are reused to avoid unnecessary requests. The
+  full library refreshes at most daily, or when you press `⌘R`.
+- The adapter understands Chromium Simple Cache v5 and Spotify’s cached JSON
+  and protobuf music metadata. Missing, evicted, truncated, or unknown formats
+  fall back to available indexed data and the public API.
+- Spotify no longer supplies genres in its desktop metadata. Genres appear only
+  when your followed-artist API responses contain them; unavailable tags are
+  not invented. Star ratings are not supported by Spotify.
+- Spotify’s current API only returns playlist contents to the owner or a
+  collaborator. Other playlists can still be opened or played.
+- Client credentials stay in Alfred’s local workflow configuration. OAuth tokens
+  are in a user-only file in this workflow’s data folder. Neither is included
+  in the built workflow. The callback listens only on `127.0.0.1`, validates
+  OAuth state, and closes after completion or three minutes.
+
+The workflow does not read Spotify cookies, extract login tokens, or download
+or decrypt cached audio. It calls only the public Spotify Web API and public
+artwork URLs; private endpoints are read from existing cache files only.
+
+The workflow bundle ID is `com.aqsnow.alfred.spotify`. Its icon is reused from
+the Spotify desktop app; Spotify owns the icon and associated trademarks.
+
+On first launch, the workflow imports data, privately saved credentials, and cache
+from `com.aqsnow.alfred-spotify`, or from the original `io.nhooyr.alfred-spotify`
+build if the newer source is absent. It reuses authorization, the SQLite index,
+and cached artwork without overwriting newer files or deleting the originals.
+Old sessions and lock files are skipped. This happens once, so clearing your
+connection later cannot restore the old authorization. A cleared connection in
+the newest source also takes precedence over any older authorization.
+
+Credentials copied from your old workflow are kept in the workflow’s private
+data folder and fill empty settings on the first launch after import. They are
+never included in the source repository or exported workflow.
+
+## Development
+
+```sh
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+./build.sh
+```
+
+Source: `src/alfred_spotify`. The native UI and workflow metadata are generated
+by `scripts/build.py`. `workflow/Spotify.alfredui/run` resolves Python without
+depending on shell startup files. Tests use temporary data and synthetic cache
+entries; they do not control playback, log in, or modify Spotify’s files.
+
+UI reference: [Alfred Music Mini Player](https://www.alfredapp.com/help/features/music/)
+and [Alfred UI](https://www.alfredapp.com/help/alfredui/).
+Cache format reference: [Chromium Simple Cache](https://chromium.googlesource.com/chromium/src/net/+/refs/heads/main/disk_cache/simple/simple_entry_format.h).
+Metadata field reference: [librespot metadata.proto](https://github.com/librespot-org/librespot/blob/dev/protocol/proto/metadata.proto).
+</string>
+</dict>
+</plist>

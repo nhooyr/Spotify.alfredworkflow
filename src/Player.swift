@@ -180,6 +180,11 @@ private final class IPCServer {
 private final class PlayerPanel: NSPanel {
     var keyAction: ((NSEvent) -> Bool)?
     var dismissAction: (() -> Void)?
+    var interaction: ((NSEvent) -> Void)?
+    override func sendEvent(_ event: NSEvent) {
+        interaction?(event)
+        super.sendEvent(event)
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if keyAction?(event) == true { return true }
         if performEditingKey(event, responder: firstResponder) { return true }
@@ -698,6 +703,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var searchStatusShownAt = Date.distantPast
     private var statusMessage = ""
     private var pendingHomeQuery: String?
+    private var updatingSearchField = false
     private var previewWork: DispatchWorkItem?
     private var previewURI = ""
     private var previewPaths: [String: String] = [:]
@@ -797,6 +803,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         panel.delegate = self
         panel.keyAction = { [weak self] event in self?.key(event) ?? false }
         panel.dismissAction = { [weak self] in self?.hide() }
+        panel.interaction = { [weak self] event in self?.handleInteraction(event) }
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.isReleasedWhenClosed = false
@@ -998,6 +1005,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     private func receive(_ value: [String: Any]) {
         let type = value["type"] as? String ?? ""
+        // A queued home refresh must not turn an in-flight catalogue query into
+        // a literal local search when the panel is reopened.
+        if routeKind == "catalog", search.stringValue.hasPrefix("/"),
+           let incoming = value["route_kind"] as? String, incoming != "catalog",
+           ["show", "refresh", "artwork", "liked"].contains(value["command"] as? String ?? "") { return }
+        if value["route_kind"] as? String == "catalog", routeKind != "catalog", pendingHomeQuery != nil { return }
         if value["route_kind"] as? String == "catalog", routeKind == "catalog",
            let query = value["query"] as? String, value["command"] as? String != "back",
            query != String(search.stringValue.dropFirst()) { return }
@@ -1086,7 +1099,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             breadcrumb = value["prefix"] as? String ?? ""
             if breadcrumb.isEmpty { home = source }
             if let text = value["search_text"] as? String {
-                search.stringValue = pendingHomeQuery ?? text
+                setSearchText(pendingHomeQuery ?? text)
                 pendingHomeQuery = nil
             }
             if ["refresh", "artwork"].contains(value["command"] as? String ?? "") { previewURI = "" }
@@ -1187,6 +1200,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelection else { return }
+        collapseSearchSelection()
         for row in table.rows(in: table.visibleRect).location..<NSMaxRange(table.rows(in: table.visibleRect)) where filtered.indices.contains(row) {
             (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MusicCell)?.display(filtered[row], index: row, selected: table.selectedRow == row)
         }
@@ -1255,21 +1269,54 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let terms = MusicItem.normalize(query).split(whereSeparator: { $0.isWhitespace })
         return terms.isEmpty ? [] : liveSearchFilter.matching(catalog, terms: terms, catalog: true)
     }
-    private func placeSearchCaretAtEnd() {
-        panel.makeFirstResponder(search)
-        search.selectText(nil)
+    private func setSearchText(_ text: String) {
+        updatingSearchField = true
+        defer { updatingSearchField = false }
+        search.stringValue = text
         if let editor = search.currentEditor() as? NSTextView {
-            styleEditor()
-            let end = (search.stringValue as NSString).length
-            editor.setSelectedRange(NSRange(location: end, length: 0))
+            if editor.string != text { editor.string = text }
+            editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         }
     }
+    private func focusSearch(selectAll: Bool) {
+        guard search.isEnabled else { return }
+        let text = search.stringValue
+        updatingSearchField = true
+        defer { updatingSearchField = false }
+        panel.makeFirstResponder(search)
+        if search.currentEditor() == nil { search.selectText(nil) }
+        search.stringValue = text
+        if let editor = search.currentEditor() as? NSTextView {
+            if editor.string != text { editor.string = text }
+            styleEditor()
+            let length = (text as NSString).length
+            editor.setSelectedRange(NSRange(location: selectAll ? 0 : length, length: selectAll ? length : 0))
+        }
+    }
+    private func collapseSearchSelection() {
+        guard let editor = search.currentEditor() as? NSTextView, editor.selectedRange().length > 0 else { return }
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+    }
+    private func handleInteraction(_ event: NSEvent) {
+        guard [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(event.type),
+              !search.bounds.contains(search.convert(event.locationInWindow, from: nil)) else { return }
+        collapseSearchSelection()
+    }
+    private func finishSearchInput() {
+        if let editor = search.currentEditor() as? NSTextView, editor.string != search.stringValue { setSearchText(editor.string) }
+        // Commit the latest query before show can request the backend's state.
+        if let work = catalogSearchWork, routeKind == "catalog", search.stringValue.hasPrefix("/") {
+            work.cancel(); catalogSearchWork = nil
+            send("catalog-query", args: [String(search.stringValue.dropFirst())])
+        }
+    }
+    private func placeSearchCaretAtEnd() { focusSearch(selectAll: false) }
     private func enterCatalog(_ query: String) {
         catalogSearchWork?.cancel()
         pendingHomeQuery = nil
         routeKind = "catalog"
         breadcrumb = "/"
-        search.stringValue = "/" + query
+        setSearchText("/" + query)
         source = localCatalogResults(query)
         catalogPending = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         filter()
@@ -1285,6 +1332,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         renderStatus()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.routeKind == "catalog", self.search.stringValue == "/" + query else { return }
+            self.catalogSearchWork = nil
             self.send("catalog-query", args: [query])
         }
         catalogSearchWork = work
@@ -1292,9 +1340,11 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         else { work.perform() }
     }
     func controlTextDidChange(_ obj: Notification) {
-        if routeKind == "catalog" && search.stringValue.hasPrefix("/") {
-            updateCatalogQuery()
-        } else if !breadcrumb.isEmpty && !search.stringValue.hasPrefix(breadcrumb) {
+        guard !updatingSearchField else { return }
+        if search.stringValue.hasPrefix("/") {
+            if routeKind == "catalog" { updateCatalogQuery() }
+            else { enterCatalog(String(search.stringValue.dropFirst())) }
+        } else if routeKind == "catalog" || !breadcrumb.isEmpty && !search.stringValue.hasPrefix(breadcrumb) {
             catalogSearchWork?.cancel()
             routeKind = "home"
             catalogPending = false
@@ -1313,7 +1363,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveUp(_:)) { move(-1); return true }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) { hide(); return true }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) { activateSelection(); return true }
-        if commandSelector == #selector(NSResponder.deleteBackward(_:)), !breadcrumb.isEmpty, search.stringValue == breadcrumb {
+        if modifiers.isEmpty, commandSelector == #selector(NSResponder.deleteBackward(_:)),
+           textView.selectedRange().length == 0, !breadcrumb.isEmpty, search.stringValue == breadcrumb {
             send("back", args: [breadcrumb]); return true
         }
         return false
@@ -1333,28 +1384,24 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             if key == "w" { hide(); return true }
             if key == "," { openSettings(); return true }
             if key == "r" { send("refresh"); return true }
-            if key == "[" { send("back", args: [search.stringValue]); return true }
             if event.keyCode == 36 {
                 let value = search.stringValue
                 enterCatalog(value.hasPrefix(breadcrumb) ? String(value.dropFirst(breadcrumb.count)) : value)
                 return true
             }
         }
-        if modifiers == [.command, .control] {
-            if event.keyCode == 125 { togglePlayback(); return true }
-            if event.keyCode == 124 { nextTrack(); return true }
-            if event.keyCode == 123 { previousTrack(); return true }
-        }
         if modifiers.isEmpty && event.keyCode == 53 { hide(); return true }
         return false
     }
     private func move(_ offset: Int) {
+        collapseSearchSelection()
         guard !filtered.isEmpty else { return }
         let index = min(filtered.count - 1, max(0, table.selectedRow + offset))
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         table.scrollRowToVisible(index)
     }
     @objc private func activateSelection() {
+        collapseSearchSelection()
         guard let item = selectedItem() else { return }
         let action = item.payload["action"] as? String ?? ""
         if action == "catalog" { enterCatalog(""); return }
@@ -1575,16 +1622,20 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         refreshTheme()
         hotkeyHandoffAllowed = true
         showCount += 1
-        if testMode { wasShown = true; return }
-        if !panel.isVisible {
+        if search.isEnabled, search.stringValue.hasPrefix("/"), routeKind != "catalog" {
+            enterCatalog(String(search.stringValue.dropFirst()))
+        }
+        let reopening = !panel.isVisible
+        if testMode { focusSearch(selectAll: reopening); wasShown = true; return }
+        if reopening {
             if let screen = NSScreen.main {
                 let frame = screen.visibleFrame
                 panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.midY - panel.frame.height / 2 + 50))
             }
             panel.makeKeyAndOrderFront(nil)
         }
-        panel.makeFirstResponder(search.isEnabled ? search : connect)
-        styleEditor()
+        if search.isEnabled { focusSearch(selectAll: reopening) }
+        else { panel.makeFirstResponder(connect) }
         wasShown = true
         if backend.pid == 0 {
             backend = NativeBackend(workflowRoot())
@@ -1607,6 +1658,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         show()
     }
     private func hide() {
+        finishSearchInput()
+        collapseSearchSelection()
         hotkeyHandoffAllowed = false
         lastResignedKey = .distantPast
         setScreenshotMode(false)
@@ -1618,6 +1671,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         guard !screenshotMode else { return }
         guard hotkeyHandoffAllowed else { return }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == applicationID else { hide(); return }
+        finishSearchInput()
+        collapseSearchSelection()
         lastResignedKey = Date()
         panel.orderOut(nil)
     }
@@ -1642,6 +1697,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if testMode && value["command"] as? String == "test-missing-artwork-result" { return missingArtworkCheckResult() }
         if testMode && value["command"] as? String == "test-artwork" { return artworkChecks() }
         if testMode && value["command"] as? String == "test-artwork-result" { return artworkCheckResult() }
+        if testMode && value["command"] as? String == "test-navigation" { return navigationChecks() }
+        if testMode && value["command"] as? String == "test-catalog-resume" { return catalogResumeChecks() }
         if testMode && value["command"] as? String == "test-editing" {
             return editingChecks()
         }
@@ -1729,6 +1786,86 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         return ["status": "ok", "select_all": selectedAll, "undo": undoWorks, "redo": redoWorks,
                 "word_movement": wordMovement,
                 "clipboard_bindings": ["copy:", "cut:", "paste:", "pasteAsPlainText:"].allSatisfy { editSelectors.contains($0) }]
+    }
+    private func navigationChecks() -> [String: Any] {
+        demo()
+        search.isEnabled = true
+        routeKind = "artist"; breadcrumb = "Artists/7!!/"
+        source = [MusicItem(["uri": "one", "kind": "track", "name": "One"]), MusicItem(["uri": "two", "kind": "track", "name": "Two"])]
+        setSearchText(breadcrumb)
+        filter()
+        hide(); show()
+        guard let editor = search.currentEditor() as? NSTextView else { return ["status": "error"] }
+        let reopening = editor.selectedRange() == NSRange(location: 0, length: (breadcrumb as NSString).length)
+        _ = control(search, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:)))
+        let arrows = editor.selectedRange().length == 0 && table.selectedRow == 1
+        focusSearch(selectAll: true)
+        let mouse = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 400, y: 400), modifierFlags: [], timestamp: 0,
+                                      windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        handleInteraction(mouse)
+        let mouseClears = editor.selectedRange().length == 0
+        focusSearch(selectAll: true)
+        let selectedDelete = !control(search, textView: editor, doCommandBy: #selector(NSResponder.deleteBackward(_:)))
+        editor.deleteBackward(nil)
+        let deleted = search.stringValue.isEmpty && editor.selectedRange().length == 0 && breadcrumb.isEmpty
+        routeKind = "artist"; breadcrumb = "Artists/7!!/"; setSearchText(breadcrumb); focusSearch(selectAll: true)
+        editor.insertText("new search", replacementRange: editor.selectedRange())
+        let replaced = search.stringValue == "new search" && breadcrumb.isEmpty && routeKind == "home"
+        routeKind = "artist"; breadcrumb = "Artists/7!!/"; setSearchText(breadcrumb)
+        let back = control(search, textView: editor, doCommandBy: #selector(NSResponder.deleteBackward(_:)))
+        pendingHomeQuery = nil
+        receive(["type": "update", "command": "back", "route_kind": "artists", "prefix": "Artists/", "search_text": "Artists/", "rows": []])
+        let caret = editor.selectedRange() == NSRange(location: 8, length: 0) && editor.string == "Artists/"
+        func unhandled(_ code: UInt16, _ characters: String, _ modifiers: NSEvent.ModifierFlags) -> Bool {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                                       windowNumber: panel.windowNumber, context: nil, characters: characters,
+                                       charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+            return !key(event)
+        }
+        let removed = unhandled(33, "[", .command) && [UInt16(123), 124, 125].allSatisfy { unhandled($0, "", [.control, .command]) }
+        demo(); setSearchText("")
+        return ["status": "ok", "reopen_selects_filter": reopening, "arrows_clear_text_selection": arrows,
+                "mouse_clears_text_selection": mouseClears, "backspace_deletes_selected_path": selectedDelete && deleted,
+                "typing_replaces_selected_filter": replaced, "backspace_navigates_without_selection": back,
+                "navigation_reply_leaves_caret": caret, "removed_shortcuts_are_unhandled": removed]
+    }
+    private func catalogResumeChecks() -> [String: Any] {
+        demo(); search.isEnabled = true
+        setSearchText("/winter")
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        let automatic = routeKind == "catalog" && breadcrumb == "/"
+        hide(); show()
+        guard let editor = search.currentEditor() as? NSTextView else { return ["status": "error"] }
+        let resumed = routeKind == "catalog" && breadcrumb == "/" && editor.string == "/winter"
+            && editor.selectedRange() == NSRange(location: 0, length: 7)
+        receive(["type": "update", "command": "show", "route_kind": "home", "prefix": "", "rows": []])
+        let lateHome = routeKind == "catalog" && breadcrumb == "/" && search.stringValue == "/winter"
+        receive(["type": "update", "command": "show", "route_kind": "catalog", "prefix": "/", "query": "winter", "rows": []])
+        let reply = editor.selectedRange() == NSRange(location: 0, length: 7) && routeKind == "catalog"
+        move(1)
+        editor.insertText(" bird", replacementRange: editor.selectedRange())
+        let pending = catalogSearchWork != nil && search.stringValue == "/winter bird"
+        hide()
+        let committed = catalogSearchWork == nil
+        show()
+        let quickReopen = routeKind == "catalog" && breadcrumb == "/" && editor.string == "/winter bird"
+        receive(["type": "update", "command": "browse", "route_kind": "catalog", "prefix": "/", "query": "winter", "rows": []])
+        let stale = search.stringValue == "/winter bird" && routeKind == "catalog"
+        _ = control(search, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:)))
+        let navigated = routeKind == "catalog" && editor.selectedRange().length == 0
+        setSearchText("local query")
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        receive(["type": "update", "command": "browse", "route_kind": "catalog", "prefix": "/", "query": "winter bird", "rows": []])
+        let leftCatalog = routeKind == "home" && search.stringValue == "local query"
+        demo(); setSearchText("/meow"); hide(); show()
+        let inferredOnOpen = routeKind == "catalog" && breadcrumb == "/" && editor.string == "/meow"
+        demo(); setSearchText("")
+        return ["status": "ok", "leading_slash_activates_catalogue": automatic,
+                "leading_slash_restores_catalogue_on_open": inferredOnOpen,
+                "leaving_catalogue_ignores_old_replies": leftCatalog, "catalogue_resumes_with_query": resumed, "late_home_cannot_change_search_scope": lateHome,
+                "show_reply_preserves_replacement_selection": reply, "pending_query_committed_on_hide": pending && committed,
+                "quick_reopen_preserves_catalogue_mode": quickReopen, "old_search_reply_ignored_after_reopen": stale,
+                "navigation_clears_highlight_without_leaving_catalogue": navigated]
     }
     private func inkCenterError(_ view: NSView) -> CGFloat {
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * 2),
@@ -1869,7 +2006,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         demo()
         search.stringValue = "/literal/"
         controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-        let literalIsLocal = routeKind == "home" && !catalogPending
+        let slashIsCatalog = routeKind == "catalog" && catalogPending && breadcrumb == "/"
         search.stringValue = "initial query"
         let commandReturn = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
             timestamp: 0, windowNumber: panel.windowNumber, context: nil, characters: "\r",
@@ -1910,7 +2047,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         filter(); previewWork?.perform()
         let noMatchesGrey = previewDetail.stringValue == "No matches" && previewDetail.textColor == .secondaryLabelColor
         demo(); search.stringValue = ""; filter()
-        return ["status": "ok", "literal_slash_stays_local": literalIsLocal,
+        return ["status": "ok", "leading_slash_enters_catalogue": slashIsCatalog,
                 "command_return_preserves_query": preservesInitial, "spotify_menu_enters_search": menu,
                 "stale_live_search_ignored": staleIgnored, "remote_ranking_preserved": resultsKept,
                 "search_loading_retains_cover": loading, "deleting_slash_exits_search": exits,

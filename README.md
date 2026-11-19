@@ -14,9 +14,10 @@ The shuffle button toggles shuffle; repeat cycles **off → all → one**
 ([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
 Active like, shuffle and repeat controls stay Spotify green.
 
-Choose **Spotify** (`⌘5`) to search the full catalogue, or press `⌘↩` to carry over
-your current query. Type after `/` in this mode for live results; a slash typed
-in the home view does not switch modes.
+Choose **Spotify** (`⌘5`), press `⌘↩` to carry over your current query, or start
+with `/` to search the full catalogue (for example, `/meow`). Results update as
+you type. Reopening resumes the query; removing the leading `/` returns to local
+search.
 
 The player reuses Spotify’s desktop metadata and covers, keeping copies for offline
 browsing. Missing covers download in the background while online; unavailable
@@ -41,19 +42,18 @@ Spotify’s cache is never changed.
 The like, unlike, shuffle and sequential commands set a state rather than toggling it.
 
 * <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd> Open the player (default Hotkey).
-* <kbd>↑</kbd> / <kbd>↓</kbd> Select a result and preview its artwork.
 * <kbd>↩</kbd> Browse the selection or play a song.
 * <kbd>⌘</kbd><kbd>1</kbd> … <kbd>⌘</kbd><kbd>9</kbd> Activate one of the first nine results.
 * <kbd>⌘</kbd><kbd>↩</kbd> Search the full Spotify catalogue.
-* <kbd>⌘</kbd><kbd>[</kbd> Go back or clear the filter; Backspace at a folder path goes up a folder.
+* <kbd>⌫</kbd> Delete selected text; at a folder path with no filter, go up one level.
 * <kbd>⌘</kbd><kbd>R</kbd> Refresh the library and desktop cache index.
-* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>↓</kbd> Play or pause; <kbd>⌃</kbd><kbd>⌘</kbd><kbd>←</kbd> / <kbd>⌃</kbd><kbd>⌘</kbd><kbd>→</kbd> Previous or next song.
 * <kbd>⌘</kbd><kbd>,</kbd> Open the Workflow’s Configuration.
 * <kbd>Esc</kbd> / <kbd>⌘</kbd><kbd>W</kbd> Hide the player.
 
 Configure the Hotkey for faster access. Press it again while the player is
 focused to open Spotify. The player stays ready in the background while Alfred
-is running.
+is running. Reopening selects your filter so typing replaces it; using the results
+or controls clears that selection. Spotify catalogue searches resume in the same mode.
 
 `spotify screenshot` keeps the player focusable and visible while using macOS’s
 screenshot tool. Run it again, or press Esc in the player, to exit.

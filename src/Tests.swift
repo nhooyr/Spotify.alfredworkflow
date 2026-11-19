@@ -439,7 +439,7 @@ func runIntegrationTests() {
     for _ in 0..<50 { let start = DispatchTime.now().uptimeNanoseconds; spawnClient(workflow.appendingPathComponent("show"), environment: env); timings.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
     check(number(request("state")["pid"]) == number(initial["pid"]), "Hotkey keeps the same process")
     check(dict(request("state")["theme"])["id"] as? String == env["alfred_theme"], "C launcher safely forwards theme context")
-    for command in ["test-ui", "test-editing", "test-controls", "test-repeat", "test-theme", "test-screenshot-mode", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode"] {
+    for command in ["test-ui", "test-editing", "test-navigation", "test-controls", "test-repeat", "test-theme", "test-screenshot-mode", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
         let initial = request(command)
         var result = initial
         let deadline = Date().addingTimeInterval(3)

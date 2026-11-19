@@ -592,9 +592,10 @@ The shuffle button toggles shuffle; repeat cycles **off → all → one**
 ([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
 Active like, shuffle and repeat controls stay Spotify green.
 
-Choose **Spotify** (`⌘5`) to search the full catalogue, or press `⌘↩` to carry over
-your current query. Type after `/` in this mode for live results; a slash typed
-in the home view does not switch modes.
+Choose **Spotify** (`⌘5`), press `⌘↩` to carry over your current query, or start
+with `/` to search the full catalogue (for example, `/meow`). Results update as
+you type. Reopening resumes the query; removing the leading `/` returns to local
+search.
 
 The player reuses Spotify’s desktop metadata and covers, keeping copies for offline
 browsing. Missing covers download in the background while online; unavailable
@@ -619,19 +620,18 @@ Spotify’s cache is never changed.
 The like, unlike, shuffle and sequential commands set a state rather than toggling it.
 
 * &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt; Open the player (default Hotkey).
-* &lt;kbd&gt;↑&lt;/kbd&gt; / &lt;kbd&gt;↓&lt;/kbd&gt; Select a result and preview its artwork.
 * &lt;kbd&gt;↩&lt;/kbd&gt; Browse the selection or play a song.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;1&lt;/kbd&gt; … &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;9&lt;/kbd&gt; Activate one of the first nine results.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↩&lt;/kbd&gt; Search the full Spotify catalogue.
-* &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;[&lt;/kbd&gt; Go back or clear the filter; Backspace at a folder path goes up a folder.
+* &lt;kbd&gt;⌫&lt;/kbd&gt; Delete selected text; at a folder path with no filter, go up one level.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;R&lt;/kbd&gt; Refresh the library and desktop cache index.
-* &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;↓&lt;/kbd&gt; Play or pause; &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;←&lt;/kbd&gt; / &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;→&lt;/kbd&gt; Previous or next song.
 * &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;,&lt;/kbd&gt; Open the Workflow’s Configuration.
 * &lt;kbd&gt;Esc&lt;/kbd&gt; / &lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;W&lt;/kbd&gt; Hide the player.
 
 Configure the Hotkey for faster access. Press it again while the player is
 focused to open Spotify. The player stays ready in the background while Alfred
-is running.
+is running. Reopening selects your filter so typing replaces it; using the results
+or controls clears that selection. Spotify catalogue searches resume in the same mode.
 
 `spotify screenshot` keeps the player focusable and visible while using macOS’s
 screenshot tool. Run it again, or press Esc in the player, to exit.
@@ -833,7 +833,7 @@ Double-click to set your keyboard shortcut</string>
 		<string>SPOTIFY_CLIENT_SECRET</string>
 	</array>
 	<key>version</key>
-	<string>0.4.19</string>
+	<string>0.4.20</string>
 	<key>webaddress</key>
 	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>

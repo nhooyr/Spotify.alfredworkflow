@@ -11,6 +11,8 @@ application.
 
 1. Double click [./dist/Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
 
+   *note*: You might have to rebuild first with [`./build.sh`](./build.sh).
+
 ![Screenshot for install step 1](./docs/install-1.png)
 
 2. Set a hotkey for the Spotify Mini Player in the **Hotkey** object at the top of the workflow canvas.

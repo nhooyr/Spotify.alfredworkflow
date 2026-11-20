@@ -1,1 +1,1 @@
-let workflowVersion = "0.5.2"
+let workflowVersion = "0.5.3"

@@ -1,6 +1,6 @@
 # Spotify.alfredworkflow
 
-Search and play music from Spotify with the `spot` keyword or <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
+Search and play music from Spotify with the `spot` keyword or <kbd>Control</kbd><kbd>Command</kbd><kbd>Space</kbd>.
 
 ![Spotify Mini Player](./docs/ss.png)
 
@@ -18,7 +18,7 @@ application.
 ![Screenshot for install step 2](./docs/install-2.png)
 
 3. Select the **Hotkey** object at the top of the workflow canvas to set a hotkey.
-   I use <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
+   I use <kbd>Control</kbd><kbd>Command</kbd><kbd>Space</kbd>.
 
 ![Screenshot for install step 3](./docs/install-3.png)
 
@@ -28,19 +28,17 @@ application.
 
 ![Screenshot for install step 4](./docs/install-4.png)
 
-5. Export **Spotify Client ID** as `$SPOTIFY_CLIENT_ID` in your `$SHELL`'s configuration. The player reads it
-   through `$SHELL` at startup. If you don't know how, you can enter it manually in the mini player when you
-   first open it.
+5. Open the Spotify Mini Player and enter your **Spotify Client ID**.
 
-   *note*: The workflow will save a manually entered **Spotify Client ID** outside Alfred's synced preferences
-   for security.
+   *note*: The workflow stores your **Spotify Client ID** and sign-in tokens in your local macOS Keychain,
+   outside Alfred's synced preferences.
 
 ![Screenshot for install step 5](./docs/install-5.png)
 
 6. After providing **Spotify Client ID**, sign-in will load automatically in your browser when you first open
    the Spotify Mini Player. Allow access.
 
-   *note*: If you close the browser tab, press <kbd>↩</kbd> on the **Connecting to Spotify...** menu to open
+   *note*: If you close the browser tab, press <kbd>Enter</kbd> on the **Connecting to Spotify...** menu to open
    sign-in again.
 
 ![Screenshot for install step 6](./docs/install-6.png)
@@ -72,7 +70,7 @@ text after any folder path to filter its contents.
 | `Artists/<artist>/` | Browse an artist’s albums, or play all their tracks. |
 | `Artists/<artist>/<album>/` | Browse an artist’s album. |
 | `Songs/` | Browse Liked Songs. |
-| `Songs/All` | Press Return on **All** at the top to play the collection. |
+| `Songs/All` | Press Enter on **All** at the top to play the collection. |
 | `<playlist>/`, `<album>/`, or `<artist>/` | Open a cached folder directly, as from local search. |
 | `<artist>/<album>/` | Open a cached artist’s album directly. |
 | `/` | Open Spotify catalogue search, ready for a query. |
@@ -140,9 +138,11 @@ and `spotify demo`.
 
 The like, unlike, shuf and unshuf commands set a state rather than toggling it.
 
+Your Client ID and sign-in tokens are stored locally in macOS Keychain and cached in memory.
+Existing credential files transfer automatically after updating.
+
 After `spot reauth`, open the Spotify Mini Player in Alfred to set up again.
-Sign-in, the saved Client ID and the cached shell value are cleared. The player checks `$SHELL` again;
-if no ID is exported, it prompts for one.
+This clears the Client ID and sign-in tokens from Keychain. The next open prompts for a Client ID again.
 
 Cached artwork, saved library lists and playlist order are kept
 for the same account, including when Spotify rate limits a refresh. A confirmed account change clears the
@@ -150,20 +150,20 @@ previous account’s saved lists.
 
 ### Shortcuts
 
-* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd> Open the player from any app.
-* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>←</kbd> / <kbd>⌘</kbd><kbd>P</kbd> Previous Spotify track.
-* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>→</kbd> / <kbd>⌘</kbd><kbd>N</kbd> Next Spotify track.
-* <kbd>⌃</kbd><kbd>⌘</kbd><kbd>↑</kbd> / <kbd>⌃</kbd><kbd>⌘</kbd><kbd>↓</kbd> / <kbd>⌘</kbd><kbd>S</kbd> Play/pause Spotify.
-* <kbd>↩</kbd> Browse the selection from its first item, or play a song.
-* <kbd>⌥</kbd><kbd>↩</kbd> Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
-* <kbd>⌘</kbd><kbd>↓</kbd> Open the selection, restoring its previous selection and filter.
-* <kbd>⌘</kbd><kbd>↑</kbd> Go up one level, restoring the parent selection and filter.
-* <kbd>⌘</kbd><kbd>5</kbd> Open **Search** for Spotify’s full catalogue.
-* <kbd>⌘</kbd><kbd>↩</kbd> Carry your current query into catalogue search.
-* <kbd>⌫</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
-* <kbd>⌘</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
-* <kbd>⌘</kbd><kbd>,</kbd> Open the Workflow’s Configuration.
-* <kbd>Esc</kbd> / <kbd>⌘</kbd><kbd>W</kbd> Hide the player.
+* <kbd>Control</kbd><kbd>Command</kbd><kbd>Space</kbd> Open the player from any app.
+* <kbd>Control</kbd><kbd>Command</kbd><kbd>Left</kbd> / <kbd>Command</kbd><kbd>P</kbd> Previous Spotify track.
+* <kbd>Control</kbd><kbd>Command</kbd><kbd>Right</kbd> / <kbd>Command</kbd><kbd>N</kbd> Next Spotify track.
+* <kbd>Control</kbd><kbd>Command</kbd><kbd>Up</kbd> / <kbd>Control</kbd><kbd>Command</kbd><kbd>Down</kbd> / <kbd>Command</kbd><kbd>S</kbd> Play/pause Spotify.
+* <kbd>Enter</kbd> Browse the selection from its first item, or play a song.
+* <kbd>Option</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
+* <kbd>Command</kbd><kbd>Down</kbd> Open the selection, restoring its previous selection and filter.
+* <kbd>Command</kbd><kbd>Up</kbd> Go up one level, restoring the parent selection and filter.
+* <kbd>Command</kbd><kbd>5</kbd> Open **Search** for Spotify’s full catalogue.
+* <kbd>Command</kbd><kbd>Enter</kbd> Carry your current query into catalogue search.
+* <kbd>Backspace</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
+* <kbd>Command</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
+* <kbd>Command</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.
+* <kbd>Escape</kbd> / <kbd>Command</kbd><kbd>W</kbd> Hide the player.
 
 Only the launch Hotkey is global and configurable. All other shortcuts are fixed
 and active only in the mini player. Alfred clears the launch assignment on a fresh
@@ -177,7 +177,7 @@ or controls clears that selection. Editing a filter selects the first result.
 Switching Spaces hides the player while keeping its filter and window ready.
 
 In demo mode, the player stays visible and focusable when it loses focus.
-Run `spot demo` again, or press Esc in the player, to exit.
+Run `spot demo` again, or press Escape in the player, to exit.
 
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and

@@ -1,7 +1,8 @@
 # Development
 
 The workflow uses C and Swift, with no interpreter or package installation at runtime.
-Build with `./build.sh` using Xcode Command Line Tools. The universal macOS app and
+Build with `./build.sh` using Xcode Command Line Tools and an installed code-signing
+identity (create one in Xcode → Settings → Accounts → Manage Certificates). The universal macOS app and
 C launcher are packaged into `dist/Spotify.alfredworkflow`, or the output file passed
 as the first argument. Its parent directories are created automatically.
 Run `./test.sh [WORKFLOW]` to check an export. Both scripts support `-h` and `--help`.
@@ -11,6 +12,12 @@ Source, build-script, compiler, or SDK changes invalidate the binaries. Document
 images, and workflow configuration are always repackaged without recompiling.
 Delete the cache directory to force a clean build. Other intermediate files live
 in a temporary directory.
+
+The build signs the app and launcher with an available Developer ID Application
+identity, otherwise an Apple Development identity. It requires certificate-backed
+signing; ad hoc signing is not used. Both executables enable Hardened Runtime;
+only the app receives the Apple Events entitlement needed to control Spotify.
+Keep the same signing identity across builds so Keychain recognizes app updates.
 
 `workflow/info.plist` is a source template. The build inserts the staged README
 and the version into the exported plist without changing the template. Set
@@ -36,13 +43,20 @@ our cache exceeds 1 GB. Saved and downloaded-library covers and art used within
 the last day are protected, so the size limit is deliberately soft. Spotify’s
 cache is never cleaned or modified.
 
-Sign-in and token refresh use PKCE. The backend reads `SPOTIFY_CLIENT_ID` from a
-new interactive login shell selected by `$SHELL` at background startup. If absent, the
-mini player accepts an ID and saves it with owner-only permissions in
-`client-id.json` in its private Workflow Data directory. Neither source is stored
-in Alfred’s synced configuration. Shell startup stays off the UI thread; normal
-launches reuse the in-memory value. Reauth clears sign-in, the private Client ID
-and the shell cache; the next open reads the shell again. Artwork, saved library
+Manually entered Client IDs, access and refresh tokens, their expiry and scopes live in
+a local, non-synchronizing macOS Keychain item. Its access controls trust only the
+signed player app. One shared, locked memory cache serves warm credential reads;
+network replies cannot restore a sign-in cleared while the request was running.
+Existing `authorization.json` and `client-id.json` files transfer on first launch and are removed only
+after the Keychain write is read back successfully. Storage failures remain visible
+and never fall back to storing new tokens in a file. Reauth deletes the Keychain
+item and any leftover token file while retaining library metadata and artwork.
+
+Sign-in and token refresh use PKCE. The mini player prompts for a Spotify Client ID
+when its Keychain item has no saved ID. Manually entered IDs persist in Keychain
+before browser authorization; environment variables and shell configuration are
+never consulted. Setup and Keychain access stay off the UI thread. Reauth clears
+sign-in and the Client ID; the next open prompts again. Artwork, saved library
 membership, playlist order, and cached browse results are retained even if Spotify
 rate limits the next refresh. Only a confirmed change of Spotify account clears
 account-specific library state; refreshes replace membership only after every
@@ -55,7 +69,8 @@ prompt. The app does not import data from other workflows.
 used for compressed desktop cache entries. Its BSD license is included in the
 source and exported workflow. Other native dependencies are macOS system libraries.
 
-Tests use temporary files, a mock HTTPS transport, and hidden native panels.
+Tests use temporary files, memory credential stores, a disposable private Keychain,
+a mock HTTPS transport, and hidden native panels.
 They do not operate Alfred or Spotify or change the user’s library. The integration
 screenshot is saved as `alfred-spotify-native-panel.png` in a new temporary directory;
 `test.sh` prints its path.

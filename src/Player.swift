@@ -716,7 +716,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var themeContext: [String: String] = [:]
     private var themeSignature = ""
     private let server = IPCServer()
-    private var backend = NativeBackend(workflowRoot())
+    private let credentials: AuthorizationStore?
+    private var backend: NativeBackend
     private let spotify = SpotifyCommands()
     private let panel = PlayerPanel(contentRect: NSRect(x: 0, y: 0, width: 592, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let search = SearchField()
@@ -827,8 +828,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var imagesRequested: Set<String> = []
     private var sentTestCommands: [String] = []
 
-    init(testMode: Bool = false) {
-        self.testMode = testMode
+    init(testMode: Bool = false, credentials: AuthorizationStore? = nil) {
+        self.testMode = testMode; self.credentials = credentials
+        backend = NativeBackend(workflowRoot(), credentials: credentials)
         super.init()
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -2115,7 +2117,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         else { panel.makeFirstResponder(panel) }
         wasShown = true
         if backend.pid == 0 {
-            backend = NativeBackend(workflowRoot())
+            backend = NativeBackend(workflowRoot(), credentials: credentials)
             backend.receive = { [weak self] value in self?.receive(value) }
             do { try backend.start() } catch { showError(error.localizedDescription) }
         }
@@ -3671,9 +3673,11 @@ if let index = args.firstIndex(of: "--relaunch-after"), args.count > index + 1, 
         usleep(10_000)
     }
 }
-if args.contains("--serve") || args.contains("--test-server") || args.contains("--snapshot") || args.contains("--relaunch-after") {
+if args.contains("--serve") || args.contains("--test-backend") || args.contains("--test-server") || args.contains("--snapshot") || args.contains("--relaunch-after") {
     let app = NSApplication.shared
-    delegate = PlayerDelegate(testMode: args.contains("--test-server") || args.contains("--snapshot"))
+    let isolated = args.contains("--test-server") || args.contains("--test-backend") || args.contains("--snapshot")
+    delegate = PlayerDelegate(testMode: args.contains("--test-server") || args.contains("--snapshot"),
+                              credentials: isolated ? testAuthorizationStore(root: workflowRoot()) : nil)
     app.delegate = delegate
     app.run()
 } else {

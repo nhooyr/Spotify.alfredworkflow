@@ -50,14 +50,16 @@ struct WorkflowPaths {
     let data: URL
     let cache: URL
     let desktop: URL
+    let authorization: AuthorizationStore
     private let clientIDSettings: ClientIDSettings
-    init(root: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
+    init(root: URL, environment: [String: String] = ProcessInfo.processInfo.environment, authorization: AuthorizationStore? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         self.root = root
         data = URL(fileURLWithPath: environment["alfred_workflow_data"] ?? home.appendingPathComponent("Library/Application Support/Alfred/Workflow Data/\(workflowID)").path)
         cache = URL(fileURLWithPath: environment["alfred_workflow_cache"] ?? home.appendingPathComponent("Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/\(workflowID)").path)
         desktop = URL(fileURLWithPath: environment["SPOTIFY_DESKTOP_CACHE"] ?? home.appendingPathComponent("Library/Caches/com.spotify.client/Browser/Cache/Cache_Data").path)
-        clientIDSettings = ClientIDSettings(root: root, data: data, initial: environment["SPOTIFY_CLIENT_ID"] ?? "")
+        self.authorization = authorization ?? AuthorizationStore(data: data)
+        clientIDSettings = ClientIDSettings(root: root, authorization: self.authorization)
     }
     func prepare() throws {
         for url in [data, cache] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
@@ -69,12 +71,9 @@ struct WorkflowPaths {
     }
     func command(_ suffix: String) -> String { keyword() + " " + suffix }
     func clientID() -> String { clientIDSettings.value }
-    func loadClientID(shellValue: String? = nil, reloadShell: Bool = false) throws {
-        try clientIDSettings.load(shellValue: shellValue ?? ShellClientID.load(reload: reloadShell))
-    }
+    func loadClientID() throws { try clientIDSettings.load() }
     func saveClientID(_ value: String) throws { try clientIDSettings.save(value) }
     func clearClientID() throws {
-        ShellClientID.clear()
         try clientIDSettings.clear()
     }
 
@@ -207,9 +206,8 @@ final class SpotifyAPI {
         let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 12; config.timeoutIntervalForResource = 20
         self.session = session ?? URLSession(configuration: config)
     }
-    var tokenURL: URL { paths.data.appendingPathComponent("authorization.json") }
-    var connected: Bool { let token = dict(readJSON(tokenURL)); return !text(token["access_token"]).isEmpty && !text(token["refresh_token"]).isEmpty && text(token["client_id"]) == paths.clientID() }
-    func hasScope(_ scope: String) -> Bool { text(dict(readJSON(tokenURL))["scope"]).split(separator: " ").contains(Substring(scope)) }
+    var connected: Bool { let token = (try? paths.authorization.load()) ?? [:]; return !text(token["access_token"]).isEmpty && !text(token["refresh_token"]).isEmpty && text(token["client_id"]) == paths.clientID() }
+    func hasScope(_ scope: String) -> Bool { text(((try? paths.authorization.load()) ?? [:])["scope"]).split(separator: " ").contains(Substring(scope)) }
     var canSave: Bool { hasScope("user-library-modify") }
     var canReadPlayback: Bool { hasScope("user-read-playback-state") }
     func playbackState() throws -> JSONObject {
@@ -262,7 +260,8 @@ final class SpotifyAPI {
         Self.tokenLock.lock(); defer { Self.tokenLock.unlock() }
         let id = paths.clientID()
         guard validClientID(id) else { throw SpotifyFailure(message: "Open Spotify Mini Player and enter your Spotify Client ID.") }
-        var previous = dict(readJSON(tokenURL)); if text(previous["client_id"]) != id { previous = [:] }
+        let snapshot = try paths.authorization.snapshot()
+        var previous = snapshot.token; if text(previous["client_id"]) != id { previous = [:] }
         let refreshing = fields["grant_type"] == "refresh_token"
         let values = fields.merging(["client_id": id]) { _, new in new }
         var request = URLRequest(url: URL(string: "https://accounts.spotify.com/api/token")!)
@@ -274,12 +273,12 @@ final class SpotifyAPI {
         let access = text(result["access_token"]), refresh = text(result["refresh_token"]).isEmpty && refreshing ? text(previous["refresh_token"]) : text(result["refresh_token"])
         guard !access.isEmpty, !refresh.isEmpty else { throw SpotifyFailure(message: "Spotify returned an incomplete sign-in response.") }
         guard valid(), paths.clientID() == id else { throw SpotifyFailure(message: "This sign-in was cleared. Connect again.") }
-        try writeJSON(["client_id": id, "access_token": access, "refresh_token": refresh, "expires_at": Date().timeIntervalSince1970 + number(result["expires_in"]), "scope": result["scope"] ?? (refreshing ? previous["scope"] ?? "" : Self.scopes)], tokenURL)
+        try paths.authorization.save(["client_id": id, "access_token": access, "refresh_token": refresh, "expires_at": Date().timeIntervalSince1970 + number(result["expires_in"]), "scope": result["scope"] ?? (refreshing ? previous["scope"] ?? "" : Self.scopes)], generation: snapshot.generation)
         return access
     }
     func accessToken(force: Bool = false) throws -> String {
         Self.tokenLock.lock(); defer { Self.tokenLock.unlock() }
-        let token = dict(readJSON(tokenURL))
+        let token = try paths.authorization.load()
         guard connected else { throw SpotifyFailure(message: "Connect to Spotify to browse your saved library.", status: 401) }
         if !force, number(token["expires_at"]) > Date().timeIntervalSince1970 + 60 { return text(token["access_token"]) }
         return try exchange(["grant_type": "refresh_token", "refresh_token": text(token["refresh_token"])])

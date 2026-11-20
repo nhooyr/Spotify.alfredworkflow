@@ -143,7 +143,7 @@ final class WebPlayback {
     }
     func prepare(cancellation: RequestCancellation? = nil) {
         guard online(), api.hasScope("user-read-playback-state"),
-              number(dict(readJSON(api.tokenURL))["expires_at"]) > Date().timeIntervalSince1970 + 60 else { return }
+              number(((try? api.paths.authorization.load()) ?? [:])["expires_at"]) > Date().timeIntervalSince1970 + 60 else { return }
         _ = try? desktopDevice(cancellation)
         _ = try? likedSongsURI(cancellation)
     }

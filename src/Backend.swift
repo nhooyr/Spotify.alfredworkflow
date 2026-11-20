@@ -44,21 +44,22 @@ final class NativeBackend {
     private var running = false
     private var artwork: Set<String> = []
     var pid: Int32 { running ? getpid() : 0 }
-    init(_ root: URL, environment: [String: String] = ProcessInfo.processInfo.environment, session: URLSession? = nil,
+    init(_ root: URL, environment: [String: String] = ProcessInfo.processInfo.environment, session: URLSession? = nil, credentials: AuthorizationStore? = nil,
          authorization: @escaping (WorkflowPaths, SpotifyAPI) -> AuthorizationFlow = { AuthorizationFlow($0, $1) }) {
-        paths = WorkflowPaths(root: root, environment: environment); self.session = session; makeAuthorization = authorization
+        paths = WorkflowPaths(root: root, environment: environment, authorization: credentials); self.session = session; makeAuthorization = authorization
     }
-    func start(readShell: Bool = true) throws {
+    func start() throws {
         running = true
         queue.async { [weak self] in
             guard let self = self else { return }
             do {
                 try self.paths.prepare()
-                if readShell { try self.paths.loadClientID() }
                 self.store = try MusicStore(self.paths.cache.appendingPathComponent("index.sqlite3"))
                 self.api = SpotifyAPI(self.paths, session: self.session); self.cache = DesktopCache(self.paths, self.store); self.library = MusicLibrary(self.store, self.api, online: WebPlayback.networkAvailable)
                 self.api.activity = { [weak self] active in self?.apiActivityChanged(active) }
                 self.playback = WebPlayback(self.api, store: self.store)
+                _ = try self.paths.authorization.load()
+                try self.paths.loadClientID()
                 self.offline = !WebPlayback.networkAvailable()
                 self.networkObserver = NetworkAvailability.shared.observe { [weak self] online in
                     self?.queue.async { self?.networkChanged(online) }
@@ -170,6 +171,11 @@ final class NativeBackend {
         }
     }
     private func connect() {
+        do { _ = try paths.authorization.load() }
+        catch {
+            connection = "failed"; message = error.localizedDescription; messageIsError = true
+            publishRows(command: "connect"); return
+        }
         if connection == "connecting", let pending = auth, pending.reopenBrowser({ [weak self, weak pending] opened in
             guard let self = self, let pending = pending else { return }
             if opened { self.browserDidOpen(pending); return }
@@ -178,7 +184,7 @@ final class NativeBackend {
                 self.failedSignIn(SpotifyFailure(message: "Could not open your browser. Try connecting again."))
             }
         }) == true { return }
-        if !validCredentials { try? paths.loadClientID(reloadShell: true) }
+        if !validCredentials { try? paths.loadClientID() }
         guard validCredentials else { connection = "credentials"; message = "Enter your Spotify Client ID, then press Return."; publishRows(command: "connect"); return }
         auth?.cancel(); let flow = makeAuthorization(paths, api); auth = flow
         connection = "connecting"; message = "Checking Spotify Client ID…"; publishRows(command: "connect", resetText: true)
@@ -413,7 +419,7 @@ final class NativeBackend {
     static func clearConnection(_ paths: WorkflowPaths) throws {
         try paths.prepare()
         try paths.clearClientID()
-        for name in ["authorization.json", "api-cooldown.json"] {
+        for name in ["api-cooldown.json"] {
             let file = paths.data.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }

@@ -5,7 +5,8 @@ usage() {
     cat <<'EOF'
 Usage: build.sh [-h | --help] [--] [OUTPUT]
 
-Build the universal Spotify.alfredworkflow using Xcode Command Line Tools.
+Build the universal Spotify.alfredworkflow using Xcode Command Line Tools
+and an Apple Development or Developer ID Application signing identity.
 OUTPUT defaults to dist/Spotify.alfredworkflow in the project directory.
 Parent directories are created automatically.
 
@@ -40,6 +41,16 @@ printf 'building v%s into %s\n' "$(awk -F '"' '/^let workflowVersion = / { print
     "$output_display" >&2
 
 project_dir=$PWD
+identities=$(security find-identity -v -p codesigning)
+signing_identity=$(printf '%s\n' "$identities" | awk '
+    /"Developer ID Application:/ && !distribution { distribution=$2 }
+    /"Apple Development:/ && !development { development=$2 }
+    END { print distribution ? distribution : development }
+')
+if [ -z "$signing_identity" ]; then
+    printf 'No signing identity found. Create an Apple Development or Developer ID Application certificate in Xcode.\n' >&2
+    exit 1
+fi
 identifier=$(find src -type f -exec shasum -a 256 {} + | LC_ALL=C sort | shasum -a 256)
 identifier=${identifier%% *}
 swift_version=$(xcrun swiftc --version 2>&1)
@@ -77,7 +88,7 @@ else
             -module-cache-path "$cache_root/modules" \
             -import-objc-header "$project_dir/src/CacheCodec.h" \
             "$work/main.swift" "$work/Build.swift" \
-            src/version.swift src/Core.swift src/ClientID.swift src/Theme.swift src/Artwork.swift src/Cache.swift src/DesktopMetadata.swift src/Library.swift src/Playback.swift src/Authorization.swift src/Backend.swift src/Metadata.swift src/Tests.swift \
+            src/version.swift src/Core.swift src/Credentials.swift src/ClientID.swift src/Theme.swift src/Artwork.swift src/Cache.swift src/DesktopMetadata.swift src/Library.swift src/Playback.swift src/Authorization.swift src/Backend.swift src/Metadata.swift src/Tests.swift \
             "$work/zstd-$arch.o" "$work/codec-$arch.o" \
             -framework AppKit -framework ImageIO -framework Carbon -framework Security -framework SystemConfiguration -framework Network -lsqlite3 -lz -o "$work/player-$arch"
         xcrun clang -Os -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 \
@@ -91,7 +102,14 @@ fi
 cp "$binaries/player" "$app/Contents/MacOS/SpotifyMiniPlayer"
 cp "$binaries/show" "$stage/show"
 "$app/Contents/MacOS/SpotifyMiniPlayer" --write-metadata "$project_dir" "$stage"
-codesign --force --sign - --timestamp=none "$app" 2>/dev/null
+sign() {
+    if ! codesign --force --sign "$signing_identity" --timestamp=none --options runtime "$@" 2>"$work/signing.log"; then
+        cat "$work/signing.log" >&2
+        return 1
+    fi
+}
+sign --identifier ca.aqsnow.alfred.spotify.launcher "$stage/show"
+sign --entitlements src/Entitlements.plist "$app"
 ditto -c -k --norsrc "$stage" "$output"
 
 printf '%s\n' "$output_display"

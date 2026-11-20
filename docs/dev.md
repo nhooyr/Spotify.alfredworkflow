@@ -47,10 +47,8 @@ Manually entered Client IDs, access and refresh tokens, their expiry and scopes 
 a local, non-synchronizing macOS Keychain item. Its access controls trust only the
 signed player app. One shared, locked memory cache serves warm credential reads;
 network replies cannot restore a sign-in cleared while the request was running.
-Existing `authorization.json` and `client-id.json` files transfer on first launch and are removed only
-after the Keychain write is read back successfully. Storage failures remain visible
-and never fall back to storing new tokens in a file. Reauth deletes the Keychain
-item and any leftover token file while retaining library metadata and artwork.
+Storage failures remain visible and never fall back to credential files. Reauth
+deletes the Keychain item while retaining library metadata and artwork.
 
 Sign-in and token refresh use PKCE. The mini player prompts for a Spotify Client ID
 when its Keychain item has no saved ID. Manually entered IDs persist in Keychain
@@ -79,9 +77,12 @@ File-based icons live in `workflow`. The build generates the copies required
 by Alfred and the app bundle. Player controls use Apple’s SF Symbols and native vector paths for the extended
 repeat arrows and selection indicator, drawn at the display’s native resolution.
 
-Catalogue normalization and sorting run off the UI thread. Typing narrows the
-previous results when possible, retaining the same Unicode matching and category
-order. Cover images decode off-thread at up to 512 pixels and are cached for reuse.
+Catalogue normalization and sorting run off the UI thread; superseded work is
+cancelled instead of delaying the latest library state. Typing narrows previous
+results, with a byte-prefix fast path for ASCII and full Unicode matching elsewhere.
+Theme preferences are decoded only when their files change. Cover images decode
+off-thread at up to 512 pixels and are cached for reuse. Concurrent requests for
+one cover share its download; local cache hits never wait for the library database.
 Playback commands have their own queue so status polling cannot delay them.
 Selections use the Web API with this Mac’s cached device ID. Spotify starts in
 the background when needed; a cold launch waits briefly for its Connect device.

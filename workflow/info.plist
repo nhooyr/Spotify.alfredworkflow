@@ -21,19 +21,6 @@
 				<false/>
 			</dict>
 		</array>
-		<key>CLEAR_CONNECTION</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>CLEAR_ACTION</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<false/>
-			</dict>
-		</array>
 		<key>COMMAND_LIKE</key>
 		<array>
 			<dict>
@@ -268,21 +255,6 @@
 			<string>alfred.workflow.input.keyword</string>
 			<key>uid</key>
 			<string>REAUTH</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>availableviaurlhandler</key>
-				<true/>
-				<key>triggerid</key>
-				<string>clear-connection</string>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.trigger.external</string>
-			<key>uid</key>
-			<string>CLEAR_CONNECTION</string>
 			<key>version</key>
 			<integer>1</integer>
 		</dict>
@@ -683,15 +655,6 @@
 			<key>ypos</key>
 			<integer>360</integer>
 		</dict>
-		<key>CLEAR_CONNECTION</key>
-		<dict>
-			<key>note</key>
-			<string>External reset trigger</string>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>460</integer>
-		</dict>
 		<key>COMMAND_LIKE</key>
 		<dict>
 			<key>xpos</key>
@@ -804,10 +767,6 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 			<string>keyword</string>
 		</dict>
 	</array>
-	<key>variables</key>
-	<dict/>
-	<key>variablesdontexport</key>
-	<array/>
 	<key>webaddress</key>
 	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>

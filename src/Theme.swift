@@ -90,19 +90,40 @@ struct PlayerTheme {
     }
 }
 
+private struct ThemeFile {
+    private var path = ""
+    private var modified: Date?
+    private var size: Int?
+    private var value: JSONObject = [:]
+    mutating func read(_ url: URL) -> JSONObject {
+        let attributes = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        if path != url.path || modified != attributes?.contentModificationDate || size != attributes?.fileSize {
+            path = url.path; modified = attributes?.contentModificationDate; size = attributes?.fileSize
+            if let data = try? Data(contentsOf: url) {
+                value = dict(url.pathExtension == "plist" ? try? PropertyListSerialization.propertyList(from: data, format: nil) : try? JSONSerialization.jsonObject(with: data))
+            } else { value = [:]; if attributes != nil { path = "" } }
+        }
+        return value
+    }
+}
+
 // Theme files are tiny. Only changed files are decoded; no work is done per keystroke.
 final class ThemeSource {
     private var signature = ""
     private var cached = PlayerTheme()
+    private var settingsFile = ThemeFile()
+    private var appearanceFile = ThemeFile()
     func load(context: [String: String], environment: [String: String] = ProcessInfo.processInfo.environment,
               home: URL = FileManager.default.homeDirectoryForCurrentUser, dark: Bool) -> (String, PlayerTheme) {
         let settingsURL = home.appendingPathComponent("Library/Application Support/Alfred/prefs.json")
-        let settings = dict(readJSON(settingsURL))
-        let prefs = context["preferences"] ?? environment["alfred_preferences"] ?? themeString(settings["current"])
-        let localHash = context["localhash"] ?? environment["alfred_preferences_localhash"] ?? themeString(settings["localhash"])
+        let configuredPrefs = context["preferences"] ?? environment["alfred_preferences"]
+        let configuredHash = context["localhash"] ?? environment["alfred_preferences_localhash"]
+        let settings = configuredPrefs != nil && configuredHash != nil ? [:] : settingsFile.read(settingsURL)
+        let prefs = configuredPrefs ?? themeString(settings["current"])
+        let localHash = configuredHash ?? themeString(settings["localhash"])
         let root = prefs.isEmpty ? home.appendingPathComponent("Library/Application Support/Alfred/Alfred.alfredpreferences") : URL(fileURLWithPath: prefs)
         let appearanceURL = root.appendingPathComponent("preferences/local/\(localHash)/appearance/prefs.plist")
-        let appearance = (try? Data(contentsOf: appearanceURL)).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? JSONObject } ?? [:]
+        let appearance = context["id"] == nil ? appearanceFile.read(appearanceURL) : [:]
         let selected = themeString(appearance[dark ? "darkthemeuid" : "lightthemeuid"])
         let id = context["id"] ?? (selected.isEmpty ? environment["alfred_theme"] ?? "" : selected)
         let file = root.appendingPathComponent("themes").appendingPathComponent(id).appendingPathComponent("theme.json")

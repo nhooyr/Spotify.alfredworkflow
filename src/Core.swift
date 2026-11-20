@@ -58,8 +58,8 @@ struct WorkflowPaths {
         data = URL(fileURLWithPath: environment["alfred_workflow_data"] ?? home.appendingPathComponent("Library/Application Support/Alfred/Workflow Data/\(workflowID)").path)
         cache = URL(fileURLWithPath: environment["alfred_workflow_cache"] ?? home.appendingPathComponent("Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/\(workflowID)").path)
         desktop = URL(fileURLWithPath: environment["SPOTIFY_DESKTOP_CACHE"] ?? home.appendingPathComponent("Library/Caches/com.spotify.client/Browser/Cache/Cache_Data").path)
-        self.authorization = authorization ?? AuthorizationStore(data: data)
-        clientIDSettings = ClientIDSettings(root: root, authorization: self.authorization)
+        self.authorization = authorization ?? AuthorizationStore()
+        clientIDSettings = ClientIDSettings(authorization: self.authorization)
     }
     func prepare() throws {
         for url in [data, cache] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
@@ -73,10 +73,7 @@ struct WorkflowPaths {
     func clientID() -> String { clientIDSettings.value }
     func loadClientID() throws { try clientIDSettings.load() }
     func saveClientID(_ value: String) throws { try clientIDSettings.save(value) }
-    func clearClientID() throws {
-        try clientIDSettings.clear()
-    }
-
+    func clearClientID() throws { try clientIDSettings.clear() }
 }
 
 final class MusicStore {

@@ -31,15 +31,14 @@ application.
 5. Open the Spotify Mini Player and enter your **Spotify Client ID**.
 
    *note*: The workflow stores your **Spotify Client ID** and sign-in tokens in your local macOS Keychain,
-   outside Alfred's synced preferences.
+   outside Alfred's synced preferences for optimal security.
 
 ![Screenshot for install step 5](./docs/install-5.png)
 
-6. After providing **Spotify Client ID**, sign-in will load automatically in your browser when you first open
-   the Spotify Mini Player. Allow access.
+6. Sign-in will load automatically in your browser. Allow access.
 
-   *note*: If you close the browser tab, press <kbd>Enter</kbd> on the **Connecting to Spotify...** menu to open
-   sign-in again.
+   *note*: If you close the browser tab, press <kbd>Enter</kbd> on the **Connecting to Spotify...** menu to
+   open sign-in again.
 
 ![Screenshot for install step 6](./docs/install-6.png)
 
@@ -52,12 +51,12 @@ If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredwor
 
 ## Usage
 
-Browse **Playlists**, **Albums**, **Artists**, and **Songs**, or type to search cached music.
+Browse **Playlists**, **Albums**, **Artists** and **Songs** or type to search library music.
 
 ### Browsing and search
 
 You can type or paste these paths directly. Category names accept singular or
-plural forms and ignore case. Named folders resolve from cached music; append
+plural forms and ignore case. Named folders resolve from library music; append
 text after any folder path to filter its contents.
 
 | Typed path | Action |
@@ -67,12 +66,12 @@ text after any folder path to filter its contents.
 | `Albums/` | Browse albums saved to your library. |
 | `Albums/<album>/` | Browse an album’s songs. |
 | `Artists/` | Browse artists you follow. |
-| `Artists/<artist>/` | Browse an artist’s albums, or play all their tracks. |
+| `Artists/<artist>/` | Browse an artist’s albums or play all their tracks. |
 | `Artists/<artist>/<album>/` | Browse an artist’s album. |
 | `Songs/` | Browse Liked Songs. |
 | `Songs/All` | Press Enter on **All** at the top to play the collection. |
-| `<playlist>/`, `<album>/`, or `<artist>/` | Open a cached folder directly, as from local search. |
-| `<artist>/<album>/` | Open a cached artist’s album directly. |
+| `<playlist>/`, `<album>/` or `<artist>/` | Open a library folder directly, as from library search. |
+| `<artist>/<album>/` | Open a library artist’s album directly. |
 | `/` | Open Spotify catalogue search, ready for a query. |
 | `/query` | Search Spotify’s full catalogue (for example, `/meow`). |
 
@@ -80,7 +79,7 @@ Local results prioritise playlists, albums, artists, then songs. For one-track
 albums, the song appears before its album in search.
 
 **Search** updates catalogue results as you type. Reopening resumes the query;
-removing the leading `/` returns to local search.
+removing the leading `/` returns to library search.
 
 ### Playback
 
@@ -96,7 +95,7 @@ The third line shows its playback source when known: playlist, album, artist,
 or Liked Songs. This source can stay the same when Spotify continues with autoplay.
 
 Playback uses the Web API online and starts Spotify automatically when needed.
-Offline, or when the desktop device is unavailable through the API, AppleScript
+Offline or when the desktop device is unavailable through the API, AppleScript
 handles playback and may bring Spotify forward.
 
 ### Offline and caching
@@ -139,14 +138,12 @@ and `spotify demo`.
 The like, unlike, shuf and unshuf commands set a state rather than toggling it.
 
 Your Client ID and sign-in tokens are stored locally in macOS Keychain and cached in memory.
-Existing credential files transfer automatically after updating.
 
 After `spot reauth`, open the Spotify Mini Player in Alfred to set up again.
 This clears the Client ID and sign-in tokens from Keychain. The next open prompts for a Client ID again.
 
-Cached artwork, saved library lists and playlist order are kept
-for the same account, including when Spotify rate limits a refresh. A confirmed account change clears the
-previous account’s saved lists.
+Cached artwork, saved library lists and playlist order are kept for the same account, including when Spotify
+rate limits a refresh. A confirmed account change clears the previous account’s saved lists.
 
 ### Shortcuts
 
@@ -154,8 +151,8 @@ previous account’s saved lists.
 * <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Left</kbd> / <kbd>Cmd</kbd><kbd>P</kbd> Previous Spotify track.
 * <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Right</kbd> / <kbd>Cmd</kbd><kbd>N</kbd> Next Spotify track.
 * <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Up</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Down</kbd> / <kbd>Cmd</kbd><kbd>S</kbd> Play/pause Spotify.
-* <kbd>Enter</kbd> Browse the selection from its first item, or play a song.
-* <kbd>Opt</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
+* <kbd>Enter</kbd> Browse the selection from its first item or play a song.
+* <kbd>Opt</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist or all Liked Songs directly; browse-only items open normally.
 * <kbd>Cmd</kbd><kbd>Down</kbd> Open the selection, restoring its previous selection and filter.
 * <kbd>Cmd</kbd><kbd>Up</kbd> Go up one level, restoring the parent selection and filter.
 * <kbd>Cmd</kbd><kbd>5</kbd> Open **Search** for Spotify’s full catalogue.
@@ -177,7 +174,7 @@ or controls clears that selection. Editing a filter selects the first result.
 Switching Spaces hides the player while keeping its filter and window ready.
 
 In demo mode, the player stays visible and focusable when it loses focus.
-Run `spot demo` again, or press Escape in the player, to exit.
+Run `spot demo` again or press Escape in the player, to exit.
 
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and

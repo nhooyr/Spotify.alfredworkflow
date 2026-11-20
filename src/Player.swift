@@ -253,6 +253,7 @@ private struct MusicItem {
     let albumURI: String
     let albumTrackCount: Int
     let words: [Substring]
+    let ascii: Bool
     var priority: Int {
         switch kind {
         case "playlist": return 0
@@ -300,13 +301,19 @@ private struct MusicItem {
         album = value["album"] as? String ?? ""
         albumURI = value["album_uri"] as? String ?? ""
         albumTrackCount = (value["album_total"] as? NSNumber)?.intValue ?? 0
-        words = Self.normalize(value["match"] as? String ?? name).split(whereSeparator: { $0.isWhitespace })
+        let normalized = Self.normalize(value["match"] as? String ?? name)
+        words = normalized.split(whereSeparator: { $0.isWhitespace })
+        ascii = normalized.utf8.allSatisfy { $0 < 128 }
     }
+    private static let locale = Locale(identifier: "en_US_POSIX")
     static func normalize(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        text.utf8.allSatisfy { $0 < 128 } ? text.lowercased() : text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
     }
-    func matches(_ terms: [Substring]) -> Bool {
-        terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
+    func matches(_ terms: [Substring], ascii queryIsASCII: Bool) -> Bool {
+        if ascii && queryIsASCII {
+            return terms.allSatisfy { term in words.contains { $0.utf8.starts(with: term.utf8) } }
+        }
+        return terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
     }
 }
 
@@ -321,7 +328,8 @@ private struct MusicFilter {
         let narrows = valid && usesCatalog == catalog && previousTerms.count <= terms.count
             && zip(previousTerms, terms).allSatisfy { $1.hasPrefix($0) }
         let candidates = narrows ? results : items
-        results = terms.isEmpty ? items : candidates.filter { $0.matches(terms) }
+        let ascii = terms.allSatisfy { $0.utf8.allSatisfy { $0 < 128 } }
+        results = terms.isEmpty ? items : candidates.filter { $0.matches(terms, ascii: ascii) }
         previousTerms = terms
         usesCatalog = catalog
         valid = true
@@ -774,6 +782,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var catalog: [MusicItem] = [] { didSet { searchFilter.reset(); liveSearchFilter.reset() } }
     private let catalogQueue = DispatchQueue(label: "spotify.catalog", qos: .userInitiated)
     private var catalogRevision = 0
+    private var catalogPreparation: RequestCancellation?
     private var filtered: [MusicItem] = []
     private var breadcrumb = ""
     private var navigationSelections: [String: (uri: String, query: String)] = [:]
@@ -1209,9 +1218,19 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if type == "catalog" {
             guard connection == "connected" else { return }
             catalogRevision += 1
+            catalogPreparation?.cancel()
+            let preparation = RequestCancellation()
+            catalogPreparation = preparation
             let revision = catalogRevision, rows = value["rows"] as? [[String: Any]] ?? []
             catalogQueue.async { [weak self] in
-                let prepared = MusicItem.prioritized(rows.map(MusicItem.init))
+                var items: [MusicItem] = []
+                items.reserveCapacity(rows.count)
+                for (index, row) in rows.enumerated() {
+                    if index.isMultiple(of: 256), preparation.isCancelled { return }
+                    items.append(MusicItem(row))
+                }
+                guard !preparation.isCancelled else { return }
+                let prepared = MusicItem.prioritized(items)
                 DispatchQueue.main.async {
                     guard let self = self, self.connection == "connected", revision == self.catalogRevision else { return }
                     self.catalog = prepared
@@ -1347,6 +1366,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         pendingPlaintextPath = nil; lastPlaintextPath = nil; pendingHomeQuery = nil
         navigationSelections.removeAll(); restoreOpeningSelection = false
         routeKind = "home"; breadcrumb = ""; setSearchText("")
+        catalogPreparation?.cancel(); catalogPreparation = nil
         catalogRevision += 1; catalog = []; home = []; source = []
         filter(resetSelection: true)
     }
@@ -2206,7 +2226,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             let items = (0..<10000).map { MusicItem(["name": "Song \($0)", "match": "Song \($0) Some Artist"]) }
             let terms = MusicItem.normalize("song 12").split(separator: " ")
             let start = DispatchTime.now().uptimeNanoseconds
-            let matches = items.filter { $0.matches(terms) }
+            var matcher = MusicFilter()
+            let matches = matcher.matching(items, terms: terms, catalog: true)
             return ["status": "ok", "rows": items.count, "matches": matches.count,
                     "filter_ms": Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000]
         }
@@ -2665,12 +2686,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             placeholderFits = inputInkFits() && placeholderFits
             let shade = darkestInputPixel()
             legibleHint = legibleHint && shade > 0.35 && shade < 0.75
-            if font == "Avenir", let path = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID_SCREENSHOT"] { snapshot(path) }
             setSearchText(id)
             textFits = inputInkFits() && textFits
-            if font == "Avenir", let path = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID_SCREENSHOT"] {
-                snapshot(URL(fileURLWithPath: path).deletingPathExtension().path + "-filled.png")
-            }
         }
         setSearchText(id); controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
         let noSearch = filtered.count == 1 && routeKind == "home" && !catalogPending && preview.image == nil
@@ -2686,9 +2703,6 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         panel.sendEvent(event(8, "c"))
         let typing = search.stringValue == "c" && filtered.count == 1 && routeKind == "home"
         let noHintAfterTyping = darkestInputPixel(from: 80) > 0.99
-        if let path = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID_SCREENSHOT"] {
-            snapshot(URL(fileURLWithPath: path).deletingPathExtension().path + "-typed.png")
-        }
         _ = panel.performKeyEquivalent(with: event(0, "a", .command))
         panel.sendEvent(event(51, "\u{7f}"))
         let hintRestored = search.stringValue.isEmpty && darkestInputPixel() < 0.75 && inputInkFits()
@@ -3098,7 +3112,22 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         for query in ["", "s", "so", "song", "song a", "song ar", "song", "a song", "c", "ca", "cafe", "café é", "é café", "z", ""] {
             let terms = MusicItem.normalize(query).split(whereSeparator: { $0.isWhitespace })
             let result = matcher.matching(ordered, terms: terms, catalog: true)
-            matches = matches && result.map { $0.uri } == ordered.filter { $0.matches(terms) }.map { $0.uri }
+            matches = matches && result.map { $0.uri } == ordered.filter { item in terms.allSatisfy { term in item.words.contains { $0.hasPrefix(term) } } }.map { $0.uri }
+        }
+        let names = ["ASCII Artist SONG 123", "Café Été", "Cafe\u{301} E\u{301}te\u{301}", "Straße", "İstanbul", "夜に駆ける", "Луна", "أغنية", "ＫＫ", "👩🏽‍💻 Night", "Ångström", "I ı İ i", "A\tB\nC"]
+        let unicodeItems = names.enumerated().map { MusicItem(["uri": "unicode:\($0.offset)", "name": $0.element]) }
+        let locale = Locale(identifier: "en_US_POSIX")
+        func reference(_ value: String) -> String { value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale) }
+        let normalized = names.allSatisfy { MusicItem.normalize($0) == reference($0) }
+        var unicodeMatcher = MusicFilter()
+        let queries = names.flatMap { name in (0...min(5, name.count)).map { String(name.prefix($0)) } } + ["cafe ete", "strass", "artist song", "夜", "night 👩🏽‍💻", "", "not found"]
+        let unicodeMatches = queries.allSatisfy { query in
+            let terms = reference(query).split(whereSeparator: { $0.isWhitespace })
+            let expected = unicodeItems.filter { item in
+                let words = reference(item.name).split(whereSeparator: { $0.isWhitespace })
+                return terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
+            }.map { $0.uri }
+            return unicodeMatcher.matching(unicodeItems, terms: MusicItem.normalize(query).split(whereSeparator: { $0.isWhitespace }), catalog: true).map { $0.uri } == expected
         }
         let scoped = matcher.matching([items[0]], terms: [], catalog: false).map { $0.uri } == ["track:1"]
         matcher.reset()
@@ -3106,6 +3135,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         receive(["type": "catalog", "rows": (0..<2000).map { ["name": "Old \($0)", "uri": "old:\($0)", "kind": "track"] }])
         receive(["type": "catalog", "rows": [["name": "Latest", "uri": "latest", "kind": "playlist"]]])
         return ["status": "pending", "search_results_unchanged": matches, "category_order_stable": stable,
+                "unicode_matching_preserved": unicodeMatches, "normalization_matches_foundation": normalized,
                 "single_song_precedes_its_album": singleFirst, "single_song_order_survives_filtering": filteredSingle,
                 "unknown_album_counts_are_not_guessed": unknownCount, "single_count_can_come_from_track_metadata": knownFromTrack,
                 "full_album_count_overrides_stale_track_metadata": conflictingCounts,

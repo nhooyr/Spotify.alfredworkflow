@@ -61,16 +61,11 @@ final class KeychainCredentialStorage: CredentialStorage {
 final class AuthorizationStore {
     struct Snapshot { let token: JSONObject; let generation: Int }
     private let storage: CredentialStorage
-    let legacyURL: URL
-    let legacyClientIDURL: URL
     private let lock = NSRecursiveLock()
     private var cached: JSONObject?
     private var clearError: Error?
     private var generation = 0
-    init(data: URL, storage: CredentialStorage = KeychainCredentialStorage()) {
-        legacyURL = data.appendingPathComponent("authorization.json")
-        legacyClientIDURL = data.appendingPathComponent("client-id.json"); self.storage = storage
-    }
+    init(storage: CredentialStorage = KeychainCredentialStorage()) { self.storage = storage }
     private func decode(_ data: Data) throws -> JSONObject {
         guard let token = try JSONSerialization.jsonObject(with: data) as? JSONObject,
               validClientID(text(token["client_id"])),
@@ -79,33 +74,11 @@ final class AuthorizationStore {
         }
         return token
     }
-    private func removeLegacy() throws {
-        for file in [legacyURL, legacyClientIDURL] where FileManager.default.fileExists(atPath: file.path) {
-            try FileManager.default.removeItem(at: file)
-        }
-    }
     func snapshot() throws -> Snapshot {
         lock.lock(); defer { lock.unlock() }
         if let clearError = clearError { throw clearError }
         if let cached = cached { return Snapshot(token: cached, generation: generation) }
-        let token: JSONObject
-        if let data = try storage.read() {
-            token = try decode(data)
-            try removeLegacy()
-        } else if FileManager.default.fileExists(atPath: legacyURL.path) || FileManager.default.fileExists(atPath: legacyClientIDURL.path) {
-            var previous = FileManager.default.fileExists(atPath: legacyURL.path) ? try decode(Data(contentsOf: legacyURL)) : [:]
-            let savedID = text(dict(readJSON(legacyClientIDURL))["client_id"])
-            if validClientID(savedID), savedID != text(previous["client_id"]) { previous = ["client_id": savedID] }
-            if previous.isEmpty {
-                token = [:]
-            } else {
-                let data = try jsonData(previous)
-                try storage.write(data)
-                guard try storage.read() == data else { throw SpotifyFailure(message: "Spotify sign-in could not be verified in Keychain. The previous sign-in files were kept.") }
-                try removeLegacy()
-                token = previous
-            }
-        } else { token = [:] }
+        let token = try storage.read().map(decode) ?? [:]
         cached = token
         return Snapshot(token: token, generation: generation)
     }
@@ -117,7 +90,6 @@ final class AuthorizationStore {
         let data = try jsonData(token)
         _ = try decode(data)
         try storage.write(data)
-        try removeLegacy()
         cached = token
     }
     func saveClientID(_ id: String) throws {
@@ -131,7 +103,7 @@ final class AuthorizationStore {
         lock.lock(); defer { lock.unlock() }
         generation += 1
         cached = [:]
-        do { try storage.remove(); try removeLegacy(); clearError = nil }
+        do { try storage.remove(); clearError = nil }
         catch { clearError = error; throw error }
     }
 }

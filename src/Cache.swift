@@ -129,6 +129,9 @@ final class DesktopCache {
     let paths: WorkflowPaths
     let store: MusicStore
     let session: URLSession
+    private final class ImageRequest { var result: Result<String?, Error>? }
+    private let imageCondition = NSCondition()
+    private var imageRequests: [String: ImageRequest] = [:]
     init(_ paths: WorkflowPaths, _ store: MusicStore, session: URLSession? = nil) {
         self.paths = paths; self.store = store
         let config = URLSessionConfiguration.ephemeral
@@ -279,9 +282,28 @@ final class DesktopCache {
     }
     func image(_ url: String, download: Bool) throws -> String? {
         guard Self.imageURL(url) else { return nil }
+        // Local previews never wait for a network request on another queue.
+        guard download else { return try loadImage(url, download: false) }
+        imageCondition.lock()
+        if let pending = imageRequests[url] {
+            while pending.result == nil { imageCondition.wait() }
+            let result = pending.result!
+            imageCondition.unlock()
+            return try result.get()
+        }
+        let pending = ImageRequest()
+        imageRequests[url] = pending
+        imageCondition.unlock()
+        let result = Result { try loadImage(url, download: true) }
+        imageCondition.lock()
+        pending.result = result
+        imageRequests.removeValue(forKey: url)
+        imageCondition.broadcast()
+        imageCondition.unlock()
+        return try result.get()
+    }
+    private func loadImage(_ url: String, download: Bool) throws -> String? {
         let output = paths.cache.appendingPathComponent("artwork/" + sha256(Data(url.utf8)) + ".img")
-        let evicted = "evicted-art:" + output.lastPathComponent
-        if store.get(evicted, stale: true) != nil { try store.execute("DELETE FROM responses WHERE key=?", [evicted]) }
         if FileManager.default.fileExists(atPath: output.path) {
             // Coarse access timestamps keep the cleanup pass from evicting art
             // in use without adding a write on every preview or keystroke.
@@ -291,6 +313,8 @@ final class DesktopCache {
             }
             return output.path
         }
+        let evicted = "evicted-art:" + output.lastPathComponent
+        if store.get(evicted, stale: true) != nil { try store.execute("DELETE FROM responses WHERE key=?", [evicted]) }
         var matches = try store.rows("SELECT path,offset,length FROM desktop WHERE url=? ORDER BY stamp DESC", [url])
         if let parsed = URL(string: url), parsed.host == "i.scdn.co", parsed.lastPathComponent.count == 40 {
             let id = parsed.lastPathComponent

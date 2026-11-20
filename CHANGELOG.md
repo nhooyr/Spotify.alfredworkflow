@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased
+## v0.5.3
 
-- Store manually entered Client IDs and sign-in tokens in the local macOS Keychain and cache them in memory. Existing credential files transfer automatically after a verified write.
-- Prompt for the Client ID directly in the mini player; remove environment-variable and shell-based setup.
+- Remove obsolete migration code and keep the workflow graph in its source template.
+- Speed up local search and avoid rebuilding superseded catalogues or reparsing unchanged themes.
+- Share concurrent cover downloads and keep cached artwork responsive during library sync.
+
+- Store manually entered Client IDs and sign-in tokens in the local macOS Keychain and cache them in memory.
+- Remove environment-variable and shell-based setup for SPOTIFY_CLIENT_ID.
 - Clear Keychain sign-in with `spot reauth`, and prevent late token refreshes from restoring cleared credentials.
 - Require certificate-backed signing for the player and launcher, with Hardened Runtime enabled.
 - Report credential-storage errors instead of falling back to plaintext token files.

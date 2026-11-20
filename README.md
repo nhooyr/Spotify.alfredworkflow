@@ -9,41 +9,43 @@ Search and play music from Spotify with the `spot` keyword or <kbd>⌃</kbd><kbd
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Double click [./dist/Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
-
-   *note*: You might have to rebuild first with [`./build.sh`](./build.sh).
+1. Build the workflow with [`./build.sh`](./build.sh).
 
 ![Screenshot for install step 1](./docs/install-1.png)
 
-2. Select the **Hotkey** object at the top of the workflow canvas to set a hotkey.
-   I use <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
+2. Double click [./dist/Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
 
 ![Screenshot for install step 2](./docs/install-2.png)
 
-3. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
-   **Spotify Client ID**. Enable the **Web API** and set the app’s redirect URI to
-   `http://127.0.0.1:8765/spotify_callback`.
+3. Select the **Hotkey** object at the top of the workflow canvas to set a hotkey.
+   I use <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
 
 ![Screenshot for install step 3](./docs/install-3.png)
 
-4. Export **Spotify Client ID** as `$SPOTIFY_CLIENT_ID` in your `$SHELL`'s configuration. The player reads it
+4. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
+   **Spotify Client ID**. Enable the **Web API** and set the app’s redirect URI to
+   `http://127.0.0.1:8765/spotify_callback`.
+
+![Screenshot for install step 4](./docs/install-4.png)
+
+5. Export **Spotify Client ID** as `$SPOTIFY_CLIENT_ID` in your `$SHELL`'s configuration. The player reads it
    through `$SHELL` at startup. If you don't know how, you can enter it manually in the mini player when you
    first open it.
 
    *note*: The workflow will save a manually entered **Spotify Client ID** outside Alfred's synced preferences
    for security.
 
-![Screenshot for install step 4](./docs/install-4.png)
+![Screenshot for install step 5](./docs/install-5.png)
 
-5. After providing **Spotify Client ID**, sign-in will load automatically in your browser when you first open
+6. After providing **Spotify Client ID**, sign-in will load automatically in your browser when you first open
    the Spotify Mini Player. Allow access.
 
    *note*: If you close the browser tab, press <kbd>↩</kbd> on the **Connecting to Spotify...** menu to open
    sign-in again.
 
-![Screenshot for install step 5](./docs/install-5.png)
+![Screenshot for install step 6](./docs/install-6.png)
 
-6. The Spotify Mini Player will reopen automatically if sign-in was successful and begin syncing your Spotify
+7. The Spotify Mini Player will reopen automatically if sign-in was successful and begin syncing your Spotify
    library metadata.
 
 ![Spotify Mini Player](./docs/ss.png)

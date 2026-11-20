@@ -1144,10 +1144,37 @@ private func spawnClient(_ url: URL, _ arguments: [String] = [], environment: [S
     check(process.terminationStatus == 0, "Test child exited with \(process.terminationStatus)")
     return String(decoding: data, as: UTF8.self)
 }
+private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
+    let root = tempDirectory("spotify-metadata-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let stage = root.appendingPathComponent("stage")
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("workflow"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: stage.appendingPathComponent("Spotify Mini Player.app/Contents"), withIntermediateDirectories: true)
+    var template = exported
+    template.removeValue(forKey: "readme"); template.removeValue(forKey: "version")
+    let source = root.appendingPathComponent("workflow/info.plist")
+    let original = try PropertyListSerialization.data(fromPropertyList: template, format: .xml, options: 0)
+    try original.write(to: source)
+    try "Unstaged README must not replace the export snapshot.".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+    for readme in ["Initial staged README.", "Updated staged README with new documentation."] {
+        try readme.write(to: stage.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try writeWorkflowMetadata(root, stage: stage)
+        let generated = try PropertyListSerialization.propertyList(from: Data(contentsOf: stage.appendingPathComponent("info.plist")), format: nil) as! JSONObject
+        let after = try Data(contentsOf: source)
+        check(after == original, "Metadata generation never rewrites its input template")
+        check(text(generated["readme"]) == readme, "Generated help follows the staged README on every build")
+        check(text(generated["version"]) == workflowVersion, "The release version comes from Swift instead of the template")
+        check(text(generated["bundleid"]) == text(template["bundleid"]) && text(generated["name"]) == text(template["name"]),
+              "Generating documentation retains the workflow definition")
+    }
+    print("Metadata generation passed: immutable template, staged README snapshots, and generated release version.")
+}
+
 func runIntegrationTests() {
     let root = tempDirectory("spotify-ui-tests-"); defer { try? FileManager.default.removeItem(at: root) }
     let executable = currentExecutable(), workflow = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let info = try! PropertyListSerialization.propertyList(from: Data(contentsOf: workflow.appendingPathComponent("info.plist")), format: nil) as! JSONObject
+    do { try testWorkflowMetadataGeneration(info) } catch { check(false, "Metadata generation: " + error.localizedDescription) }
     let objects = info["objects"] as! [JSONObject]
     let settings = info["userconfigurationconfig"] as? [JSONObject] ?? []
     check(settings.map { text($0["variable"]) } == ["keyword"], "Only the shared keyword is stored in synced workflow configuration")

@@ -1,8 +1,12 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-project_dir=$PWD
+
 output=dist/Spotify.alfredworkflow
+printf 'building v%s into %s\n' "$(awk -F '"' '/^let workflowVersion = / { print $2 }' src/version.swift)" \
+	"$output" >&2
+
+project_dir=$PWD
 identifier=$(find src -type f -exec shasum -a 256 {} + | LC_ALL=C sort | shasum -a 256)
 identifier=${identifier%% *}
 work=$(mktemp -d "${TMPDIR:-/tmp}/spotify-build.XXXXXX")
@@ -33,7 +37,8 @@ done
 xcrun lipo -create "$work/player-arm64" "$work/player-x86_64" -output "$app/Contents/MacOS/SpotifyMiniPlayer"
 xcrun lipo -create "$work/show-arm64" "$work/show-x86_64" -output "$stage/show"
 "$app/Contents/MacOS/SpotifyMiniPlayer" --write-metadata "$project_dir" "$stage"
-cp "$stage/info.plist" workflow/info.plist
 codesign --force --sign - --timestamp=none "$app" 2>/dev/null
 ditto -c -k --norsrc "$stage" "$output"
+
 printf '%s\n' "$output"
+open -R "$output"

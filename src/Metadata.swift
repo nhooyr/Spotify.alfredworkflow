@@ -4,7 +4,7 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     let original = try Data(contentsOf: root.appendingPathComponent("workflow/info.plist"))
     var workflow = try PropertyListSerialization.propertyList(from: original, format: nil) as! JSONObject
     workflow["version"] = workflowVersion
-    workflow["readme"] = try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8)
+    workflow["readme"] = try String(contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8)
     var settings = workflow["userconfigurationconfig"] as? [JSONObject] ?? []
     settings.removeAll { ["SPOTIFY_CLIENT_ID", "keyword"].contains(text($0["variable"])) }
     var variables = dict(workflow["variables"])

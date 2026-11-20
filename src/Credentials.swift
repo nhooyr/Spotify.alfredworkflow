@@ -9,17 +9,15 @@ protocol CredentialStorage {
 
 final class KeychainCredentialStorage: CredentialStorage {
     private let service: String
-    private let keychain: SecKeychain?
-    init(service: String = workflowID, keychain: SecKeychain? = nil) {
-        self.service = service; self.keychain = keychain
+    private let label: String
+    init(service: String = workflowID, label: String = "Spotify Mini Player Sign-In") {
+        self.service = service; self.label = label
     }
     private var query: [String: Any] {
-        var value: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                   kSecAttrService as String: service,
-                                   kSecAttrAccount as String: "authorization",
-                                   kSecAttrSynchronizable as String: false]
-        if let keychain = keychain { value[kSecMatchSearchList as String] = [keychain] }
-        return value
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: "authorization",
+         kSecAttrSynchronizable as String: false]
     }
     private func check(_ status: OSStatus, _ action: String) throws {
         guard status == errSecSuccess else {
@@ -42,9 +40,7 @@ final class KeychainCredentialStorage: CredentialStorage {
         let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status != errSecItemNotFound { try check(status, "save"); return }
         var request = query
-        request.removeValue(forKey: kSecMatchSearchList as String)
-        if let keychain = keychain { request[kSecUseKeychain as String] = keychain }
-        request[kSecAttrLabel as String] = "Spotify Mini Player Sign-In"
+        request[kSecAttrLabel as String] = label
         request[kSecValueData as String] = data
         // The login Keychain’s default access controls trust only the creating signed app.
         let added = SecItemAdd(request as CFDictionary, nil)

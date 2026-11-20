@@ -67,8 +67,9 @@ prompt. The app does not import data from other workflows.
 used for compressed desktop cache entries. Its BSD license is included in the
 source and exported workflow. Other native dependencies are macOS system libraries.
 
-Tests use temporary files, memory credential stores, a disposable private Keychain,
-a mock HTTPS transport, and hidden native panels.
+Tests use temporary files, memory credential stores, a uniquely named temporary
+Keychain item containing dummy credentials, a mock HTTPS transport, and native panels.
+The temporary item is deleted after the test; the real Spotify sign-in is untouched.
 They do not operate Alfred or Spotify or change the user’s library. The integration
 screenshot is saved as `alfred-spotify-native-panel.png` in a new temporary directory;
 `test.sh` prints its path.

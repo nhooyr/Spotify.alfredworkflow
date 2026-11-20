@@ -564,18 +564,10 @@ private func testCredentialStorage() throws {
     func verify(_ value: Bool, _ message: String) throws {
         if !value { throw SpotifyFailure(message: message) }
     }
-    // Use a private disposable keychain, never the user's Spotify item or default keychain.
-    let keychainURL = root.appendingPathComponent("fixture.keychain")
-    let password = Array(UUID().uuidString.utf8)
-    var keychain: SecKeychain?
-    let status = keychainURL.path.withCString { name in
-        password.withUnsafeBytes { SecKeychainCreate(name, UInt32($0.count), $0.baseAddress, false, nil, &keychain) }
-    }
-    guard status == errSecSuccess, let keychain = keychain else { throw SpotifyFailure(message: "Could not create isolated test Keychain (\(status)).") }
-    defer { SecKeychainDelete(keychain) }
-    let unlocked = password.withUnsafeBytes { SecKeychainUnlock(keychain, UInt32($0.count), $0.baseAddress, false) }
-    guard unlocked == errSecSuccess else { throw SpotifyFailure(message: "Could not unlock isolated test Keychain (\(unlocked)).") }
-    let disk = KeychainCredentialStorage(service: workflowID + ".tests." + UUID().uuidString, keychain: keychain)
+    // Isolate dummy credentials with a fresh service; never access the real Spotify item.
+    let disk = KeychainCredentialStorage(service: workflowID + ".tests." + UUID().uuidString,
+                                        label: "Spotify Mini Player Test Sign-In")
+    defer { try? disk.remove() }
     let real = AuthorizationStore(storage: disk)
     try real.saveClientID(String(repeating: "a", count: 32))
     try verify(text(try AuthorizationStore(storage: disk).load()["client_id"]) == String(repeating: "a", count: 32), "Native Keychain persists a manually entered ID before sign-in")
@@ -1438,6 +1430,20 @@ func runIntegrationTests(screenshot: URL? = nil) {
         check(text(result["status"]) == "ok", command + " completed")
         print("\(command): \(String(decoding: try! jsonData(result), as: UTF8.self))")
     }
+    _ = request("test-demo-prepare")
+    usleep(150_000) // Let AppKit finish creating the field editor's helper windows.
+    let demoWindows = request("test-demo-windows")["windows"] as? [Int]
+    check(demoWindows != nil, "Demo test reports its native windows")
+    for index in 0..<6 {
+        spawnClient(workflow.appendingPathComponent("show"), ["--screenshot"], environment: env)
+        usleep(50_000)
+        let state = request("test-demo-windows")
+        check(state["demo"] as? Bool == (index % 2 == 0), "One demo command changes mode exactly once")
+        check(state["editor"] as? Bool == true, "Demo toggles retain the active search editor")
+        check(state["windows"] as? [Int] == demoWindows, "Demo toggles do not recreate system input popup windows")
+    }
+    _ = request("hide")
+    print("Repeated demo launcher checks passed: active search input, stable system windows, and single toggles.")
     let showsBeforeCommands = number(request("state")["shows"])
     for (command, key, expected) in [("like", "liked", true), ("unlike", "liked", false), ("shuffle", "shuffling", true), ("noshuffle", "shuffling", false)] {
         spawnClient(workflow.appendingPathComponent("show"), ["--" + command], environment: env)

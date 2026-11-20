@@ -644,7 +644,7 @@ Search and play music from Spotify with the `spot` keyword or &lt;kbd&gt;⌃&lt;
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+1. Double click [./dist/Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
 
 ![Screenshot for install step 1](./docs/install-1.png)
 
@@ -663,22 +663,21 @@ application.
    through `$SHELL` at startup. If you don't know how, you can manually enter it in the mini player when you
    first open it.
 
-   note: The workflow will save a manually entered **Spotify Client ID** outside Alfred's synced preferences
+   *note*: The workflow will save a manually entered **Spotify Client ID** outside Alfred's synced preferences
    for security.
 
-5. When you open the Spotify Mini Player, it will prompt you for the **Spotify Client ID** if none was found
-   in `$SPOTIFY_CLIENT_ID` via your `$SHELL` or saved locally. Once entered, sign-in will open in your browser
-   and the Mini Player will hide. Allow access.
+![Screenshot for install step 4](./docs/install-4.png)
 
-   note: If you close the browser tab, press &lt;kbd&gt;↩&lt;/kbd&gt; on the **Connecting to Spotify...** menu to open
+5. When you open the Spotify Mini Player, sign-in will open in your browser and the Mini Player will hide.
+   Allow access.
+
+   *note*: If you close the browser tab, press &lt;kbd&gt;↩&lt;/kbd&gt; on the **Connecting to Spotify...** menu to open
    sign-in again.
 
-![Screenshot for install step 5-1](./docs/install-4-1.png)
-![Screenshot for install step 5-2](./docs/install-4-2.png)
+![Screenshot for install step 5](./docs/install-5.png)
 
 6. The Mini Player will reopen automatically if sign-in was successful and begin syncing your Spotify library
-   metadata. Cancelled or failed sign-ins also reopen the player, clearing the entered Client ID so you can
-   try again.
+   metadata.
 
 ![Spotify Mini Player](./docs/ss.png)
 

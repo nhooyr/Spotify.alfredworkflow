@@ -25,7 +25,7 @@ application.
 ![Screenshot for install step 3](./docs/install-3.png)
 
 4. Export **Spotify Client ID** as `$SPOTIFY_CLIENT_ID` in your `$SHELL`'s configuration. The player reads it
-   through `$SHELL` at startup. If you don't know how, you can manually enter it in the mini player when you
+   through `$SHELL` at startup. If you don't know how, you can enter it manually in the mini player when you
    first open it.
 
    *note*: The workflow will save a manually entered **Spotify Client ID** outside Alfred's synced preferences
@@ -33,8 +33,8 @@ application.
 
 ![Screenshot for install step 4](./docs/install-4.png)
 
-5. When you open the Spotify Mini Player, sign-in will open in your browser and the Mini Player will hide.
-   Allow access.
+5. After providing **Spotify Client ID**, sign-in will load automatically in your browser when you first open
+   the Spotify Mini Player. Allow access.
 
    *note*: If you close the browser tab, press <kbd>↩</kbd> on the **Connecting to Spotify...** menu to open
    sign-in again.

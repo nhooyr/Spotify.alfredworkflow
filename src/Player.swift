@@ -3655,7 +3655,10 @@ if let index = args.firstIndex(of: "--write-metadata"), args.count > index + 2 {
     catch { fputs("\(error)\n", stderr); exit(1) }
 }
 if args.contains("--test-models") { runModelTests(); exit(0) }
-if args.contains("--test-integration") { runIntegrationTests(); exit(0) }
+if let index = args.firstIndex(of: "--test-integration") {
+    let screenshot = args.count > index + 1 ? URL(fileURLWithPath: args[index + 1]) : nil
+    runIntegrationTests(screenshot: screenshot); exit(0)
+}
 
 if args.contains("--validate-script") {
     if let error = SpotifyCommands().validate() { fputs("\(error)\n", stderr); exit(1) }

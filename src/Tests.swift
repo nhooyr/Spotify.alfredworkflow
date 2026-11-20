@@ -519,7 +519,9 @@ private func testClientIDSettings() throws {
           "A stalled shell cannot block setup indefinitely")
     let zsh = root.appendingPathComponent(".zshrc")
     try Data(("printf 'banner\\n'\nexport SPOTIFY_CLIENT_ID='" + shellID + "'\n").utf8).write(to: zsh)
-    check(ShellClientID.read(environment: ["SHELL": "/bin/zsh", "ZDOTDIR": root.path, "HOME": root.path]) == shellID,
+    // Disable terminal job control, matching the background app even when tests have a TTY.
+    try Data("#!/bin/sh\nexec /bin/zsh +m \"$@\"\n".utf8).write(to: fakeShell)
+    check(ShellClientID.read(environment: ["SHELL": fakeShell.path, "ZDOTDIR": root.path, "HOME": root.path]) == shellID,
           "A real interactive login shell reads its configuration")
     print("Client ID setup passed: user shell, timeout, private fallback, existing sign-in, reauth, and synced-preference cleanup.")
 }
@@ -1170,7 +1172,7 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
     print("Metadata generation passed: immutable template, staged README snapshots, and generated release version.")
 }
 
-func runIntegrationTests() {
+func runIntegrationTests(screenshot: URL? = nil) {
     let root = tempDirectory("spotify-ui-tests-"); defer { try? FileManager.default.removeItem(at: root) }
     let executable = currentExecutable(), workflow = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let info = try! PropertyListSerialization.propertyList(from: Data(contentsOf: workflow.appendingPathComponent("info.plist")), format: nil) as! JSONObject
@@ -1302,8 +1304,8 @@ func runIntegrationTests() {
     check(text(liveState["connection"]) == "credentials" && number(liveState["rows"]) == 1, "Native backend initializes without credentials or network")
     check(number(liveState["backend_pid"]) == number(liveState["pid"]), "Library backend runs in the same native process")
     liveParent.terminate(); liveParent.waitUntilExit(); live.waitUntilExit()
-    let snapshot = root.appendingPathComponent("player.png")
+    let snapshot = screenshot ?? root.appendingPathComponent("player.png")
     _ = run(executable, ["--snapshot", snapshot.path], environment: env)
-    if let destination = env["SPOTIFY_TEST_SCREENSHOT"] { try? FileManager.default.removeItem(atPath: destination); try! FileManager.default.copyItem(at: snapshot, to: URL(fileURLWithPath: destination)) }
+    check(FileManager.default.fileExists(atPath: snapshot.path), "Native integration screenshot was saved")
     print("Native integration checks passed.")
 }

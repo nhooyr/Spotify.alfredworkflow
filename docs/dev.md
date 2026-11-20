@@ -2,9 +2,19 @@
 
 The workflow uses C and Swift, with no interpreter or package installation at runtime.
 Build with `./build.sh` using Xcode Command Line Tools. The universal macOS app and
-C launcher are packaged directly into `dist/Spotify.alfredworkflow`; intermediate
-files live in a temporary directory. Set `workflowVersion` in `src/version.swift`
-for a release. Run `./test.sh` to check the exported build.
+C launcher are packaged into `dist/Spotify.alfredworkflow`, or the output file passed
+as the first argument. Its parent directories are created automatically.
+Run `./test.sh [WORKFLOW]` to check an export. Both scripts support `-h` and `--help`.
+
+Native binaries are cached in `~/Library/Caches/ca.aqsnow.alfred.spotify/build`.
+Source, build-script, compiler, or SDK changes invalidate the binaries. Documentation,
+images, and workflow configuration are always repackaged without recompiling.
+Delete the cache directory to force a clean build. Other intermediate files live
+in a temporary directory.
+
+`workflow/info.plist` is a source template. The build inserts the staged README
+and the version into the exported plist without changing the template. Set
+`workflowVersion` in `src/version.swift` for a release.
 
 `src/Player.swift` owns the persistent AppKit panel. `src/Backend.swift` keeps
 library navigation and I/O off the main thread. Storage, the public Spotify API,
@@ -46,7 +56,9 @@ used for compressed desktop cache entries. Its BSD license is included in the
 source and exported workflow. Other native dependencies are macOS system libraries.
 
 Tests use temporary files, a mock HTTPS transport, and hidden native panels.
-They do not operate Alfred or Spotify or change the user’s library.
+They do not operate Alfred or Spotify or change the user’s library. The integration
+screenshot is saved as `alfred-spotify-native-panel.png` in a new temporary directory;
+`test.sh` prints its path.
 
 File-based icons live in `workflow`. The build generates the copies required
 by Alfred and the app bundle. Player controls use Apple’s SF Symbols and native vector paths for the extended

@@ -13,7 +13,7 @@ application.
 
 ![Screenshot for install step 1](./docs/install-1.png)
 
-2. Double click [./dist/Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+2. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
 
 ![Screenshot for install step 2](./docs/install-2.png)
 

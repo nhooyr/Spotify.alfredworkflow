@@ -1431,25 +1431,22 @@ func runIntegrationTests(screenshot: URL? = nil) {
         print("\(command): \(String(decoding: try! jsonData(result), as: UTF8.self))")
     }
     _ = request("test-demo-prepare")
-    for _ in 0..<3 {
-        _ = request("show")
-        usleep(150_000) // Let AppKit finish creating the field editor's helper windows.
-        let demoWindows = request("test-demo-windows")["windows"] as? [Int]
-        check(demoWindows != nil, "Demo test reports its native windows")
+    usleep(150_000) // Let AppKit finish creating the field editor's helper windows.
+    let demoWindows = request("test-demo-windows")["windows"] as? [Int]
+    check(demoWindows != nil, "Demo test reports its native windows")
+    for index in 0..<6 {
+        let showsBefore = number(request("state")["shows"])
         spawnClient(workflow.appendingPathComponent("show"), ["--screenshot"], environment: env)
         usleep(50_000)
-        let enabled = request("test-demo-windows")
-        check(enabled["demo"] as? Bool == true && enabled["visible"] as? Bool == true, "One demo command enables the visible player")
-        check(enabled["editor"] as? Bool == true, "Enabling demo retains the active search editor")
-        check(enabled["windows"] as? [Int] == demoWindows, "Enabling demo does not recreate system input popup windows")
-        let showsBeforeOff = number(request("state")["shows"])
-        spawnClient(workflow.appendingPathComponent("show"), ["--screenshot"], environment: env)
-        usleep(50_000)
-        let disabled = request("test-demo-windows")
-        check(disabled["demo"] as? Bool == false && disabled["visible"] as? Bool == false, "One demo command exits and hides just like Escape")
-        check(number(request("state")["shows"]) == showsBeforeOff, "Exiting demo does not reopen the player")
+        let state = request("test-demo-windows")
+        check(state["demo"] as? Bool == (index % 2 == 0), "One demo command changes mode exactly once")
+        check(state["visible"] as? Bool == true, "Demo toggles leave the player open in either mode")
+        check(state["editor"] as? Bool == true, "Demo toggles retain the active search editor")
+        check(state["windows"] as? [Int] == demoWindows, "Demo toggles do not recreate system input popup windows")
+        check(number(request("state")["shows"]) == showsBefore + 1, "Each demo toggle shows the player once")
     }
-    print("Repeated demo launcher checks passed: stable input windows, single-toggle exit, and Escape-equivalent hiding.")
+    _ = request("hide")
+    print("Repeated demo launcher checks passed: stable input windows, single toggles, and a visible player in either mode.")
     let showsBeforeCommands = number(request("state")["shows"])
     for (command, key, expected) in [("like", "liked", true), ("unlike", "liked", false), ("shuffle", "shuffling", true), ("noshuffle", "shuffling", false)] {
         spawnClient(workflow.appendingPathComponent("show"), ["--" + command], environment: env)

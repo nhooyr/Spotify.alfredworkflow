@@ -174,7 +174,8 @@ or controls clears that selection. Editing a filter selects the first result.
 Switching Spaces hides the player while keeping its filter and window ready.
 
 In demo mode, the player stays visible and focusable when it loses focus.
-Run `spot demo` again or press <kbd>Esc</kbd> in the player, to exit.
+Run `spot demo` again to return to normal mode with the player open.
+Press <kbd>Esc</kbd> to hide the player and reset demo mode.
 
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and

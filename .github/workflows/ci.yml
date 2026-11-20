@@ -3,12 +3,52 @@ name: ci
 on: [push, pull_request]
 
 jobs:
+  fmt:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.npm
+            ~/Library/Caches/Homebrew
+          key: fmt-tools-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: fmt-tools-${{ runner.os }}-${{ runner.arch }}-
+      - run: ./ci/fmt.sh
+  lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: toolchain
+        run: ./ci/cache-key.sh >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/ca.aqsnow.alfred.spotify/build/modules
+          key: lint-${{ runner.os }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('src/**', 'ci/lint.sh') }}
+          restore-keys: lint-${{ runner.os }}-${{ steps.toolchain.outputs.key }}-
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: lint-tools-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: lint-tools-${{ runner.os }}-${{ runner.arch }}-
+      - run: ./ci/lint.sh
   test:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
         with:
           lfs: true
-      - run: brew install --cask spotify
+      - id: toolchain
+        run: ./ci/cache-key.sh >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/ca.aqsnow.alfred.spotify/build
+          key: build-${{ runner.os }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('src/**', 'build.sh') }}
+          restore-keys: build-${{ runner.os }}-${{ steps.toolchain.outputs.key }}-
+      - uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: spotify-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: spotify-${{ runner.os }}-${{ runner.arch }}-
       - run: ./build.sh --test
-      - run: ./test.sh
+      - run: ./ci/test.sh

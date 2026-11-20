@@ -2151,9 +2151,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             : [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
     }
     private func toggleScreenshotMode() {
-        if screenshotMode { hide(); return }
-        setScreenshotMode(true)
-        NSApp.activate(ignoringOtherApps: true)
+        setScreenshotMode(!screenshotMode)
+        if screenshotMode { NSApp.activate(ignoringOtherApps: true) }
         show()
     }
     private func hide() {
@@ -3451,22 +3450,28 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let showsBeforeOff = showCount
         toggleScreenshotMode()
         let togglesOff = !screenshotMode && panel.level == .floating && panel.collectionBehavior.contains(.transient)
-        let exitsImmediately = visibleWithoutFocus && !panel.isVisible && !hotkeyHandoffAllowed && showCount == showsBeforeOff
-        show()
-        let reopened = panel.isVisible && panel.isKeyWindow && !screenshotMode
+        let opensNormally = visibleWithoutFocus && panel.isVisible && panel.isKeyWindow
+            && hotkeyHandoffAllowed && showCount == showsBeforeOff + 1
         windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
         let ignoresStaleFocusLoss = panel.isVisible && panel.isKeyWindow && !screenshotMode
         other.makeKeyAndOrderFront(nil)
-        let firstReopenNormal = reopened && !panel.isVisible && !screenshotMode
+        let hidesOnFirstFocusLoss = !panel.isVisible && !screenshotMode
+        show()
+        other.makeKeyAndOrderFront(nil)
+        let firstReopenNormal = !panel.isVisible && !screenshotMode
         toggleScreenshotMode()
         panel.cancelOperation(nil)
         let escapeExits = !screenshotMode && !panel.isVisible && !hotkeyHandoffAllowed
             && panel.level == .floating && panel.collectionBehavior.contains(.transient)
+        toggleScreenshotMode()
+        let escapeThenDemoEnables = screenshotMode && panel.isVisible
+        hide()
         return ["status": "ok", "screenshot_mode_enabled": enabled,
                 "screenshot_mode_keeps_player_on_focus_loss": keptVisible,
                 "screenshot_mode_preserves_content": unchangedCaret, "screenshot_mode_toggles_off": togglesOff,
-                "demo_toggle_off_hides_without_reopening": exitsImmediately,
-                "demo_toggle_off_matches_escape": exitsImmediately && togglesOff && escapeExits,
+                "demo_toggle_off_opens_normal_player": opensNormally && togglesOff,
+                "demo_off_hides_on_first_focus_loss": hidesOnFirstFocusLoss,
+                "escape_then_demo_enables_new_session": escapeExits && escapeThenDemoEnables,
                 "stale_focus_loss_does_not_hide_reopened_player": ignoresStaleFocusLoss,
                 "first_reopen_after_demo_off_is_normal": firstReopenNormal,
                 "escape_exits_screenshot_mode": escapeExits,

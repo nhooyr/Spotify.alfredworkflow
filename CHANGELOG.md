@@ -2,7 +2,7 @@
 
 ## Staging (v0.5.4)
 
-- Keep the active search editor when toggling demo on but toggling demo off now resets and hides the player exactly like Escape.
+- Prevent system input popups during demo toggles. Toggling off keeps the player open in normal mode; Escape hides it and resets demo mode.
 - Remove deprecated Keychain APIs from the credential test fixture.
 - README.md: Minor fixes
 

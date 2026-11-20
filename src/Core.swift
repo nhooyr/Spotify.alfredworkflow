@@ -243,11 +243,16 @@ final class SpotifyAPI {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         return values.sorted { $0.key < $1.key }.map { ($0.key.addingPercentEncoding(withAllowedCharacters: allowed) ?? "") + "=" + ($0.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "") }.joined(separator: "&")
     }
+    static func rateLimitMessage(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(ceil(interval)))
+        return "Spotify is rate limiting requests. Try again in \(seconds / 3600) hours, \(seconds / 60 % 60) minutes and \(seconds % 60) seconds."
+    }
     func request(_ path: String, params: [String: String] = [:], method: String = "GET", body: JSONObject? = nil, timeout: TimeInterval? = nil, expectJSON: Bool = true, cancellation: RequestCancellation? = nil) throws -> Any {
         if cancellation?.isCancelled == true { throw URLError(.cancelled) }
         guard path.hasPrefix("/"), !path.hasPrefix("//") else { throw SpotifyFailure(message: "Invalid Spotify request.") }
         let cooldown = dict(readJSON(paths.data.appendingPathComponent("api-cooldown.json")))
-        if number(cooldown["until"]) > Date().timeIntervalSince1970 { throw SpotifyFailure(message: text(cooldown["message"]), status: 429) }
+        let remaining = number(cooldown["until"]) - Date().timeIntervalSince1970
+        if remaining > 0 { throw SpotifyFailure(message: Self.rateLimitMessage(remaining), status: 429) }
         let url = URL(string: "https://api.spotify.com/v1" + path + (params.isEmpty ? "" : (path.contains("?") ? "&" : "?") + Self.form(params)))!
         for attempt in 0..<2 {
             var request = URLRequest(url: url); request.httpMethod = method
@@ -258,8 +263,8 @@ final class SpotifyAPI {
             if response.statusCode == 401 && attempt == 0 { continue }
             if response.statusCode == 429 {
                 let seconds = min(86400, max(1, Double(response.value(forHTTPHeaderField: "Retry-After") ?? "60") ?? 60))
-                let message = "Spotify is rate limiting requests. Try again in \(Int(seconds)) seconds."
-                try writeJSON(["until": Date().timeIntervalSince1970 + seconds, "message": message], paths.data.appendingPathComponent("api-cooldown.json"))
+                let message = Self.rateLimitMessage(seconds)
+                try writeJSON(["until": Date().timeIntervalSince1970 + seconds], paths.data.appendingPathComponent("api-cooldown.json"))
                 throw SpotifyFailure(message: message, status: 429)
             }
             guard (200..<300).contains(response.statusCode) else { throw SpotifyFailure(message: response.statusCode == 401 ? "Reconnect to Spotify to renew access." : "Spotify could not complete this request (\(response.statusCode)).", status: response.statusCode) }

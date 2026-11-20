@@ -1,5 +1,11 @@
 # Changelog
 
+## Staging (v0.5.4)
+
+- Fix demo toggles recreating system input popups and needing a second open to restore normal focus.
+- Remove deprecated Keychain APIs from the credential test fixture.
+- README.md: Minor fixes
+
 ## v0.5.3
 
 - Remove obsolete migration code and keep the workflow graph in its source template.

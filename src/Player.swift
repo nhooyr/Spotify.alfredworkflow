@@ -1537,7 +1537,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let text = search.stringValue
         updatingSearchField = true
         defer { updatingSearchField = false }
-        panel.makeFirstResponder(search)
+        // Re-entering an active field editor can reopen AppKit's text-input popup.
+        if search.currentEditor() == nil { panel.makeFirstResponder(search) }
         if search.currentEditor() == nil { search.selectText(nil) }
         search.stringValue = text
         search.needsDisplay = true
@@ -2125,17 +2126,15 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             enterCatalog(String(search.stringValue.dropFirst()))
         } else if connection == "connected", search.isEnabled { resolvePlaintextPath(force: true) }
         let reopening = !panel.isVisible
-        if testMode { focusSearch(selectAll: reopening); wasShown = true; return }
-        if reopening {
-            if let screen = NSScreen.main {
-                let frame = screen.visibleFrame
-                panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.midY - panel.frame.height / 2 + 50))
-            }
-            panel.makeKeyAndOrderFront(nil)
+        if reopening, !testMode, let screen = NSScreen.main {
+            let frame = screen.visibleFrame
+            panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.midY - panel.frame.height / 2 + 50))
         }
+        if reopening || !panel.isKeyWindow { panel.makeKeyAndOrderFront(nil) }
         if search.isEnabled { focusSearch(selectAll: reopening) }
         else { panel.makeFirstResponder(panel) }
         wasShown = true
+        if testMode { return }
         if backend.pid == 0 {
             backend = NativeBackend(workflowRoot(), credentials: credentials)
             backend.receive = { [weak self] value in self?.receive(value) }
@@ -2153,7 +2152,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     private func toggleScreenshotMode() {
         setScreenshotMode(!screenshotMode)
-        if screenshotMode && !testMode { NSApp.activate(ignoringOtherApps: true) }
+        if screenshotMode { NSApp.activate(ignoringOtherApps: true) }
         show()
     }
     private func hide() {
@@ -2170,7 +2169,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
     func windowDidResignKey(_ notification: Notification) {
-        guard !screenshotMode else { return }
+        guard !screenshotMode, !panel.isKeyWindow else { return }
         guard hotkeyHandoffAllowed else { return }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == applicationID else { hide(); return }
         finishSearchInput()
@@ -2185,6 +2184,15 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             return ["status": "restart"]
         }
         if let theme = value["theme"] as? [String: String] { themeContext = theme }
+        if testMode && value["command"] as? String == "test-demo-prepare" {
+            demo(); search.isEnabled = true; setSearchText(""); show()
+            return ["status": "ok"]
+        }
+        if testMode && value["command"] as? String == "test-demo-windows" {
+            return ["status": "ok", "windows": NSApp.windows.map { $0.windowNumber }.sorted(),
+                    "editor": search.currentEditor() != nil, "visible": panel.isVisible,
+                    "demo": screenshotMode]
+        }
         if testMode && value["command"] as? String == "test-screenshot-mode" { return screenshotModeChecks() }
         if testMode && value["command"] as? String == "test-spaces" { return spaceChecks() }
         if testMode && value["command"] as? String == "test-theme" { return themeChecks() }
@@ -3424,7 +3432,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "reopening_reuses_warm_panel": reopens, "demo_mode_also_hides_on_space_change": demoHides]
     }
     private func screenshotModeChecks() -> [String: Any] {
-        demo()
+        demo(); search.isEnabled = true
         placeSearchCaretAtEnd()
         let previousTrack = currentTrackURI
         toggleScreenshotMode()
@@ -3433,13 +3441,30 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let unchangedCaret = (search.currentEditor() as? NSTextView)?.insertionPointColor == playerTheme.searchText
         windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
         let keptVisible = screenshotMode && hotkeyHandoffAllowed && !panel.hidesOnDeactivate
+        let other = PlayerPanel(contentRect: NSRect(x: 0, y: 0, width: 20, height: 20),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        defer { other.orderOut(nil) }
+        panel.makeKeyAndOrderFront(nil)
+        other.makeKeyAndOrderFront(nil)
+        let visibleWithoutFocus = panel.isVisible && !panel.isKeyWindow
         toggleScreenshotMode()
         let togglesOff = !screenshotMode && panel.level == .floating && panel.collectionBehavior.contains(.transient)
+        let restoresFocus = visibleWithoutFocus && panel.isKeyWindow
+        windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
+        let ignoresStaleFocusLoss = panel.isVisible && panel.isKeyWindow && !screenshotMode
+        other.makeKeyAndOrderFront(nil)
+        let hidesOnFirstFocusLoss = !panel.isVisible && !screenshotMode
+        show()
+        other.makeKeyAndOrderFront(nil)
+        let firstReopenNormal = !panel.isVisible && !screenshotMode
         toggleScreenshotMode()
         panel.cancelOperation(nil)
         return ["status": "ok", "screenshot_mode_enabled": enabled,
                 "screenshot_mode_keeps_player_on_focus_loss": keptVisible,
                 "screenshot_mode_preserves_content": unchangedCaret, "screenshot_mode_toggles_off": togglesOff,
+                "demo_off_restores_focus_immediately": restoresFocus, "demo_off_hides_on_first_focus_loss": hidesOnFirstFocusLoss,
+                "stale_focus_loss_does_not_hide_reopened_player": ignoresStaleFocusLoss,
+                "first_reopen_after_demo_off_is_normal": firstReopenNormal,
                 "escape_exits_screenshot_mode": !screenshotMode && !hotkeyHandoffAllowed,
                 "screenshot_mode_keeps_real_track": previousTrack == currentTrackURI]
     }

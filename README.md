@@ -1,4 +1,4 @@
-# Spotify.alfredworkflow
+# Spotify.alfredworkflow ![GitHub Release](https://img.shields.io/github/v/release/nhooyr/Spotify.alfredworkflow?include_prereleases&display_name=tag&color=green)
 
 Search and play music from Spotify with the `spot` keyword or <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd>.
 

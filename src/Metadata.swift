@@ -49,7 +49,7 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
                                "queuedelayimmediatelyinitially": true, "queuemode": 1,
                                "title": "Open Spotify Mini Player", "runningsubtext": ""]])
     let commands = [("like", "like", "Like current song"), ("unlike", "unlike", "Unlike current song"),
-                    ("shuffle", "shuf", "Turn shuffle on"), ("noshuffle", "noshuf", "Turn shuffle off"),
+                    ("shuffle", "shuf", "Turn shuffle on"), ("noshuffle", "unshuf", "Turn shuffle off"),
                     ("screenshot", "demo", "Toggle demo mode"), ("refresh", "refresh", "Refresh music library")]
     let commandIDs = Set(commands.flatMap { ["COMMAND_" + $0.0.uppercased(), "ACTION_" + $0.0.uppercased()] })
     objects.removeAll { commandIDs.contains(text($0["uid"])) }

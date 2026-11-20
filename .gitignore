@@ -2,4 +2,4 @@
 .env
 prefs.plist
 client-credentials.json
-
+dist

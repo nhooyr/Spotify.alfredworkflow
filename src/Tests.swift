@@ -1158,7 +1158,7 @@ func runIntegrationTests() {
     check(text(dict(reauth?["config"])["text"]) == "Clear Sign-In to Reauthorize", "Reauth uses the requested description")
     let keywords = objects.compactMap { dict($0["config"])["keyword"] as? String }
     check(keywords.contains("{var:keyword}") && keywords.contains("{var:keyword} reauth"), "Opening and reauth use the shared keyword")
-    for (verb, suffix) in [("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "noshuf"), ("screenshot", "demo"), ("refresh", "refresh")] {
+    for (verb, suffix) in [("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "unshuf"), ("screenshot", "demo"), ("refresh", "refresh")] {
         let input = objects.first { text($0["uid"]) == "COMMAND_" + verb.uppercased() }
         let action = objects.first { text($0["uid"]) == "ACTION_" + verb.uppercased() }
         check(text(dict(input?["config"])["keyword"]) == "{var:keyword} " + suffix, "Short keyword inherits its prefix: " + suffix)
@@ -1166,7 +1166,7 @@ func runIntegrationTests() {
     }
     for prefix in ["spot", "spotify", "music"] {
         let resolved = keywords.map { $0.replacingOccurrences(of: "{var:keyword}", with: prefix) }
-        check(Set(resolved) == Set([prefix, prefix + " reauth", prefix + " like", prefix + " unlike", prefix + " shuf", prefix + " noshuf", prefix + " demo", prefix + " refresh"]), "Changing one keyword updates every command")
+        check(Set(resolved) == Set([prefix, prefix + " reauth", prefix + " like", prefix + " unlike", prefix + " shuf", prefix + " unshuf", prefix + " demo", prefix + " refresh"]), "Changing one keyword updates every command")
     }
     check(keywords.allSatisfy { $0.hasPrefix("{var:keyword}") }, "No input hardcodes a separate command prefix")
     check(Set(objects.map { text($0["uid"]) }).count == objects.count, "Workflow object identifiers remain unique")

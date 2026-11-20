@@ -7,29 +7,44 @@ import Darwin
 final class AuthorizationFlow {
     static let defaultCallbackPort: UInt16 = 8765
     private let callbackPort: UInt16
+    private let timeout: TimeInterval
     private let paths: WorkflowPaths
     private let api: SpotifyAPI
     private var descriptor: Int32 = -1
     private let lock = NSLock()
     private var generation = ""
+    private var browserReady = false
+    private var validation: RequestCancellation?
     private let browser: (URL) -> Bool
     private(set) var authorizationURL: URL?
-    init(_ paths: WorkflowPaths, _ api: SpotifyAPI, callbackPort: UInt16 = AuthorizationFlow.defaultCallbackPort,
+    init(_ paths: WorkflowPaths, _ api: SpotifyAPI, callbackPort: UInt16 = AuthorizationFlow.defaultCallbackPort, timeout: TimeInterval = 180,
          browser: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
-        self.paths = paths; self.api = api; self.callbackPort = callbackPort; self.browser = browser
+        self.paths = paths; self.api = api; self.callbackPort = callbackPort; self.timeout = timeout; self.browser = browser
     }
     deinit { cancel() }
-    func cancel() { lock.lock(); let fd = descriptor; descriptor = -1; generation = ""; lock.unlock(); if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd) } }
+    func cancel() {
+        lock.lock(); let fd = descriptor, pending = validation
+        descriptor = -1; generation = ""; browserReady = false; validation = nil
+        lock.unlock(); pending?.cancel()
+        if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd) }
+    }
     @discardableResult func reopenBrowser(_ completion: @escaping (Bool) -> Void = { _ in }) -> Bool {
-        lock.lock(); let url = descriptor >= 0 ? authorizationURL : nil; lock.unlock()
-        guard let url = url else { return false }
-        DispatchQueue.main.async { [browser] in completion(browser(url)) }
+        lock.lock(); let pending = descriptor >= 0, gen = generation
+        let url = pending && browserReady ? authorizationURL : nil; lock.unlock()
+        guard pending else { return false }
+        if let url = url {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.lock.lock(); let active = self.generation == gen && self.descriptor >= 0; self.lock.unlock()
+                if active { completion(self.browser(url)) }
+            }
+        }
         return true
     }
-    func start(_ completion: @escaping (Result<Void, Error>) -> Void) throws {
+    func start(browserOpened: @escaping () -> Void = {}, _ completion: @escaping (Result<Void, Error>) -> Void) throws {
         cancel()
         let id = paths.clientID()
-        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Spotify Client ID in the Workflow’s Configuration.") }
+        guard validClientID(id) else { throw SpotifyFailure(message: "Open Spotify Mini Player and enter your Spotify Client ID.") }
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SpotifyFailure(message: "Could not start Spotify sign-in.") }
         var reuse: Int32 = 1
@@ -41,19 +56,28 @@ final class AuthorizationFlow {
         _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &size) } }
         let port = UInt16(bigEndian: address.sin_port), host = "127.0.0.1:\(port)", redirect = "http://\(host)/spotify_callback"
         let state = randomToken(), verifier = randomToken(64), gen = UUID().uuidString
-        lock.lock(); descriptor = fd; generation = gen; lock.unlock()
+        let validation = RequestCancellation()
+        lock.lock(); descriptor = fd; generation = gen; self.validation = validation; browserReady = false; lock.unlock()
         var parts = URLComponents(string: "https://accounts.spotify.com/authorize")!
         parts.queryItems = ["client_id": id, "response_type": "code", "redirect_uri": redirect, "scope": SpotifyAPI.scopes, "state": state, "code_challenge_method": "S256", "code_challenge": base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))].map { URLQueryItem(name: $0.key, value: $0.value) }
         let url = parts.url!
         authorizationURL = url
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if !self.browser(url) { self.cancel(); completion(.failure(SpotifyFailure(message: "Could not open your browser. Try connecting again."))) }
-        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let deadline = Date().addingTimeInterval(180)
             func current() -> Bool { self.lock.lock(); defer { self.lock.unlock() }; return self.generation == gen && self.descriptor == fd }
+            do { try self.api.validateClientID(id, redirect: redirect, cancellation: validation) }
+            catch {
+                guard current() else { return }
+                self.cancel(); completion(.failure(error)); return
+            }
+            guard current() else { return }
+            self.lock.lock(); self.browserReady = true; self.validation = nil; self.lock.unlock()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, current() else { return }
+                if self.browser(url) { browserOpened() }
+                else { self.cancel(); completion(.failure(SpotifyFailure(message: "Could not open your browser. Try connecting again."))) }
+            }
+            let deadline = Date().addingTimeInterval(self.timeout)
             func respond(_ client: Int32, status: String, body: String, html: Bool = false) {
                 let bytes = Data(body.utf8)
                 let header = "HTTP/1.1 \(status)\r\nContent-Type: \(html ? "text/html" : "text/plain"); charset=utf-8\r\nContent-Length: \(bytes.count)\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n"
@@ -91,6 +115,7 @@ final class AuthorizationFlow {
                     respond(client, status: "200 OK", body: "<!doctype html><meta charset=utf-8><title>Spotify connected</title><p>Opening Spotify Mini Player…</p><script>history.replaceState(null,'',location.pathname);window.close();</script>", html: true)
                     Darwin.close(client); self.cancel(); completion(.success(())); return
                 } catch {
+                    guard current() else { Darwin.close(client); return }
                     respond(client, status: "200 OK", body: error.localizedDescription); Darwin.close(client); self.cancel(); completion(.failure(error)); return
                 }
             }

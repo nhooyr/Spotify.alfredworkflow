@@ -63,11 +63,10 @@ private func requestBody(_ request: URLRequest) -> Data {
 private func testPlaybackContexts() throws {
     let root = tempDirectory("spotify-context-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     let client = String(repeating: "a", count: 32)
-    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": client], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
     let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
     let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
     let api = SpotifyAPI(paths, session: URLSession(configuration: config)), library = MusicLibrary(store, api)
@@ -136,11 +135,10 @@ private func testPlaybackContexts() throws {
 private func testWebPlayback() throws {
     let root = tempDirectory("spotify-playback-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     let client = String(repeating: "a", count: 32)
-    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": client], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
     let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
     let api = SpotifyAPI(paths, session: URLSession(configuration: config))
     try writeJSON(["client_id": client, "access_token": "test", "refresh_token": "test", "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes], api.tokenURL)
@@ -259,10 +257,277 @@ private func writeTable(_ records: [(Data, Data)], to file: URL) throws {
     try (data + index + Data(repeating: 0, count: 5) + footer).write(to: file)
 }
 
+private func testSignInFailures() throws {
+    let root = tempDirectory("spotify-signin-failures-")
+    defer { try? FileManager.default.removeItem(at: root); TestURLProtocol.response = nil }
+    let id = String(repeating: "a", count: 32)
+    for mode in ["invalid-client", "browser-error", "callback-error", "cancelled", "token-error", "timeout", "public-client"] {
+        let folder = root.appendingPathComponent(mode)
+        let environment = ["SPOTIFY_CLIENT_ID": id, "alfred_workflow_data": folder.appendingPathComponent("data").path,
+                           "alfred_workflow_cache": folder.appendingPathComponent("cache").path,
+                           "SPOTIFY_DESKTOP_CACHE": folder.appendingPathComponent("desktop").path]
+        let paths = WorkflowPaths(root: folder, environment: environment)
+        try paths.prepare(); try paths.saveClientID(id)
+        let apiToken = paths.data.appendingPathComponent("authorization.json")
+        try writeJSON(["client_id": id, "access_token": "", "refresh_token": ""], apiToken)
+        let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+        let retainedTrack = "spotify:track:" + String(repeating: "t", count: 22)
+        try store.putItem(["uri": retainedTrack, "kind": "track", "name": "Keep metadata"])
+        try store.save(retainedTrack, liked: true)
+        let cover = paths.cache.appendingPathComponent("artwork/keep.img")
+        try FileManager.default.createDirectory(at: cover.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([1, 2, 3]).write(to: cover)
+        var requests = 0, opened = 0, browserEvents = 0, failure: JSONObject = [:], reopened: JSONObject = [:]
+        var statuses: [String] = []
+        var flow: AuthorizationFlow?
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
+        let session = URLSession(configuration: config)
+        TestURLProtocol.response = { request in
+            check(request.url?.host == "accounts.spotify.com" && request.url?.path == "/api/token", "Sign-in tests never contact the real API")
+            requests += 1
+            let body = String(decoding: requestBody(request), as: UTF8.self)
+            check(body.contains("client_id=" + id) && !body.contains("client_secret"), "Registration check stays on the PKCE path")
+            if mode == "invalid-client" { return (400, try! jsonData(["error": "invalid_client", "error_description": "Failed to get client"])) }
+            if mode == "public-client" { return (400, try! jsonData(["error": "invalid_client", "error_description": "Invalid client secret"])) }
+            return (400, try! jsonData(["error": "invalid_grant", "error_description": "Invalid authorization code"]))
+        }
+        let backend = NativeBackend(folder, environment: environment, session: session, authorization: { paths, api in
+            let value = AuthorizationFlow(paths, api, callbackPort: 0, timeout: mode == "timeout" ? 0.05 : 180,
+                browser: { _ in
+                    if opened == 0 { check(!statuses.contains("Finish connecting in your browser"), "Browser guidance never appears during Client ID validation") }
+                    opened += 1
+                    return mode != "browser-error"
+                })
+            flow = value
+            return value
+        })
+        backend.receive = { value in
+            if let message = value["message"] as? String { statuses.append(message) }
+            if text(value["type"]) == "browser-opened" { browserEvents += 1 }
+            if text(value["command"]) == "client-id-reset" { failure = value }
+            if text(value["command"]) == "show" { reopened = value }
+        }
+        defer { backend.stop(); session.invalidateAndCancel() }
+        try backend.start(readShell: false)
+        func wait(_ done: () -> Bool) {
+            let deadline = Date().addingTimeInterval(3)
+            while !done() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        }
+        if ["callback-error", "cancelled", "token-error", "public-client"].contains(mode) {
+            wait { opened > 0 }
+            check(opened == 1 && text(dict(readJSON(apiToken))["access_token"]).isEmpty, "Registration validation does not save a login before browser authorization")
+            wait { browserEvents == 1 }
+            check(browserEvents == 1 && statuses.last == "Finish connecting in your browser", "Browser guidance appears with the actual browser handoff")
+            if mode == "callback-error" {
+                backend.send(["command": "connect"])
+                wait { opened == 2 && browserEvents == 2 }
+                check(opened == 2 && browserEvents == 2, "Reopening the auth browser hides the player again")
+            }
+            let parts = flow!.authorizationURL!
+            let query = Dictionary(parts.queryItemsForTesting.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+            var callback = URLComponents(string: query["redirect_uri"]!)!
+            callback.queryItems = [URLQueryItem(name: "state", value: query["state"]!)]
+                + (mode == "token-error" ? [URLQueryItem(name: "code", value: "expired-code")] : [URLQueryItem(name: "error", value: mode == "cancelled" ? "access_denied" : "server_error")])
+            URLSession.shared.dataTask(with: callback.url!) { _, _, _ in }.resume()
+        }
+        wait { !failure.isEmpty }
+        check(text(failure["connection"]) == "credentials" && failure["message_is_error"] as? Bool == true,
+              mode + " returns to the Client ID prompt with error severity")
+        check(!FileManager.default.fileExists(atPath: apiToken.path) && !FileManager.default.fileExists(atPath: paths.data.appendingPathComponent("client-id.json").path),
+              mode + " clears the rejected ID and sign-in")
+        check(store.items().count == 1 && store.isSaved(retainedTrack) && FileManager.default.fileExists(atPath: cover.path), "Sign-in failures preserve saved membership, artwork, and library metadata")
+        if mode == "invalid-client" {
+            check(opened == 0 && requests == 1 && browserEvents == 0, "Unregistered IDs leave the player open without a browser handoff")
+            check(text(failure["message"]) == "Spotify rejected the previously entered Client ID", "Spotify rejection uses the requested status text")
+        }
+        if ["invalid-client", "browser-error"].contains(mode) {
+            check(statuses.first == "Checking Spotify Client ID…" && !statuses.contains("Finish connecting in your browser"),
+                  "Validation and launch failures go straight from checking to the error without browser guidance")
+        }
+        if mode == "browser-error" { check(browserEvents == 0, "A failed browser launch leaves the sign-in prompt visible") }
+        backend.send(["command": "show"])
+        wait { !reopened.isEmpty }
+        check(text(reopened["connection"]) == "credentials" && reopened["message_is_error"] as? Bool == true && (reopened["rows"] as? [JSONObject])?.count == 1,
+              "Reopening never reuses the failed in-memory ID")
+        backend.stop()
+    }
+    print("Sign-in failures passed: unregistered IDs, browser failures, callback errors, token errors, timeout, and retained artwork/metadata.")
+}
+
+private func testReauthLibraryRetention() throws {
+    let root = tempDirectory("spotify-reauth-library-")
+    defer { try? FileManager.default.removeItem(at: root); TestURLProtocol.response = nil }
+    let client = String(repeating: "a", count: 32)
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": client,
+        "alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path])
+    try paths.prepare(); try paths.saveClientID(client)
+    let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+    let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [TestURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let api = SpotifyAPI(paths, session: session), library = MusicLibrary(store, api)
+    func authorize() throws {
+        try writeJSON(["client_id": paths.clientID(), "access_token": "test", "refresh_token": "test",
+                       "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes], api.tokenURL)
+    }
+    try authorize()
+    func item(_ kind: String, _ letter: String, _ name: String) -> JSONObject {
+        ["uri": "spotify:\(kind):" + String(repeating: letter, count: 22), "kind": kind, "name": name]
+    }
+    let album = item("album", "a", "Saved album"), artist = item("artist", "r", "Followed artist")
+    let playlist = item("playlist", "p", "Custom playlist"), track = item("track", "t", "Liked song").merging(["album": album]) { _, new in new }
+    let original = Set([album, artist, playlist, track].map { text($0["uri"]) })
+    var account = "same-account", failPath = "", malformed = false, empty = false, requests = 0
+    TestURLProtocol.response = { request in
+        requests += 1
+        let path = request.url!.path
+        if path == failPath {
+            return malformed ? (200, try! jsonData(["unexpected": []])) : (429, try! jsonData(["error": ["status": 429]]))
+        }
+        switch path {
+        case "/v1/me": return (200, try! jsonData(["id": account]))
+        case "/v1/me/tracks": return (200, try! jsonData(["items": empty ? [] : [["track": track]]]))
+        case "/v1/me/albums": return (200, try! jsonData(["items": empty ? [] : [["album": album]]]))
+        case "/v1/me/following": return (200, try! jsonData(["artists": ["items": empty ? [] : [artist]]]))
+        case "/v1/me/playlists": return (200, try! jsonData(["items": empty ? [] : [playlist]]))
+        default: check(false, "Unexpected library retention request"); return (500, Data())
+        }
+    }
+    try library.sync()
+    let cover = paths.cache.appendingPathComponent("artwork/keep.img")
+    try FileManager.default.createDirectory(at: cover.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data([1, 2, 3]).write(to: cover)
+    let contentsKey = "contents:" + text(playlist["uri"])
+    try store.put(contentsKey, [track], ttl: 365 * 86400)
+    try store.put("desktop:downloaded-uris", Array(original), ttl: 365 * 86400)
+    func saved() -> Set<String> { Set(store.items(saved: true).map { text($0["uri"]) }) }
+    func checkLibrary(_ label: String) throws {
+        check(saved() == original, label + " preserves all saved membership")
+        let playlists = try library.browse(["kind": "playlists"]), albums = try library.browse(["kind": "albums"])
+        let artists = try library.browse(["kind": "artists"]), songs = try library.browse(["kind": "songs"])
+        check(playlists.count == 1 && albums.count == 1 && artists.count == 1 && songs.count == 2, label + " keeps all library menus populated")
+        check(store.get("library:playlist-order", stale: true) as? [String] == [text(playlist["uri"])], label + " preserves playlist order")
+        check((store.get(contentsKey, stale: true) as? [JSONObject])?.count == 1 && FileManager.default.fileExists(atPath: cover.path), label + " preserves cached contents and artwork")
+    }
+    try NativeBackend.clearConnection(paths)
+    check(!api.connected && paths.clientID().isEmpty, "Reauth still clears sign-in and Client ID")
+    try checkLibrary("Reauth")
+    check(text(store.get("library:account", stale: true)) == account, "Cache ownership survives reauth")
+    // Reusing the Spotify account with another developer app must retain its library too.
+    try paths.saveClientID(String(repeating: "b", count: 32)); try authorize()
+    let cooldown = paths.data.appendingPathComponent("api-cooldown.json")
+    for path in ["/v1/me", "/v1/me/playlists"] {
+        failPath = path
+        do { try library.sync(); check(false, "Rate-limited refresh must report failure") }
+        catch { check((error as? SpotifyFailure)?.status == 429, "Rate limit remains visible") }
+        try checkLibrary("Rate limit at " + path)
+        let before = requests
+        do { try library.sync(); check(false, "Cooldown must remain in effect") }
+        catch { check((error as? SpotifyFailure)?.status == 429 && requests == before, "Cooldown avoids repeated requests without discarding data") }
+        try FileManager.default.removeItem(at: cooldown)
+    }
+    malformed = true
+    do { try library.sync(); check(false, "Malformed library response must fail") }
+    catch { check(error.localizedDescription.contains("invalid library page"), "Malformed library response is not an empty library") }
+    try checkLibrary("Incomplete refresh")
+    failPath = ""
+    let cancellation = RequestCancellation(); cancellation.cancel()
+    let before = requests
+    do { try library.sync(cancellation: cancellation); check(false, "Cancelled refresh must not run") }
+    catch { check((error as? URLError)?.code == .cancelled && requests == before, "Reset cancels refresh before it can modify membership") }
+    try checkLibrary("Cancelled refresh")
+    try library.sync(); try checkLibrary("Same account in a new developer app")
+    account = "different-account"; failPath = "/v1/me/tracks"; malformed = false
+    do { try library.sync(); check(false, "New account rate limit must remain visible") }
+    catch { check((error as? SpotifyFailure)?.status == 429, "Account change can still encounter a rate limit") }
+    check(saved().isEmpty && store.get("library:followed-artists", stale: true) == nil && store.get(contentsKey, stale: true) == nil,
+          "A confirmed different account cannot inherit the previous account's saved library")
+    check(text(store.get("library:account", stale: true)) == account && store.items().count == 4 && FileManager.default.fileExists(atPath: cover.path),
+          "Account changes retain reusable metadata and artwork")
+    try FileManager.default.removeItem(at: cooldown)
+    failPath = ""; empty = true; try library.sync()
+    check(saved().isEmpty && store.get(MusicLibrary.syncKey) != nil, "A successful empty library is valid")
+    print("Reauth library retention passed: membership, order, cached contents/artwork, rate limits, incomplete/cancelled refreshes, and account changes.")
+}
+
+private func testClientIDSettings() throws {
+    let root = tempDirectory("spotify-client-id-tests-")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let environment = ["alfred_workflow_data": root.appendingPathComponent("data").path,
+                       "alfred_workflow_cache": root.appendingPathComponent("cache").path]
+    let paths = WorkflowPaths(root: root, environment: environment)
+    try paths.prepare()
+    let oldID = String(repeating: "a", count: 32), savedID = String(repeating: "b", count: 32), shellID = String(repeating: "c", count: 32)
+    let prefs = root.appendingPathComponent("prefs.plist"), file = paths.data.appendingPathComponent("client-id.json")
+    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": oldID, "keyword": "myspot", "custom": 42], format: .binary, options: 0).write(to: prefs)
+    try paths.loadClientID(shellValue: "")
+    let settings = try PropertyListSerialization.propertyList(from: Data(contentsOf: prefs), format: nil) as! JSONObject
+    check(paths.clientID().isEmpty && settings["SPOTIFY_CLIENT_ID"] == nil && text(settings["keyword"]) == "myspot" && number(settings["custom"]) == 42,
+          "Old synced ID is removed without reusing it or losing other settings")
+    do { try paths.saveClientID("not-an-id"); check(false, "Invalid setup input must fail") } catch {}
+    check(!FileManager.default.fileExists(atPath: file.path), "Invalid input is never stored")
+    try paths.saveClientID("  " + savedID + "\n")
+    check(paths.clientID() == savedID && text(dict(readJSON(file))["client_id"]) == savedID, "Entered ID is trimmed and saved outside synced preferences")
+    let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
+    check(permissions.intValue == 0o600, "Private Client ID file is owner-only")
+    try paths.loadClientID(shellValue: shellID)
+    check(paths.clientID() == shellID && text(dict(readJSON(file))["client_id"]) == savedID, "Shell ID takes precedence without overwriting the saved fallback")
+    try paths.loadClientID(shellValue: "invalid")
+    check(paths.clientID() == savedID, "Invalid shell values fall back to a valid private setting")
+    try FileManager.default.removeItem(at: file)
+    try writeJSON(["client_id": oldID, "access_token": "test", "refresh_token": "test"], paths.data.appendingPathComponent("authorization.json"))
+    try paths.loadClientID(shellValue: "")
+    check(paths.clientID() == oldID && SpotifyAPI(paths).connected, "Existing private sign-in keeps working without the old synced configuration")
+    try NativeBackend.clearConnection(paths)
+    let reopened = WorkflowPaths(root: root, environment: environment)
+    try reopened.loadClientID(shellValue: "")
+    check(paths.clientID().isEmpty && reopened.clientID().isEmpty && !SpotifyAPI(paths).connected,
+          "Reauth clears the in-memory and saved IDs for warm and cold processes")
+    check(!FileManager.default.fileExists(atPath: file.path), "Reauth removes the saved Client ID file")
+    let fakeShell = root.appendingPathComponent("custom-shell")
+    let script = "#!/bin/sh\n[ \"$1\" = -ilc ] || exit 2\n[ -z \"$SPOTIFY_CLIENT_ID\" ] || exit 3\nprintf 'startup banner\\n\\000SPOTIFY_CLIENT_ID\\000" + shellID + "\\000ignored output'\n"
+    try Data(script.utf8).write(to: fakeShell); chmod(fakeShell.path, 0o700)
+    let selected = ShellClientID.read(environment: ["SHELL": fakeShell.path, "SPOTIFY_CLIENT_ID": oldID])
+    check(selected == shellID, "$SHELL is honored, startup noise is ignored, and Alfred's old ID is not inherited")
+    let calls = root.appendingPathComponent("shell-calls")
+    try Data(("#!/bin/sh\nprintf 'called\\n' >> '" + calls.path + "'\n" + script.components(separatedBy: "\n").dropFirst().joined(separator: "\n")).utf8).write(to: fakeShell)
+    let originalShell = getenv("SHELL").map { String(cString: $0) }
+    setenv("SHELL", fakeShell.path, 1)
+    defer { if let original = originalShell { setenv("SHELL", original, 1) } else { unsetenv("SHELL") } }
+    check(ShellClientID.load(reload: true) == shellID, "Initial shell load succeeds")
+    for _ in 0..<20 { check(ShellClientID.load() == shellID, "Warm processes reuse their shell value") }
+    let callCount = try String(contentsOf: calls).split(separator: "\n").count
+    check(callCount == 1, "Warm launches do not spawn a new shell")
+    try paths.saveClientID(savedID)
+    try writeJSON(["client_id": savedID, "access_token": "test", "refresh_token": "test"], paths.data.appendingPathComponent("authorization.json"))
+    let commentedOut = "#!/bin/sh\nprintf 'called\\n' >> '" + calls.path + "'\nprintf '\\000SPOTIFY_CLIENT_ID\\000\\000'\n"
+    try Data(commentedOut.utf8).write(to: fakeShell)
+    check(ShellClientID.load() == shellID, "A changed shell config does not alter the old warm cache before reset")
+    try NativeBackend.clearConnection(paths)
+    try paths.loadClientID()
+    let callsAfterReset = try String(contentsOf: calls).split(separator: "\n").count
+    check(paths.clientID().isEmpty && ShellClientID.load().isEmpty && callsAfterReset == 2,
+          "Reauth re-reads a commented-out export instead of reusing the cached or saved ID")
+    try Data(script.utf8).write(to: fakeShell)
+    try NativeBackend.clearConnection(paths)
+    try paths.loadClientID()
+    check(paths.clientID() == shellID, "A shell export still supplies the ID after reauth")
+    check(ShellClientID.read(environment: ["SHELL": root.appendingPathComponent("missing").path]).isEmpty, "Unavailable shells allow manual setup")
+    try Data("#!/bin/sh\nexec /bin/sleep 5\n".utf8).write(to: fakeShell)
+    let started = Date()
+    check(ShellClientID.read(environment: ["SHELL": fakeShell.path], timeout: 0.05).isEmpty && Date().timeIntervalSince(started) < 1,
+          "A stalled shell cannot block setup indefinitely")
+    let zsh = root.appendingPathComponent(".zshrc")
+    try Data(("printf 'banner\\n'\nexport SPOTIFY_CLIENT_ID='" + shellID + "'\n").utf8).write(to: zsh)
+    check(ShellClientID.read(environment: ["SHELL": "/bin/zsh", "ZDOTDIR": root.path, "HOME": root.path]) == shellID,
+          "A real interactive login shell reads its configuration")
+    print("Client ID setup passed: user shell, timeout, private fallback, existing sign-in, reauth, and synced-preference cleanup.")
+}
+
 private func testWorkflowKeyword() throws {
     let root = tempDirectory("spotify-keyword-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     check(paths.keyword(environment: [:]) == "spot", "Default command prefix is spot")
@@ -292,7 +557,7 @@ private func testWorkflowKeyword() throws {
 private func testPlaintextPaths() throws {
     let root = tempDirectory("spotify-path-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
@@ -342,7 +607,7 @@ private func testPlaintextPaths() throws {
 private func testSavedAlbums() throws {
     let root = tempDirectory("spotify-saved-albums-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
@@ -375,11 +640,10 @@ private func testSavedAlbums() throws {
 private func testFollowedArtists() throws {
     let root = tempDirectory("spotify-followed-artists-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     let client = String(repeating: "a", count: 32)
-    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": client], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
     let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
     let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
     let api = SpotifyAPI(paths, session: URLSession(configuration: config)), library = MusicLibrary(store, api, online: { true })
@@ -393,6 +657,7 @@ private func testFollowedArtists() throws {
     var includeSecond = true
     TestURLProtocol.response = { request in
         switch request.url!.path {
+        case "/v1/me": return (200, try! jsonData(["id": "followed-artists-fixture"]))
         case "/v1/me/tracks": return (200, try! jsonData(["items": [["track": track]]]))
         case "/v1/me/albums": return (200, try! jsonData(["items": [["album": album]]]))
         case "/v1/me/following":
@@ -435,7 +700,7 @@ private func downloadEntry(_ uri: String, tracks: [(UInt8, UInt64)], enabled: UI
 private func testOfflineDownloads() throws {
     let root = tempDirectory("spotify-downloads-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path,
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path,
                                                        "alfred_workflow_cache": root.appendingPathComponent("cache").path])
     try paths.prepare()
     let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
@@ -528,9 +793,8 @@ private func testOfflineCache() throws {
     OfflineURLProtocol.requests = 0
     let root = tempDirectory("spotify-offline-tests-")
     defer { try? FileManager.default.removeItem(at: root) }
-    let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("http").path])
+    let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("http").path])
     try paths.prepare()
-    try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32)], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
     let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
     let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [OfflineURLProtocol.self]
     let session = URLSession(configuration: config)
@@ -655,10 +919,11 @@ private func testThemes() {
 }
 
 func runModelTests() {
-    do { try testWorkflowKeyword() } catch { check(false, "Shared keyword: " + error.localizedDescription) }
+    do { try testClientIDSettings(); try testSignInFailures(); try testWorkflowKeyword() } catch { check(false, "Shared keyword: " + error.localizedDescription) }
     do { try testPlaintextPaths() } catch { check(false, "Plaintext paths: " + error.localizedDescription) }
     do { try testSavedAlbums() } catch { check(false, "Saved albums: " + error.localizedDescription) }
     do { try testFollowedArtists() } catch { check(false, "Followed artists: " + error.localizedDescription) }
+    do { try testReauthLibraryRetention() } catch { check(false, "Reauth library retention: " + error.localizedDescription) }
     do { try testOfflineDownloads() } catch { check(false, "Downloaded music: " + error.localizedDescription) }
     testAlbumTrackCounts()
     do { try testPlaybackContexts() } catch { check(false, "Playback context tests: " + error.localizedDescription) }
@@ -668,9 +933,8 @@ func runModelTests() {
     testThemes()
     let root = tempDirectory("spotify-model-tests-"); defer { try? FileManager.default.removeItem(at: root) }
     do {
-        let paths = WorkflowPaths(root: root, environment: ["alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path])
+        let paths = WorkflowPaths(root: root, environment: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32), "alfred_workflow_data": root.appendingPathComponent("data").path, "alfred_workflow_cache": root.appendingPathComponent("cache").path, "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path])
         try paths.prepare()
-        try PropertyListSerialization.data(fromPropertyList: ["SPOTIFY_CLIENT_ID": String(repeating: "a", count: 32)], format: .xml, options: 0).write(to: root.appendingPathComponent("prefs.plist"))
         let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [TestURLProtocol.self]
         let api = SpotifyAPI(paths, session: URLSession(configuration: config)), library = MusicLibrary(store, api)
@@ -745,6 +1009,8 @@ func runModelTests() {
             }
             if request.url!.path == "/v1/me/library/contains" { return (200, try! jsonData([false])) }
             if request.url!.path == "/v1/me/library" { libraryMethods.append(request.httpMethod ?? ""); return (200, Data()) }
+            if request.url!.path == "/v1/me" { return (200, try! jsonData(["id": "api-fixture"])) }
+            if request.url!.path == "/v1/me/following" { return (200, try! jsonData(["artists": ["items": []]])) }
             if staleLibrary && request.url!.path == "/v1/me/tracks" { return (200, try! jsonData(["items": [["track": track]]])) }
             return (200, try! jsonData(["items": []]))
         }
@@ -788,9 +1054,12 @@ func runModelTests() {
         check(tokenRequests == 2, "Refresh PKCE without client authentication")
         let emptySearch = try library.browse(["kind": "catalog", "query": ""], network: true)
         check(emptySearch.isEmpty && catalogRequests == 0, "Empty catalogue mode sends no search request")
+        var activity: [Bool] = []
+        api.activity = { activity.append($0) }
         let results = try library.browse(["kind": "catalog", "query": "full catalogue"], network: true)
         _ = try library.browse(["kind": "catalog", "query": "full catalogue"], network: true)
         check(results.count == 1 && catalogRequests == 1, "Live catalogue queries reuse cached Spotify results")
+        check(activity == [true, false], "Only the actual API request reports activity; cached results stay silent")
         let cancelled = RequestCancellation()
         cancelled.cancel()
         do { _ = try api.request("/search", cancellation: cancelled); check(false, "Cancelled search must not run") }
@@ -798,6 +1067,8 @@ func runModelTests() {
         let waitingConfig = URLSessionConfiguration.ephemeral
         waitingConfig.protocolClasses = [WaitingURLProtocol.self]
         let waitingAPI = SpotifyAPI(paths, session: URLSession(configuration: waitingConfig))
+        var waitingActivity: [Bool] = []
+        waitingAPI.activity = { waitingActivity.append($0) }
         let inFlight = RequestCancellation(), finishedSearch = DispatchSemaphore(value: 0)
         var cancelledInFlight = false
         DispatchQueue.global().async {
@@ -806,17 +1077,24 @@ func runModelTests() {
             finishedSearch.signal()
         }
         check(WaitingURLProtocol.started.wait(timeout: .now() + 2) == .success, "Live search starts")
+        check(waitingActivity == [true], "Activity stays active while awaiting an API response")
         inFlight.cancel()
         check(finishedSearch.wait(timeout: .now() + 2) == .success && cancelledInFlight, "Superseded in-flight search cancels immediately")
+        check(waitingActivity == [true, false], "Cancelled API requests always clear their activity")
+        check(activity == [true, false], "Requests cancelled before sending do not report activity")
+        api.activity = nil
         try NativeBackend.clearConnection(paths)
         check(!api.connected && store.items().count == 5, "Reauth preserves music metadata")
-        check(paths.clientID() == String(repeating: "a", count: 32), "Reauth preserves Client ID")
+        check(paths.clientID().isEmpty, "Reauth clears Client ID")
+        try paths.saveClientID(String(repeating: "a", count: 32))
         check(homeItems.map { text($0["name"]) } == ["Playlists", "Albums", "Artists", "Songs", "Search"], "Menu priority")
         let finished = DispatchSemaphore(value: 0)
         var connected = false
         var browserURLs: [URL] = []
         let flow = AuthorizationFlow(paths, api, callbackPort: 0, browser: { browserURLs.append($0); return true })
         try flow.start { result in if case .success = result { connected = true }; finished.signal() }
+        let browserDeadline = Date().addingTimeInterval(2)
+        while browserURLs.isEmpty && Date() < browserDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         check(flow.reopenBrowser(), "A pending sign-in can reopen its browser")
         RunLoop.current.run(until: Date().addingTimeInterval(0.03))
         check(browserURLs.count == 2 && browserURLs[0] == browserURLs[1], "Reopening sign-in reuses the pending state and callback")
@@ -872,10 +1150,12 @@ func runIntegrationTests() {
     let info = try! PropertyListSerialization.propertyList(from: Data(contentsOf: workflow.appendingPathComponent("info.plist")), format: nil) as! JSONObject
     let objects = info["objects"] as! [JSONObject]
     let settings = info["userconfigurationconfig"] as? [JSONObject] ?? []
-    check(settings.map { text($0["variable"]) } == ["SPOTIFY_CLIENT_ID", "keyword"], "Client ID and the shared keyword are the only settings")
-    check(text(settings.first?["label"]) == "Spotify Client ID", "Connection setting is labelled Spotify Client ID")
+    check(settings.map { text($0["variable"]) } == ["keyword"], "Only the shared keyword is stored in synced workflow configuration")
+    check(dict(info["variables"])["SPOTIFY_CLIENT_ID"] == nil, "No Client ID is packaged in workflow variables")
     let keywordSetting = settings.first { text($0["variable"]) == "keyword" }
     check(text(dict(keywordSetting?["config"])["default"]) == "spot" && dict(keywordSetting?["config"])["trim"] as? Bool == true, "The shared keyword defaults to spot and trims whitespace")
+    let reauth = objects.first { text($0["uid"]) == "REAUTH" }
+    check(text(dict(reauth?["config"])["text"]) == "Reset Spotify Sign-In to Reauthorize", "Reauth uses the requested description")
     let keywords = objects.compactMap { dict($0["config"])["keyword"] as? String }
     check(keywords.contains("{var:keyword}") && keywords.contains("{var:keyword} reauth"), "Opening and reauth use the shared keyword")
     for (verb, suffix) in [("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "noshuf"), ("screenshot", "demo"), ("refresh", "refresh")] {
@@ -919,6 +1199,10 @@ func runIntegrationTests() {
     env["SPOTIFY_DESKTOP_CACHE"] = root.appendingPathComponent("desktop").path
     env["SPOTIFY_DESKTOP_USER_CACHE"] = root.appendingPathComponent("empty").path
     env["SPOTIFY_CLIENT_ID"] = ""
+    let emptyShell = root.appendingPathComponent("empty-shell")
+    try! Data("#!/bin/sh\nexit 0\n".utf8).write(to: emptyShell)
+    chmod(emptyShell.path, 0o700)
+    env["SHELL"] = emptyShell.path
     env["alfred_theme"] = "theme.custom.quoted\"\\name\nfixture"
     let ready = dict(try! JSONSerialization.jsonObject(with: Data(run(executable, ["--reauth-result"], environment: env).utf8)))
     check(((ready["items"] as? [JSONObject])?.first?["title"] as? String) == "Open Spotify Mini Player", "Inline reauth CLI emits valid Alfred JSON")
@@ -949,7 +1233,7 @@ func runIntegrationTests() {
     for _ in 0..<50 { let start = DispatchTime.now().uptimeNanoseconds; spawnClient(workflow.appendingPathComponent("show"), environment: env); timings.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
     check(number(request("state")["pid"]) == number(initial["pid"]), "Hotkey keeps the same process")
     check(dict(request("state")["theme"])["id"] as? String == env["alfred_theme"], "C launcher safely forwards theme context")
-    for command in ["test-ui", "test-editing", "test-local-bindings", "test-navigation", "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui", "test-connection-session", "test-controls", "test-direct-play", "test-single-line", "test-offline-ui", "test-repeat", "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode", "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
+    for command in ["test-ui", "test-editing", "test-local-bindings", "test-navigation", "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui", "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play", "test-single-line", "test-offline-ui", "test-api-activity", "test-repeat", "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode", "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode", "test-catalog-resume"] {
         let initial = request(command)
         var result = initial
         let deadline = Date().addingTimeInterval(3)

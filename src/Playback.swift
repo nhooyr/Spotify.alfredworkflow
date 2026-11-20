@@ -117,7 +117,7 @@ final class WebPlayback {
         guard let uri = Self.collectionURI(userID: text(profile["id"])) else {
             throw SpotifyFailure(message: "Spotify did not return an account ID for Liked Songs.")
         }
-        try? store?.put("playback:liked-songs-uri", uri, ttl: 365 * 86400)
+        try store?.useAccount(text(profile["id"]), cancellation: cancellation)
         return uri
     }
     func fallbackURI(_ uri: String) throws -> String {

@@ -6,7 +6,11 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     workflow["version"] = workflowVersion
     workflow["readme"] = try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8)
     var settings = workflow["userconfigurationconfig"] as? [JSONObject] ?? []
-    settings.removeAll { text($0["variable"]) == "keyword" }
+    settings.removeAll { ["SPOTIFY_CLIENT_ID", "keyword"].contains(text($0["variable"])) }
+    var variables = dict(workflow["variables"])
+    variables.removeValue(forKey: "SPOTIFY_CLIENT_ID")
+    workflow["variables"] = variables
+    workflow["variablesdontexport"] = (workflow["variablesdontexport"] as? [String] ?? []).filter { $0 != "SPOTIFY_CLIENT_ID" }
     settings.append(["variable": "keyword", "label": "Keyword", "type": "textfield",
                      "description": "Shared prefix for every command. Set to spotify if you prefer.",
                      "config": ["default": defaultWorkflowKeyword, "placeholder": "", "required": false, "trim": true]])
@@ -26,6 +30,10 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     for i in objects.indices where ["OPEN", "REAUTH"].contains(text(objects[i]["uid"])) {
         var config = dict(objects[i]["config"])
         config["keyword"] = "{var:keyword}" + (text(objects[i]["uid"]) == "REAUTH" ? " reauth" : "")
+        if text(objects[i]["uid"]) == "REAUTH" {
+            config["text"] = "Reset Spotify Sign-In to Reauthorize"
+            config["subtext"] = "Clear sign-in and Client ID; reconnect on next open"
+        }
         objects[i]["config"] = config
     }
     for i in objects.indices where text(objects[i]["uid"]) == "CLEAR_ACTION" {
@@ -90,6 +98,6 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
 func reauthFeedback(error: String = "") -> JSONObject {
     let succeeded = error.isEmpty
     return ["items": [["title": succeeded ? "Open Spotify Mini Player" : "Could not clear Spotify sign-in",
-                       "subtitle": succeeded ? "Sign-in cleared. Press Return to sign in again." : error,
+                       "subtitle": succeeded ? "Sign-in and Client ID cleared. Press Return to reconnect." : error,
                        "arg": "", "valid": succeeded, "icon": ["path": "icon.png"]]]]
 }

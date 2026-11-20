@@ -32,15 +32,18 @@ final class MusicLibrary {
         }
     }
     func catalog() -> [JSONObject] { available(stableUnique(orderedPlaylists() + store.items())) }
-    func sync() throws {
-        var items = try api.pages("/me/tracks").compactMap { fromAPI(dict($0["track"]), kind: "track") }
-        let albums = try api.pages("/me/albums").compactMap { fromAPI(dict($0["album"]), kind: "album") }
+    func sync(cancellation: RequestCancellation? = nil) throws {
+        let profile = dict(try api.request("/me", cancellation: cancellation))
+        try store.useAccount(text(profile["id"]), cancellation: cancellation)
+        var items = try api.pages("/me/tracks", cancellation: cancellation).compactMap { fromAPI(dict($0["track"]), kind: "track") }
+        let albums = try api.pages("/me/albums", cancellation: cancellation).compactMap { fromAPI(dict($0["album"]), kind: "album") }
         items += albums
-        let artists = try api.pages("/me/following", params: ["type": "artist"], nested: "artists").compactMap { fromAPI($0, kind: "artist") }
+        let artists = try api.pages("/me/following", params: ["type": "artist"], nested: "artists", cancellation: cancellation).compactMap { fromAPI($0, kind: "artist") }
         items += artists
-        let playlists = try api.pages("/me/playlists").compactMap { fromAPI($0, kind: "playlist") }
+        let playlists = try api.pages("/me/playlists", cancellation: cancellation).compactMap { fromAPI($0, kind: "playlist") }
         items += playlists
         try store.transaction {
+            if cancellation?.isCancelled == true { throw URLError(.cancelled) }
             try store.execute("DELETE FROM saved")
             for item in items {
                 try store.putItem(item); try store.save(text(item["uri"]), liked: true)
@@ -53,6 +56,7 @@ final class MusicLibrary {
             try store.put("library:followed-artists", artists.map { text($0["uri"]) }, ttl: 365 * 86400)
             try store.put("library:playlist-order", playlists.map { text($0["uri"]) }, ttl: 365 * 86400)
             try store.put(Self.syncKey, Date().timeIntervalSince1970, ttl: 86400)
+            if cancellation?.isCancelled == true { throw URLError(.cancelled) }
         }
     }
     func orderedPlaylists() -> [JSONObject] {

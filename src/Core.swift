@@ -50,12 +50,14 @@ struct WorkflowPaths {
     let data: URL
     let cache: URL
     let desktop: URL
+    private let clientIDSettings: ClientIDSettings
     init(root: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         self.root = root
         data = URL(fileURLWithPath: environment["alfred_workflow_data"] ?? home.appendingPathComponent("Library/Application Support/Alfred/Workflow Data/\(workflowID)").path)
         cache = URL(fileURLWithPath: environment["alfred_workflow_cache"] ?? home.appendingPathComponent("Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/\(workflowID)").path)
         desktop = URL(fileURLWithPath: environment["SPOTIFY_DESKTOP_CACHE"] ?? home.appendingPathComponent("Library/Caches/com.spotify.client/Browser/Cache/Cache_Data").path)
+        clientIDSettings = ClientIDSettings(root: root, data: data, initial: environment["SPOTIFY_CLIENT_ID"] ?? "")
     }
     func prepare() throws {
         for url in [data, cache] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
@@ -66,10 +68,14 @@ struct WorkflowPaths {
         return value.isEmpty ? defaultWorkflowKeyword : value
     }
     func command(_ suffix: String) -> String { keyword() + " " + suffix }
-    func clientID() -> String {
-        let prefs = (try? Data(contentsOf: root.appendingPathComponent("prefs.plist"))).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? JSONObject } ?? [:]
-        let value = prefs["SPOTIFY_CLIENT_ID"] ?? ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID"] ?? ""
-        return text(value).trimmingCharacters(in: .whitespacesAndNewlines)
+    func clientID() -> String { clientIDSettings.value }
+    func loadClientID(shellValue: String? = nil, reloadShell: Bool = false) throws {
+        try clientIDSettings.load(shellValue: shellValue ?? ShellClientID.load(reload: reloadShell))
+    }
+    func saveClientID(_ value: String) throws { try clientIDSettings.save(value) }
+    func clearClientID() throws {
+        ShellClientID.clear()
+        try clientIDSettings.clear()
     }
 
 }
@@ -150,6 +156,21 @@ final class MusicStore {
         return text(row["payload"]).data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0, options: .fragmentsAllowed) }
     }
     func put(_ key: String, _ value: Any, ttl: Double = 3600) throws { try execute("INSERT OR REPLACE INTO responses VALUES(?,?,?)", [key, String(decoding: try jsonData(value), as: UTF8.self), Date().timeIntervalSince1970 + ttl]) }
+    // Reauth keeps the library; only a confirmed account change invalidates membership.
+    func useAccount(_ id: String, cancellation: RequestCancellation? = nil) throws {
+        guard !id.isEmpty else { throw SpotifyFailure(message: "Spotify did not return an account ID.") }
+        try transaction {
+            if cancellation?.isCancelled == true { throw URLError(.cancelled) }
+            let previous = text(get("library:account", stale: true))
+            if !previous.isEmpty && previous != id {
+                try execute("DELETE FROM saved")
+                try execute("DELETE FROM responses WHERE key NOT LIKE 'desktop:%' AND key NOT LIKE 'cache:%' AND key NOT LIKE 'evicted-art:%'")
+            }
+            try put("library:account", id, ttl: 365 * 86400)
+            if let collection = WebPlayback.collectionURI(userID: id) { try put("playback:liked-songs-uri", collection, ttl: 365 * 86400) }
+            if cancellation?.isCancelled == true { throw URLError(.cancelled) }
+        }
+    }
     func isSaved(_ uri: String) -> Bool { !((try? rows("SELECT 1 FROM saved WHERE uri=?", [uri])) ?? []).isEmpty }
     func save(_ uri: String, liked: Bool) throws { try execute(liked ? "INSERT OR IGNORE INTO saved VALUES(?)" : "DELETE FROM saved WHERE uri=?", [uri]) }
 }
@@ -180,6 +201,7 @@ final class SpotifyAPI {
     private static let tokenLock = NSRecursiveLock()
     let paths: WorkflowPaths
     let session: URLSession
+    var activity: ((Bool) -> Void)?
     init(_ paths: WorkflowPaths, session: URLSession? = nil) {
         self.paths = paths
         let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 12; config.timeoutIntervalForResource = 20
@@ -206,6 +228,8 @@ final class SpotifyAPI {
         var result: (Data?, URLResponse?, Error?) = (nil, nil, nil)
         let task = session.dataTask(with: request) { data, response, error in result = (data, response, error); ready.signal() }
         cancellation?.attach(task)
+        activity?(true)
+        defer { activity?(false) }
         task.resume()
         guard ready.wait(timeout: .now() + 22) == .success else { task.cancel(); throw SpotifyFailure(message: "Spotify did not respond. Try again.", isNetworkError: true) }
         if cancellation?.isCancelled == true { throw URLError(.cancelled) }
@@ -213,10 +237,31 @@ final class SpotifyAPI {
         guard let response = result.1 as? HTTPURLResponse else { throw SpotifyFailure(message: "Spotify returned an invalid response.") }
         return (result.0 ?? Data(), response)
     }
+    func validateClientID(_ id: String, redirect: String, cancellation: RequestCancellation) throws {
+        // A deliberately unissued grant checks registration without signing in or storing a token.
+        // Other grant errors are expected here; real authorization still happens in the browser.
+        var request = URLRequest(url: URL(string: "https://accounts.spotify.com/api/token")!)
+        request.httpMethod = "POST"; request.timeoutInterval = 6
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Self.form(["grant_type": "authorization_code", "client_id": id,
+            "code": randomToken(48), "code_verifier": randomToken(64), "redirect_uri": redirect]).data(using: .utf8)
+        let (data, response) = try send(request, cancellation: cancellation)
+        let result = dict(try? JSONSerialization.jsonObject(with: data))
+        let reason = text(result["error_description"]).lowercased()
+        if text(result["error"]) == "invalid_client",
+           !reason.contains("client secret"), !reason.contains("client_secret") {
+            throw SpotifyFailure(message: "Spotify rejected the previously entered Client ID", status: response.statusCode)
+        }
+        if response.statusCode == 429 {
+            let seconds = min(86400, max(1, Double(response.value(forHTTPHeaderField: "Retry-After") ?? "60") ?? 60))
+            throw SpotifyFailure(message: Self.rateLimitMessage(seconds), status: 429)
+        }
+        if response.statusCode >= 500 { throw SpotifyFailure(message: "Spotify could not start sign-in. Try again.", status: response.statusCode) }
+    }
     func exchange(_ fields: [String: String], valid: () -> Bool = { true }) throws -> String {
         Self.tokenLock.lock(); defer { Self.tokenLock.unlock() }
         let id = paths.clientID()
-        guard id.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else { throw SpotifyFailure(message: "Add your Spotify Client ID in the Workflow’s Configuration.") }
+        guard validClientID(id) else { throw SpotifyFailure(message: "Open Spotify Mini Player and enter your Spotify Client ID.") }
         var previous = dict(readJSON(tokenURL)); if text(previous["client_id"]) != id { previous = [:] }
         let refreshing = fields["grant_type"] == "refresh_token"
         let values = fields.merging(["client_id": id]) { _, new in new }
@@ -274,12 +319,13 @@ final class SpotifyAPI {
         }
         throw SpotifyFailure(message: "Reconnect to Spotify to renew access.", status: 401)
     }
-    func pages(_ path: String, params: [String: String] = [:], nested: String? = nil) throws -> [JSONObject] {
+    func pages(_ path: String, params: [String: String] = [:], nested: String? = nil, cancellation: RequestCancellation? = nil) throws -> [JSONObject] {
         var path = path, params = ["limit": "50"].merging(params) { _, new in new }, result: [JSONObject] = [], seen = Set<String>()
         while !path.isEmpty {
             guard seen.insert(path + Self.form(params)).inserted else { throw SpotifyFailure(message: "Spotify returned a repeated library page.") }
-            var page = dict(try request(path, params: params)); if let nested = nested { page = dict(page[nested]) }
-            result += (page["items"] as? [Any] ?? []).compactMap { $0 as? JSONObject }
+            var page = dict(try request(path, params: params, cancellation: cancellation)); if let nested = nested { page = dict(page[nested]) }
+            guard let items = page["items"] as? [Any] else { throw SpotifyFailure(message: "Spotify returned an invalid library page.") }
+            result += items.compactMap { $0 as? JSONObject }
             let next = text(page["next"])
             if next.isEmpty { break }
             guard let url = URL(string: next), url.scheme == "https", url.host == "api.spotify.com", url.path.hasPrefix("/v1/") else { throw SpotifyFailure(message: "Spotify returned an invalid library page.") }

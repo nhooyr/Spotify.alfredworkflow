@@ -26,8 +26,20 @@ our cache exceeds 1 GB. Saved and downloaded-library covers and art used within
 the last day are protected, so the size limit is deliberately soft. Spotify’s
 cache is never cleaned or modified.
 
-Sign-in and token refresh use PKCE. Credentials come from the Workflow’s
-Configuration; the app does not import data from other workflows.
+Sign-in and token refresh use PKCE. The backend reads `SPOTIFY_CLIENT_ID` from a
+new interactive login shell selected by `$SHELL` at background startup. If absent, the
+mini player accepts an ID and saves it with owner-only permissions in
+`client-id.json` in its private Workflow Data directory. Neither source is stored
+in Alfred’s synced configuration. Shell startup stays off the UI thread; normal
+launches reuse the in-memory value. Reauth clears sign-in, the private Client ID
+and the shell cache; the next open reads the shell again. Artwork, saved library
+membership, playlist order, and cached browse results are retained even if Spotify
+rate limits the next refresh. Only a confirmed change of Spotify account clears
+account-specific library state; refreshes replace membership only after every
+page succeeds. Resetting sign-in cancels an in-flight library refresh.
+Unregistered Client IDs are checked with a deliberately unissued PKCE grant before
+opening the browser. Failed sign-in attempts clear the ID and return to the inline
+prompt. The app does not import data from other workflows.
 
 `src/vendor/zstddeclib.c` is the decoder-only amalgamation from Zstandard v1.5.7,
 used for compressed desktop cache entries. Its BSD license is included in the
@@ -53,7 +65,11 @@ The same playback-state request refreshes repeat mode and the header’s source
 label. Names come from existing metadata or a cached background lookup; source
 metadata on browse rows lets offline selections update the label immediately.
 Automatic refreshes are coalesced for 30 seconds and only rebuild the catalogue
-when data changes; ⌘R always forces a refresh.
+when data changes; ⌘R always forces a refresh. Actual API requests share an activity
+counter across library sync, catalogue search, playback, and sign-in. The bottom-left
+footer debounces brief requests and bridges gaps between pages to avoid flicker;
+cached responses and requests blocked by a cooldown produce no activity. Offline
+state takes precedence, and errors remain visible beside the activity label.
 
 Custom Alfred themes supply the native panel’s colours, opacity, corner radii,
 scrollbar, and font families. The mini-player layout keeps its own sizes. Built-in

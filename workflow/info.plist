@@ -258,9 +258,9 @@
 				<key>keyword</key>
 				<string>{var:keyword} reauth</string>
 				<key>subtext</key>
-				<string>Clear saved login and reconnect on next open; keep client settings</string>
+				<string>Clear sign-in and Client ID; reconnect on next open</string>
 				<key>text</key>
-				<string>Reset Spotify Sign-In</string>
+				<string>Reset Spotify Sign-In to Reauthorize</string>
 				<key>withspace</key>
 				<false/>
 			</dict>
@@ -644,27 +644,32 @@ Search and play music from Spotify with the `spot` keyword or &lt;kbd&gt;⌃&lt;
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
+1. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+   Optional but set a hotkey for the Spotify Mini Player in the workflow’s configuration.
+   I suggest &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt;.
+
+![Screenshot for install step 1](./docs/install-2.png)
+
+2. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
    **Spotify Client ID**. Enable the **Web API** and set the app’s redirect URI to
    `http://127.0.0.1:8765/spotify_callback`.
 
-![Install screenshot for step 1](./docs/install-1.png)
+![Screenshot for install step 2](./docs/install-1.png)
 
-2. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
-   In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
+3. You can set the **Spotify Client ID** as `$SPOTIFY_CLIENT_ID` in your shell's configuration. If you don't
+   know how, you can enter it in the mini player when you first open it. The workflow will save it outside
+   Alfred's synced preferences.
 
-![Install screenshot for step 2](./docs/install-2.png)
-
-3. Optional but set a hotkey for the Spotify Mini Player in the workflow’s configuration.
-   I suggest &lt;kbd&gt;⌃&lt;/kbd&gt;&lt;kbd&gt;⌘&lt;/kbd&gt;&lt;kbd&gt;Space&lt;/kbd&gt;.
-
-![Install screenshot for step 3](./docs/install-3.png)
+![Screenshot for install step 3](./docs/install-3.png)
 
 4. When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access. The
    Mini Player will reopen automatically if successful. If you close the browser tab, press &lt;kbd&gt;↩&lt;/kbd&gt; on
-   the **Connecting to Spotify…** menu to open sign-in again.
+   the **Connecting to Spotify...** menu to open sign-in again.
+   On first launch, enter your **Spotify Client ID** in the mini player and press Return.
+   It’s saved outside Alfred’s synced preferences. Alternatively, export `SPOTIFY_CLIENT_ID` in your shell’s
+   configuration; the player reads it through `$SHELL` at background startup and prefers it over a saved ID.
 
-![Install screenshot for step 4](./docs/install-3.png)
+
 
 If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredworkflow](https://github.com/nhooyr/Spotify.alfredworkflow/issues).
 
@@ -694,7 +699,8 @@ text after any folder path to filter its contents.
 **Songs** contains your Liked Songs; choose **All** at the top to play the collection.
 **Artists** lists only artists you follow. Offline, browsing and search show
 downloaded music only, including artists with downloaded songs. A small grey
-**offline** label appears at the bottom right.
+**offline** label appears at the bottom left. API activity appears there while requests
+are pending; results served from cache stay silent.
 The **＋/✓** button likes or unlikes the current song. Playlists use Spotify’s custom
 order when available; local search prioritises playlists, albums, artists, then
 songs and reuses cached music.
@@ -738,7 +744,7 @@ and `spotify demo`.
 | `spot noshuf` | Turn shuffle off. |
 | `spot demo` | Toggle demo mode for macOS’s window picker. |
 | `spot refresh` | Refresh the desktop cache index and connected library. |
-| `spot reauth` | Clear sign-in; reconnect when the player next opens. |
+| `spot reauth` | Reset Spotify Sign-In to Reauthorize |
 
 The like, unlike, shuf and noshuf commands set a state rather than toggling it.
 
@@ -776,8 +782,10 @@ The player follows your Alfred theme’s colours, cursor, fonts and window styli
 while retaining its layout. Built-in themes use the available background and
 selection colours.
 
-After `spot reauth`, choose **Open Spotify Mini Player** in Alfred to sign in again.
-Your Spotify Client ID and cached music are kept.
+After `spot reauth`, choose **Open Spotify Mini Player** in Alfred to set up again.
+Sign-in, the saved Client ID and the cached shell value are cleared. The player checks `$SHELL` again;
+if no ID is exported, it prompts for one. Cached artwork and library metadata are kept.
+Spotify manages downloaded audio; this workflow does not cache it.
 </string>
 	<key>uidata</key>
 	<dict>
@@ -933,27 +941,6 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 			<key>config</key>
 			<dict>
 				<key>default</key>
-				<string></string>
-				<key>placeholder</key>
-				<string>Spotify Client ID</string>
-				<key>required</key>
-				<false/>
-				<key>trim</key>
-				<true/>
-			</dict>
-			<key>description</key>
-			<string>From your Spotify Developer Dashboard app. Enable Web API and set its redirect URI to http://127.0.0.1:8765/spotify_callback.</string>
-			<key>label</key>
-			<string>Spotify Client ID</string>
-			<key>type</key>
-			<string>textfield</string>
-			<key>variable</key>
-			<string>SPOTIFY_CLIENT_ID</string>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>default</key>
 				<string>spot</string>
 				<key>placeholder</key>
 				<string></string>
@@ -972,12 +959,12 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 			<string>keyword</string>
 		</dict>
 	</array>
+	<key>variables</key>
+	<dict/>
 	<key>variablesdontexport</key>
-	<array>
-		<string>SPOTIFY_CLIENT_ID</string>
-	</array>
+	<array/>
 	<key>version</key>
-	<string>0.4.40</string>
+	<string>0.4.51</string>
 	<key>webaddress</key>
 	<string>https://github.com/nhooyr/Spotify.alfredworkflow</string>
 </dict>

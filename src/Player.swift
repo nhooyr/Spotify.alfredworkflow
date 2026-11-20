@@ -209,6 +209,16 @@ private final class PlayerPanel: NSPanel {
 
 private final class SearchField: NSTextField {
     var keyAction: ((NSEvent) -> Bool)?
+    var hint: String? { didSet { if hint != oldValue { needsDisplay = true } } }
+    var hintColor = NSColor.placeholderTextColor
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard stringValue.isEmpty, (currentEditor()?.string ?? "").isEmpty, let hint = hint else { return }
+        // AppKit clips Avenir's native placeholder; lay out only the hint ourselves.
+        let text = NSAttributedString(string: hint, attributes: [.font: font ?? NSFont.systemFont(ofSize: 28), .foregroundColor: hintColor])
+        let height = ceil(text.size().height)
+        text.draw(in: NSRect(x: bounds.minX + 2, y: bounds.midY - height / 2, width: bounds.width - 4, height: height))
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if keyAction?(event) == true { return true }
         return super.performKeyEquivalent(with: event)
@@ -716,15 +726,19 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private let previewTitle = NSTextField(labelWithString: "")
     private let previewDetail = NSTextField(wrappingLabelWithString: "")
     private let nowArt = NSImageView()
-    private let nowTitle = NSTextField(labelWithString: "No track currently selected")
+    private let nowTitle = NSTextField(labelWithString: "No track")
     private let nowDetail = NSTextField(labelWithString: "")
     private let nowContext = NSTextField(labelWithString: "")
     private var currentPlaybackContext: PlaybackContext?
     private var selectedSourceTrack = ""
     private var observedPlaybackContext: (track: String, context: PlaybackContext?)?
     private let status = NSTextField(labelWithString: "Loading your Spotify library…")
-    private let offlineStatus = NSTextField(labelWithString: "offline")
+    private let activityStatus = NSTextField(labelWithString: "")
     private var offline = false
+    private var apiActive = false
+    private var apiActivityVisible = false
+    private var apiActivityShownAt = Date.distantPast
+    private var apiActivityWork: DispatchWorkItem?
     private let toggle = IconButton()
     private let like = IconButton()
     private let shuffle = IconButton()
@@ -770,6 +784,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var searchStatusVisible = false
     private var searchStatusShownAt = Date.distantPast
     private var statusMessage = ""
+    private var statusIsError = false
     private var pendingHomeQuery: String?
     private var lastPlaintextPath: String?
     private var pendingPlaintextPath: String?
@@ -1006,12 +1021,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
         root.addSubview(status)
-        offlineStatus.frame = NSRect(x: 488, y: 10, width: 84, height: 16)
-        offlineStatus.font = .systemFont(ofSize: 10)
-        offlineStatus.alignment = .right
-        offlineStatus.isHidden = true
-        offlineStatus.setAccessibilityLabel("Offline")
-        root.addSubview(offlineStatus)
+        activityStatus.frame = NSRect(x: 12, y: 10, width: 134, height: 16)
+        activityStatus.font = .systemFont(ofSize: 10)
+        activityStatus.alignment = .left
+        activityStatus.isHidden = true
+        activityStatus.setAccessibilityLabel("Spotify activity")
+        root.addSubview(activityStatus)
         applyTheme(PlayerTheme())
         refreshTheme()
         // Force layout and raster caches now; showing this panel never rebuilds it.
@@ -1030,6 +1045,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private func styleEditor() {
         guard let editor = search.currentEditor() as? NSTextView else { return }
         editor.allowsUndo = true
+        // The search field already paints the themed background; don't cover its hint.
+        editor.drawsBackground = false
+        (editor.superview as? NSClipView)?.drawsBackground = false
         editor.insertionPointColor = playerTheme.searchText
         editor.textColor = playerTheme.searchText
         editor.selectedTextAttributes = [.foregroundColor: playerTheme.searchSelectedText, .backgroundColor: playerTheme.searchSelection]
@@ -1043,10 +1061,12 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         previewTitle.font = theme.font(theme.resultFont, size: 13)
         previewDetail.font = theme.font(theme.secondaryFont, size: 11)
         status.font = theme.font(theme.secondaryFont, size: 10)
-        offlineStatus.font = theme.font(theme.secondaryFont, size: 10)
-        offlineStatus.textColor = theme.secondary
+        activityStatus.font = theme.font(theme.secondaryFont, size: 10)
+        activityStatus.textColor = theme.secondary
         search.font = theme.font(theme.searchFont, size: 28)
         search.textColor = theme.searchText
+        search.hintColor = theme.secondary.withAlphaComponent(theme.secondary.alphaComponent * 0.7)
+        search.needsDisplay = true
         search.drawsBackground = theme.searchBackground.alphaComponent > 0
         search.backgroundColor = theme.searchBackground
         search.wantsLayer = true
@@ -1104,9 +1124,11 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let type = value["type"] as? String ?? ""
         if let offline = value["offline"] as? Bool {
             self.offline = offline
-            offlineStatus.isHidden = !offline
             if offline { catalogPending = false }
+            renderStatus()
         }
+        if let active = value["api_active"] as? Bool { updateAPIActivity(active) }
+        if type == "api-activity" { return }
         let nextConnection = value["connection"] as? String ?? connection
         if nextConnection == connection {
             if let request = value["navigation"] as? Int, request != navigationRequest { return }
@@ -1119,6 +1141,10 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             if value["route_kind"] as? String == "catalog", routeKind == "catalog",
                let query = value["query"] as? String, value["command"] as? String != "back",
                query != String(search.stringValue.dropFirst()) { return }
+        }
+        if type == "browser-opened" {
+            if connection == "connecting" { hide() }
+            return
         }
         if type == "error" {
             pendingPlaintextPath = nil
@@ -1209,22 +1235,32 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         connection = nextConnection
         if disconnected { clearDisconnectedState() }
         if value["close_player"] as? Bool == true { hide() }
-        if let message = value["message"] as? String { statusMessage = message }
+        if let message = value["message"] as? String {
+            statusMessage = message; statusIsError = value["message_is_error"] as? Bool == true; inlineError = nil
+        }
         renderStatus()
         if connection != "connected" { clearPreview() }
-        search.isEnabled = connection == "connected"
+        search.isEnabled = connection == "connected" || connection == "credentials"
+        search.hint = connection == "credentials" ? "Spotify Client ID" : nil
+        search.setAccessibilityLabel(connection == "credentials" ? "Spotify Client ID" : "Search music")
         for button in playbackButtons { button.isEnabled = connection == "connected" }
         shuffle.isEnabled = connection == "connected"
         updateLike()
         updateRepeat()
         if connection != "connected" {
-            routeKind = "home"; breadcrumb = ""; setSearchText("")
+            routeKind = "home"; breadcrumb = ""
+            if connection != "credentials" || value["command"] as? String == "client-id-reset" { setSearchText("") }
             catalogPending = false; updateSearchStatus()
             source = ((value["rows"] as? [[String: Any]])?.map(MusicItem.init) ?? source)
                 .filter { $0.payload["action"] as? String == "connect" }
             home = source
             filter(resetSelection: true)
+            if connection == "credentials", panel.isKeyWindow || testMode { focusSearch(selectAll: false) }
             if value["command"] as? String == "configure" { hide() }
+            if value["command"] as? String == "client-id-reset" {
+                if !testMode { NSApp.activate(ignoringOtherApps: true) }
+                show()
+            }
             return
         }
         if let rows = value["rows"] as? [[String: Any]] {
@@ -1301,7 +1337,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         currentTrackArtist = ""; currentTrackAlbum = ""
         setCurrentTrack("", refresh: false)
         currentImageURL = ""; currentArtPath = ""
-        nowTitle.stringValue = "No track currently selected"
+        nowTitle.stringValue = "No track"
         setNowArt("")
         updateToggle(); updateShuffle(); updateRepeat()
         lastLikedCheck = .distantPast; lastRepeatPoll = .distantPast
@@ -1346,7 +1382,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private func filter(preferredURI: String? = nil, resetSelection: Bool = false) {
         guard pendingPlaintextPath == nil else { return }
         let selection = preferredURI ?? (resetSelection ? nil : selectedItem()?.uri)
-        let text = search.stringValue
+        let text = connection == "connected" ? search.stringValue : ""
         let query = text.hasPrefix(breadcrumb) ? String(text.dropFirst(breadcrumb.count)) : text
         let terms = routeKind == "catalog" ? [] : MusicItem.normalize(query).split(whereSeparator: { $0.isWhitespace })
         let usesCatalog = routeKind != "catalog" && breadcrumb.isEmpty && !terms.isEmpty && connection == "connected"
@@ -1384,7 +1420,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         previewSelection()
     }
     private func previewPlaceholder(_ item: MusicItem) -> NSImage? {
-        symbol(item.kind == "action" && (item.payload["action"] as? String) != "play" ? item.symbol : "questionmark", height: 150)
+        symbol(item.payload["action"] as? String == "catalog" ? item.symbol : "questionmark", height: 150)
     }
     private func updatePreviewTint() {
         let isSearch = selectedItem()?.payload["action"] as? String == "catalog" && preview.image?.isTemplate == true
@@ -1468,6 +1504,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         updatingSearchField = true
         defer { updatingSearchField = false }
         search.stringValue = text
+        search.needsDisplay = true
         if let editor = search.currentEditor() as? NSTextView {
             if editor.string != text { editor.string = text }
             editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
@@ -1481,6 +1518,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         panel.makeFirstResponder(search)
         if search.currentEditor() == nil { search.selectText(nil) }
         search.stringValue = text
+        search.needsDisplay = true
         if let editor = search.currentEditor() as? NSTextView {
             if editor.string != text { editor.string = text }
             styleEditor()
@@ -1529,7 +1567,6 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         let query = String(search.stringValue.dropFirst())
         source = localCatalogResults(query)
         catalogPending = !offline && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        statusMessage = ""
         renderStatus()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.routeKind == "catalog", self.search.stringValue == "/" + query else { return }
@@ -1557,7 +1594,15 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         return true
     }
     func controlTextDidChange(_ obj: Notification) {
-        guard !updatingSearchField, connection == "connected" else { return }
+        guard !updatingSearchField else { return }
+        search.needsDisplay = true
+        if connection == "credentials" {
+            let text = singleLineQuery(search.stringValue)
+            if text != search.stringValue { setSearchText(text) }
+            renderStatus()
+            return
+        }
+        guard connection == "connected" else { return }
         let text = singleLineQuery(search.stringValue)
         if text != search.stringValue { setSearchText(text) }
         restoreOpeningSelection = false
@@ -1600,10 +1645,17 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         let modifiers = NSApp.currentEvent?.modifierFlags.intersection([.command, .control, .option, .shift]) ?? []
+        return handleInputCommand(commandSelector, editor: textView, modifiers: modifiers)
+    }
+    private func handleInputCommand(_ commandSelector: Selector, editor textView: NSTextView, modifiers: NSEvent.ModifierFlags) -> Bool {
         if connection != "connected" {
-            if commandSelector == #selector(NSResponder.cancelOperation(_:)) { hide() }
-            else if modifiers.isEmpty && commandSelector == #selector(NSResponder.insertNewline(_:)) { activateSelection() }
-            return true
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) { hide(); return true }
+            if [#selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)),
+                #selector(NSResponder.insertLineBreak(_:)), #selector(NSResponder.insertParagraphSeparator(_:))].contains(commandSelector) {
+                if modifiers.isEmpty && commandSelector == #selector(NSResponder.insertNewline(_:)) { activateSelection() }
+                return true
+            }
+            return connection != "credentials"
         }
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveDown(_:)) { move(1); return true }
         if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveUp(_:)) { move(-1); return true }
@@ -1641,8 +1693,14 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if modifiers == .command && key == "w" { hide(); return true }
         if modifiers == .command && key == "," { openSettings(); return true }
         guard connection == "connected" else {
-            if modifiers.isEmpty && [36, 76].contains(event.keyCode) { activateSelection() }
-            return true
+            if [36, 76].contains(event.keyCode) {
+                if modifiers.isEmpty { activateSelection() }
+                return true
+            }
+            guard connection == "credentials" else { return true }
+            if modifiers == .command, ["s", "p", "n", "r"].contains(key.lowercased()) { return true }
+            if modifiers.contains(.command), modifiers.contains(.control) || Int(key) != nil || [125, 126].contains(event.keyCode) { return true }
+            return false
         }
         if modifiers == .option && [36, 76].contains(event.keyCode) {
             openSelection(preservingSelection: false, playDirectly: true); return true
@@ -1699,7 +1757,19 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         collapseSearchSelection()
         guard pendingPlaintextPath == nil, let item = selectedItem() else { return }
         let action = item.payload["action"] as? String ?? ""
-        if action == "connect" { send("connect"); return }
+        if action == "connect" {
+            if connection == "credentials", !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let value = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard validClientID(value) else {
+                    setSearchText("")
+                    showError("Enter the 32-character Spotify Client ID from your developer app.")
+                    focusSearch(selectAll: false)
+                    return
+                }
+                send("client-id", args: [value])
+            } else { send("connect") }
+            return
+        }
         guard connection == "connected" else { return }
         if action == "catalog" { enterCatalog("", preservingSelection: preservingSelection); return }
         let directURI: String?
@@ -1942,11 +2012,54 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             send("image", args: [values[4]])
         }
     }
+    private func updateAPIActivity(_ active: Bool) {
+        guard active != apiActive else { return }
+        apiActive = active
+        apiActivityWork?.cancel(); apiActivityWork = nil
+        if active && !apiActivityVisible {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, self.apiActive else { return }
+                self.apiActivityVisible = true; self.apiActivityShownAt = Date(); self.renderStatus()
+            }
+            apiActivityWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        } else if !active {
+            let remaining = max(0, 0.35 - Date().timeIntervalSince(apiActivityShownAt))
+            if remaining == 0 { apiActivityVisible = false }
+            else {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self = self, !self.apiActive else { return }
+                    self.apiActivityVisible = false; self.renderStatus()
+                }
+                apiActivityWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
+            }
+        }
+        renderStatus()
+    }
     private func renderStatus() {
         let message = inlineError ?? (routeKind == "catalog" && searchStatusVisible ? "Searching Spotify…" : statusMessage)
-        if status.stringValue != message { status.stringValue = message }
-        status.toolTip = message
-        status.textColor = inlineError == nil && connection != "failed" ? playerTheme.secondary : .systemRed
+        let searching = inlineError == nil && routeKind == "catalog" && searchStatusVisible
+        let error = !searching && (inlineError != nil || statusIsError || connection == "failed")
+        let busy = !offline && apiActivityVisible && (!error || apiActive)
+        let activity: String
+        if offline { activity = "offline" }
+        else if busy {
+            if connection != "connected", !error, !message.isEmpty { activity = message }
+            else { activity = routeKind == "catalog" && catalogPending ? "Searching Spotify…" : "Syncing with Spotify…" }
+        } else { activity = "" }
+        activityStatus.stringValue = activity
+        activityStatus.toolTip = activity
+        activityStatus.isHidden = activity.isEmpty
+        // Theme-font glyphs can extend beyond AppKit's rounded intrinsic width.
+        let width = activity.isEmpty ? 0 : min(200, ceil(activityStatus.intrinsicContentSize.width) + 4)
+        activityStatus.frame = NSRect(x: 12, y: 10, width: width, height: 16)
+        let left: CGFloat = activity.isEmpty ? 12 : activityStatus.frame.maxX + 10
+        status.frame = NSRect(x: left, y: 10, width: max(0, preview.frame.maxX - left), height: 16)
+        let text = busy && !error ? "" : message
+        if status.stringValue != text { status.stringValue = text }
+        status.toolTip = text
+        status.textColor = error ? .systemRed : playerTheme.secondary
     }
     private func revealSearchStatus() {
         guard routeKind == "catalog", catalogPending else { return }
@@ -1978,7 +2091,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         renderStatus()
     }
     private func showError(_ message: String) {
-        inlineError = message
+        inlineError = message; statusMessage = message; statusIsError = true
         renderStatus()
     }
     private func show() {
@@ -1986,9 +2099,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         refreshTheme()
         hotkeyHandoffAllowed = true
         showCount += 1
-        if search.isEnabled, search.stringValue.hasPrefix("/"), routeKind != "catalog" {
+        if connection == "connected", search.isEnabled, search.stringValue.hasPrefix("/"), routeKind != "catalog" {
             enterCatalog(String(search.stringValue.dropFirst()))
-        } else if search.isEnabled { resolvePlaintextPath(force: true) }
+        } else if connection == "connected", search.isEnabled { resolvePlaintextPath(force: true) }
         let reopening = !panel.isVisible
         if testMode { focusSearch(selectAll: reopening); wasShown = true; return }
         if reopening {
@@ -2057,6 +2170,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if testMode && value["command"] as? String == "test-direct-play" { return directPlaybackChecks() }
         if testMode && value["command"] as? String == "test-single-line" { return singleLineChecks() }
         if testMode && value["command"] as? String == "test-offline-ui" { return offlineUIChecks() }
+        if testMode && value["command"] as? String == "test-api-activity" { return apiActivityChecks() }
         if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
         if testMode && value["command"] as? String == "test-playback-context" { return playbackContextChecks() }
         if testMode && value["command"] as? String == "test-search" { return searchChecks() }
@@ -2078,6 +2192,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         if testMode && value["command"] as? String == "test-navigation-shortcuts" { return navigationShortcutChecks() }
         if testMode && value["command"] as? String == "test-connection-ui" { return connectionUIChecks() }
         if testMode && value["command"] as? String == "test-connection-session" { return connectionSessionChecks() }
+        if testMode && value["command"] as? String == "test-client-id-input" { return clientIDInputChecks() }
         if testMode && value["command"] as? String == "test-catalog-resume" { return catalogResumeChecks() }
         if testMode && value["command"] as? String == "test-editing" {
             return editingChecks()
@@ -2216,7 +2331,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         hide(); show()
         guard let editor = search.currentEditor() as? NSTextView else { return ["status": "error"] }
         let reopening = editor.selectedRange() == NSRange(location: 0, length: (breadcrumb as NSString).length)
-        _ = control(search, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:)))
+        _ = handleInputCommand(#selector(NSResponder.moveDown(_:)), editor: editor, modifiers: [])
         let arrows = editor.selectedRange().length == 0 && table.selectedRow == 1
         focusSearch(selectAll: true)
         let mouse = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 400, y: 400), modifierFlags: [], timestamp: 0,
@@ -2224,14 +2339,14 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         handleInteraction(mouse)
         let mouseClears = editor.selectedRange().length == 0
         focusSearch(selectAll: true)
-        let selectedDelete = !control(search, textView: editor, doCommandBy: #selector(NSResponder.deleteBackward(_:)))
+        let selectedDelete = !handleInputCommand(#selector(NSResponder.deleteBackward(_:)), editor: editor, modifiers: [])
         editor.deleteBackward(nil)
         let deleted = search.stringValue.isEmpty && editor.selectedRange().length == 0 && breadcrumb.isEmpty
         routeKind = "artist"; breadcrumb = "Artists/7!!/"; setSearchText(breadcrumb); focusSearch(selectAll: true)
         editor.insertText("new search", replacementRange: editor.selectedRange())
         let replaced = search.stringValue == "new search" && breadcrumb.isEmpty && routeKind == "home"
         routeKind = "artist"; breadcrumb = "Artists/7!!/"; setSearchText(breadcrumb)
-        let back = control(search, textView: editor, doCommandBy: #selector(NSResponder.deleteBackward(_:)))
+        let back = handleInputCommand(#selector(NSResponder.deleteBackward(_:)), editor: editor, modifiers: [])
         pendingHomeQuery = nil
         receive(["type": "update", "command": "back", "route_kind": "artists", "prefix": "Artists/", "search_text": "Artists/", "rows": []])
         let caret = editor.selectedRange() == NSRange(location: 8, length: 0) && editor.string == "Artists/"
@@ -2486,9 +2601,141 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                                     charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
         let enter = key(event) && selectedItem()?.payload["action"] as? String == "connect"
         let inlineStatus = status.stringValue == "Finish connecting in your browser"
+        show()
+        let waitsForBrowser = hotkeyHandoffAllowed
+        receive(["type": "browser-opened"])
+        let browserHandoff = !hotkeyHandoffAllowed && !panel.isVisible && connection == "connecting"
         demo(); search.isEnabled = true; focusSearch(selectAll: false)
         return ["status": "ok", "connection_has_no_cover_preview": emptyPreview, "no_connect_button": noButton,
-                "return_activates_connection_row": enter, "connection_status_is_inline": inlineStatus]
+                "return_activates_connection_row": enter, "connection_status_is_inline": inlineStatus,
+                "player_waits_for_browser_launch": waitsForBrowser, "browser_launch_hides_player": browserHandoff]
+    }
+    private func clientIDInputChecks() -> [String: Any] {
+        let originalTheme = playerTheme, originalAlpha = panel.alphaValue
+        defer { applyTheme(originalTheme); panel.alphaValue = originalAlpha }
+        panel.alphaValue = 0
+        let row: [String: Any] = ["name": "Connect to Spotify", "uri": "connect", "kind": "action", "item": ["action": "connect"]]
+        receive(["type": "update", "connection": "credentials", "rows": [row], "message": "Enter your Spotify Client ID, then press Return."])
+        let prompt = search.isEnabled && search.hint == "Spotify Client ID" && preview.image == nil
+        func inputBitmap() -> NSBitmapImageRep? {
+            guard let root = panel.contentView else { return nil }
+            root.layoutSubtreeIfNeeded()
+            let frame = search.convert(search.bounds, to: root)
+            guard let bitmap = root.bitmapImageRepForCachingDisplay(in: frame) else { return nil }
+            root.cacheDisplay(in: frame, to: bitmap)
+            return bitmap
+        }
+        func inputInkFits() -> Bool {
+            guard let bitmap = inputBitmap() else { return false }
+            var ink = false
+            for y in 0..<bitmap.pixelsHigh {
+                // Inspect glyphs, excluding the empty-field caret on the left and the end caret after a full ID.
+                for x in stride(from: 12, to: bitmap.pixelsWide / 2, by: 3) {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                          color.alphaComponent > 0.9, min(color.redComponent, color.greenComponent, color.blueComponent) < 0.85 else { continue }
+                    if y < 2 || y >= bitmap.pixelsHigh - 2 { return false }
+                    ink = true
+                    break
+                }
+            }
+            return ink
+        }
+        func darkestInputPixel(from start: Int = 12) -> CGFloat {
+            guard let bitmap = inputBitmap() else { return 0 }
+            var darkest: CGFloat = 1
+            for y in 2..<(bitmap.pixelsHigh - 2) {
+                for x in stride(from: start, to: bitmap.pixelsWide / 2, by: 3) {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), color.alphaComponent > 0.9 else { continue }
+                    darkest = min(darkest, color.redComponent, color.greenComponent, color.blueComponent)
+                }
+            }
+            return darkest
+        }
+        let id = String(repeating: "b", count: 32)
+        var placeholderFits = true, textFits = true, legibleHint = true
+        for font in ["", "Avenir"] {
+            panel.makeFirstResponder(panel)
+            var theme = PlayerTheme(); theme.searchFont = font
+            theme.secondary = NSColor(srgbRed: 0.3, green: 0.3, blue: 0.3, alpha: 1)
+            theme.searchBackground = NSColor.white.withAlphaComponent(0.95)
+            applyTheme(theme)
+            setSearchText(""); panel.makeKeyAndOrderFront(nil); focusSearch(selectAll: false)
+            placeholderFits = inputInkFits() && placeholderFits
+            let shade = darkestInputPixel()
+            legibleHint = legibleHint && shade > 0.35 && shade < 0.75
+            if font == "Avenir", let path = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID_SCREENSHOT"] { snapshot(path) }
+            setSearchText(id)
+            textFits = inputInkFits() && textFits
+            if font == "Avenir", let path = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID_SCREENSHOT"] {
+                snapshot(URL(fileURLWithPath: path).deletingPathExtension().path + "-filled.png")
+            }
+        }
+        setSearchText(id); controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        let noSearch = filtered.count == 1 && routeKind == "home" && !catalogPending && preview.image == nil
+        receive(["type": "update", "connection": "credentials", "rows": [row]])
+        let draft = search.stringValue == id
+        panel.makeKeyAndOrderFront(nil); focusSearch(selectAll: false)
+        func event(_ code: UInt16, _ character: String, _ modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: panel.windowNumber, context: nil, characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: code)!
+        }
+        let selectHandled = panel.performKeyEquivalent(with: event(0, "a", .command))
+        let selection = selectHandled && (search.currentEditor() as? NSTextView)?.selectedRange().length == 32
+        panel.sendEvent(event(8, "c"))
+        let typing = search.stringValue == "c" && filtered.count == 1 && routeKind == "home"
+        let noHintAfterTyping = darkestInputPixel(from: 80) > 0.99
+        if let path = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID_SCREENSHOT"] {
+            snapshot(URL(fileURLWithPath: path).deletingPathExtension().path + "-typed.png")
+        }
+        _ = panel.performKeyEquivalent(with: event(0, "a", .command))
+        panel.sendEvent(event(51, "\u{7f}"))
+        let hintRestored = search.stringValue.isEmpty && darkestInputPixel() < 0.75 && inputInkFits()
+        setSearchText("bad")
+        var commands = sentTestCommands.count
+        panel.sendEvent(event(36, "\r"))
+        let validationMessage = "Enter the 32-character Spotify Client ID from your developer app."
+        let invalid = sentTestCommands.count == commands && inlineError == validationMessage && search.stringValue.isEmpty && search.hint != nil
+        setSearchText(id); controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        let typingKeepsValidation = status.stringValue == validationMessage && inlineError == validationMessage
+        commands = sentTestCommands.count
+        panel.sendEvent(event(36, "\r"))
+        let saved = Array(sentTestCommands.dropFirst(commands)) == ["client-id"] && inlineError == nil
+        receive(["type": "update", "connection": "connecting", "rows": [row]])
+        let connecting = !search.isEnabled && search.stringValue.isEmpty && search.hint == nil && preview.image == nil
+        hide()
+        let beforeFailure = showCount
+        receive(["type": "update", "command": "client-id-reset", "connection": "credentials", "rows": [row]])
+        let failurePrompts = showCount == beforeFailure + 1 && search.stringValue.isEmpty && search.hint != nil && search.isEnabled
+        setSearchText(id)
+        let rejectionMessage = "Spotify rejected the previously entered Client ID"
+        receive(["type": "update", "command": "client-id-reset", "connection": "credentials", "rows": [row], "message": rejectionMessage])
+        let failureClearsDraft = search.stringValue.isEmpty
+        receive(["type": "error", "message": rejectionMessage])
+        focusSearch(selectAll: false); panel.sendEvent(event(8, "c"))
+        let typingKeepsFailure = search.stringValue == "c" && status.stringValue == rejectionMessage && inlineError == rejectionMessage
+        let cancelledMessage = "Spotify could not complete sign-in. Try again. (access_denied)"
+        receive(["type": "update", "command": "client-id-reset", "connection": "credentials", "rows": [row],
+                 "message": cancelledMessage, "message_is_error": true])
+        let signInErrorRed = status.stringValue == cancelledMessage && status.textColor == .systemRed
+        hide(); show()
+        receive(["type": "update", "command": "show", "connection": "credentials", "rows": [row],
+                 "message": cancelledMessage, "message_is_error": true])
+        let reopenedErrorRed = status.stringValue == cancelledMessage && status.textColor == .systemRed
+        focusSearch(selectAll: false); panel.sendEvent(event(8, "c"))
+        let typedErrorRed = status.textColor == .systemRed
+        receive(["type": "update", "connection": "credentials", "rows": [row], "message": "Latest sign-in status", "message_is_error": false])
+        let latestStatusWins = status.stringValue == "Latest sign-in status" && inlineError == nil && status.textColor == playerTheme.secondary
+        demo(); search.isEnabled = true; setSearchText("")
+        return ["status": "ok", "inline_setup_prompt": prompt, "typing_does_not_search": noSearch && typing,
+                "updates_preserve_draft": draft, "standard_select_all_works": selection,
+                "placeholder_not_clipped_with_system_or_avenir": placeholderFits, "entered_id_not_clipped": textFits,
+                "placeholder_legible_on_translucent_background": legibleHint,
+                "first_character_removes_placeholder": noHintAfterTyping, "empty_input_restores_placeholder": hintRestored,
+                "invalid_id_stays_inline": invalid, "return_submits_id": saved, "connecting_clears_input": connecting,
+                "failed_sign_in_reopens_prompt": failurePrompts, "failure_clears_rejected_draft": failureClearsDraft,
+                "typing_keeps_format_validation": typingKeepsValidation, "typing_keeps_spotify_rejection": typingKeepsFailure,
+                "new_status_replaces_previous_error": latestStatusWins, "sign_in_errors_are_red": signInErrorRed,
+                "reopened_sign_in_errors_stay_red": reopenedErrorRed, "typing_keeps_error_red": typedErrorRed]
     }
     private func connectionSessionChecks() -> [String: Any] {
         demo(); search.isEnabled = true; optimisticUntil = .distantPast
@@ -2505,7 +2752,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         receive(["type": "update", "command": "refresh", "connection": "connecting", "navigation": navigationRequest - 1,
                  "message": "Finish connecting in your browser", "route_kind": "home", "prefix": "", "rows": [row]])
         func blankHeader() -> Bool {
-            nowTitle.stringValue == "No track currently selected" && nowTitle.textColor == playerTheme.secondary
+            nowTitle.stringValue == "No track" && nowTitle.textColor == playerTheme.secondary
                 && nowArt.contentTintColor == playerTheme.secondary && nowDetail.stringValue.isEmpty && nowContext.isHidden
                 && currentTrackURI.isEmpty && currentImageURL.isEmpty && currentArtPath.isEmpty && nowArt.image !== cover
                 && !playing && !shuffling && repeatMode == .off && pendingLikes.isEmpty && likedTracks.isEmpty
@@ -2534,7 +2781,7 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             inactive = inactive && sentTestCommands.count == commands && navigationRequest == navigation
                 && transportCommands == transports && refreshRequests == refreshes
                 && routeKind == "home" && search.stringValue.isEmpty && filtered.count == 1
-                && selectedItem()?.payload["action"] as? String == "connect" && !search.isEnabled && blankHeader()
+                && selectedItem()?.payload["action"] as? String == "connect" && search.isEnabled == (state == "credentials") && blankHeader()
         }
         let commands = sentTestCommands.count
         panel.sendEvent(event(36, "\r"))
@@ -2799,6 +3046,11 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         search.stringValue = "/unmatched"
         filter(); previewWork?.perform()
         let noMatchesGrey = previewDetail.stringValue == "No matches" && previewDetail.textColor == .secondaryLabelColor
+        showError("Latest catalogue status")
+        search.stringValue = "/retrying"
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        catalogSearchWork?.perform()
+        let typingKeepsStatus = status.stringValue == "Latest catalogue status"
         demo(); search.stringValue = ""; filter()
         return ["status": "ok", "leading_slash_enters_catalogue": slashIsCatalog,
                 "command_return_preserves_query": preservesInitial, "spotify_menu_enters_search": menu,
@@ -2806,7 +3058,8 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "search_loading_retains_cover": loading, "deleting_slash_exits_search": exits,
                 "search_caret_after_slash": caretAtEnd && caretAfterReply,
                 "search_caret_follows_theme": (search.currentEditor() as? NSTextView)?.insertionPointColor == playerTheme.searchText, "empty_search_prompt": emptySearchPrompt, "no_matches_grey": noMatchesGrey,
-                "search_status_avoids_flicker": entryHasNoFlash && steadyDuringPreview && minimumDisplay && steadyBetweenQueries]
+                "search_status_avoids_flicker": entryHasNoFlash && steadyDuringPreview && minimumDisplay && steadyBetweenQueries,
+                "typing_keeps_latest_catalogue_status": typingKeepsStatus]
     }
     private func searchChecks() -> [String: Any] {
         let items = [
@@ -3044,19 +3297,82 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
                 "option_keypad_enter_plays_from_focused_editor": keypad]
     }
     private func offlineUIChecks() -> [String: Any] {
+        let originalTheme = playerTheme
+        defer { applyTheme(originalTheme) }
         demo()
         receive(["type": "update", "offline": true])
-        let visible = !offlineStatus.isHidden && offlineStatus.stringValue == "offline"
-            && offlineStatus.textColor == playerTheme.secondary
-            && offlineStatus.alignment == .right && offlineStatus.frame.maxX == preview.frame.maxX
-            && offlineStatus.frame.minX > status.frame.maxX
+        var glyphsFit = true
+        for font in ["", "Avenir"] {
+            var theme = originalTheme; theme.secondaryFont = font
+            applyTheme(theme)
+            let frame = activityStatus.frame
+            func bitmap(_ width: CGFloat) -> NSBitmapImageRep {
+                activityStatus.setFrameSize(NSSize(width: width, height: frame.height))
+                let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(ceil(width * 2)),
+                    pixelsHigh: Int(ceil(frame.height * 2)), bitsPerSample: 8, samplesPerPixel: 4,
+                    hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                image.size = activityStatus.bounds.size
+                memset(image.bitmapData!, 255, image.bytesPerRow * image.pixelsHigh)
+                activityStatus.cacheDisplay(in: activityStatus.bounds, to: image)
+                return image
+            }
+            let actual = bitmap(frame.width), reference = bitmap(frame.width + 12)
+            for y in 0..<reference.pixelsHigh {
+                for x in 0..<reference.pixelsWide {
+                    for channel in 0..<4 {
+                        let expected = reference.bitmapData![y * reference.bytesPerRow + x * 4 + channel]
+                        let drawn = x < actual.pixelsWide ? actual.bitmapData![y * actual.bytesPerRow + x * 4 + channel] : 255
+                        if abs(Int(expected) - Int(drawn)) > 1 { glyphsFit = false }
+                    }
+                }
+            }
+            activityStatus.frame = frame
+        }
+        applyTheme(originalTheme)
+        let visible = !activityStatus.isHidden && activityStatus.stringValue == "offline"
+            && activityStatus.textColor == playerTheme.secondary
+            && activityStatus.alignment == .left && activityStatus.frame.minX == 12
+            && status.frame.minX > activityStatus.frame.maxX
         enterCatalog("downloaded")
         let noLoading = !catalogPending && !searchStatusVisible && status.stringValue != "Searching Spotify…"
         receive(["type": "update", "offline": false])
-        let hidden = offlineStatus.isHidden
+        let hidden = activityStatus.isHidden
         demo()
-        return ["status": "ok", "offline_label_small_and_right_aligned": visible,
+        return ["status": "ok", "offline_label_small_and_left_aligned": visible,
+                "offline_label_not_clipped_with_system_or_avenir": glyphsFit,
                 "offline_search_has_no_network_loading_status": noLoading, "online_hides_offline_label": hidden]
+    }
+    private func apiActivityChecks() -> [String: Any] {
+        demo(); setSearchText("")
+        let cachedSilent = activityStatus.isHidden
+        receive(["type": "api-activity", "api_active": true])
+        let shortRequestsQuiet = activityStatus.isHidden
+        apiActivityWork?.perform()
+        let library = !activityStatus.isHidden && activityStatus.stringValue == "Syncing with Spotify…"
+            && activityStatus.frame.minX == 12 && activityStatus.textColor == playerTheme.secondary
+        enterCatalog("query")
+        let search = activityStatus.stringValue == "Searching Spotify…"
+        showError("Spotify request failed")
+        let errorVisible = status.stringValue == "Spotify request failed" && status.textColor == .systemRed
+            && status.frame.minX > activityStatus.frame.maxX
+        receive(["type": "update", "offline": true])
+        let offlineWins = activityStatus.stringValue == "offline" && activityStatus.frame.minX == 12
+        receive(["type": "update", "offline": false])
+        receive(["type": "api-activity", "api_active": false])
+        apiActivityWork?.perform()
+        let finished = activityStatus.isHidden && status.stringValue == "Spotify request failed" && status.textColor == .systemRed
+        demo()
+        receive(["type": "api-activity", "api_active": true])
+        let cancelled = apiActivityWork
+        receive(["type": "api-activity", "api_active": false])
+        cancelled?.perform()
+        let fastRequestNoFlash = activityStatus.isHidden
+        demo()
+        return ["status": "ok", "cached_results_have_no_activity": cachedSilent,
+                "short_requests_avoid_flicker": shortRequestsQuiet && fastRequestNoFlash,
+                "library_activity_on_bottom_left": library, "catalogue_search_shows_api_activity": search,
+                "errors_remain_visible_beside_activity": errorVisible, "offline_takes_priority_on_left": offlineWins,
+                "completion_hides_activity_and_retains_error": finished]
     }
     private func spaceChecks() -> [String: Any] {
         demo(); setSearchText("keep my filter"); show()
@@ -3291,8 +3607,10 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         shuffle.isEnabled = true
         updateRepeat()
         inlineError = nil
-        statusMessage = ""
-        offline = false; offlineStatus.isHidden = true
+        statusMessage = ""; statusIsError = false
+        apiActivityWork?.cancel(); apiActivityWork = nil
+        apiActive = false; apiActivityVisible = false; apiActivityShownAt = .distantPast
+        offline = false; activityStatus.isHidden = true
         routeKind = "home"
         breadcrumb = ""
         catalogPending = false

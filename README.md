@@ -9,27 +9,30 @@ Search and play music from Spotify with the `spot` keyword or <kbd>⌃</kbd><kbd
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
+1. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+   Optional but set a hotkey for the Spotify Mini Player in the workflow’s configuration.
+   I suggest <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
+
+![Screenshot for install step 1](./docs/install-2.png)
+
+2. Create a [Spotify developer application](https://developer.spotify.com/dashboard/applications) to get a
    **Spotify Client ID**. Enable the **Web API** and set the app’s redirect URI to
    `http://127.0.0.1:8765/spotify_callback`.
 
-![Install screenshot for step 1](./docs/install-1.png)
+![Screenshot for install step 2](./docs/install-1.png)
 
-2. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
-   In the Spotify.alfredworkflow’s configuration, enter the **Spotify Client ID**.
+3. Export **Spotify Client ID** as `$SPOTIFY_CLIENT_ID` in your shell's configuration. The player reads it
+   through `$SHELL` at background startup. If you don't know how, you can manually enter it in the mini player
+   when you first open it. The workflow will save it outside Alfred's synced preferences. The workflow prefers
+   `$SPOTIFY_CLIENT_ID` over a saved ID.
 
-![Install screenshot for step 2](./docs/install-2.png)
-
-3. Optional but set a hotkey for the Spotify Mini Player in the workflow’s configuration.
-   I suggest <kbd>⌃</kbd><kbd>⌘</kbd><kbd>Space</kbd>.
-
-![Install screenshot for step 3](./docs/install-3.png)
+![Screenshot for install step 3](./docs/install-3.png)
 
 4. When you open the Spotify Mini Player, sign-in will open in your browser automatically. Allow access. The
    Mini Player will reopen automatically if successful. If you close the browser tab, press <kbd>↩</kbd> on
-   the **Connecting to Spotify…** menu to open sign-in again.
+   the **Connecting to Spotify...** menu to open sign-in again.
 
-![Install screenshot for step 4](./docs/install-3.png)
+![Screenshot for install step 4](./docs/install-4.png)
 
 If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredworkflow](https://github.com/nhooyr/Spotify.alfredworkflow/issues).
 
@@ -59,7 +62,8 @@ text after any folder path to filter its contents.
 **Songs** contains your Liked Songs; choose **All** at the top to play the collection.
 **Artists** lists only artists you follow. Offline, browsing and search show
 downloaded music only, including artists with downloaded songs. A small grey
-**offline** label appears at the bottom right.
+**offline** label appears at the bottom left. API activity appears there while requests
+are pending; results served from cache stay silent.
 The **＋/✓** button likes or unlikes the current song. Playlists use Spotify’s custom
 order when available; local search prioritises playlists, albums, artists, then
 songs and reuses cached music.
@@ -103,7 +107,7 @@ and `spotify demo`.
 | `spot noshuf` | Turn shuffle off. |
 | `spot demo` | Toggle demo mode for macOS’s window picker. |
 | `spot refresh` | Refresh the desktop cache index and connected library. |
-| `spot reauth` | Clear sign-in; reconnect when the player next opens. |
+| `spot reauth` | Reset Spotify Sign-In to Reauthorize |
 
 The like, unlike, shuf and noshuf commands set a state rather than toggling it.
 
@@ -141,5 +145,7 @@ The player follows your Alfred theme’s colours, cursor, fonts and window styli
 while retaining its layout. Built-in themes use the available background and
 selection colours.
 
-After `spot reauth`, choose **Open Spotify Mini Player** in Alfred to sign in again.
-Your Spotify Client ID and cached music are kept.
+After `spot reauth`, choose **Open Spotify Mini Player** in Alfred to set up again.
+Sign-in, the saved Client ID and the cached shell value are cleared. The player checks `$SHELL` again;
+if no ID is exported, it prompts for one. Cached artwork and library metadata are kept.
+Spotify manages downloaded audio; this workflow does not cache it.

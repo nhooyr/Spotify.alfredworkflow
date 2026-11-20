@@ -1,6 +1,6 @@
 # Spotify.alfredworkflow
 
-Search and play music from Spotify with the `spot` keyword or <kbd>Control</kbd><kbd>Command</kbd><kbd>Space</kbd>.
+Search and play music from Spotify with the `spot` keyword or <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd>.
 
 ![Spotify Mini Player](./docs/ss.png)
 
@@ -18,7 +18,7 @@ application.
 ![Screenshot for install step 2](./docs/install-2.png)
 
 3. Select the **Hotkey** object at the top of the workflow canvas to set a hotkey.
-   I use <kbd>Control</kbd><kbd>Command</kbd><kbd>Space</kbd>.
+   I use <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd>.
 
 ![Screenshot for install step 3](./docs/install-3.png)
 
@@ -150,20 +150,20 @@ previous account’s saved lists.
 
 ### Shortcuts
 
-* <kbd>Control</kbd><kbd>Command</kbd><kbd>Space</kbd> Open the player from any app.
-* <kbd>Control</kbd><kbd>Command</kbd><kbd>Left</kbd> / <kbd>Command</kbd><kbd>P</kbd> Previous Spotify track.
-* <kbd>Control</kbd><kbd>Command</kbd><kbd>Right</kbd> / <kbd>Command</kbd><kbd>N</kbd> Next Spotify track.
-* <kbd>Control</kbd><kbd>Command</kbd><kbd>Up</kbd> / <kbd>Control</kbd><kbd>Command</kbd><kbd>Down</kbd> / <kbd>Command</kbd><kbd>S</kbd> Play/pause Spotify.
+* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd> Open the player from any app.
+* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Left</kbd> / <kbd>Cmd</kbd><kbd>P</kbd> Previous Spotify track.
+* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Right</kbd> / <kbd>Cmd</kbd><kbd>N</kbd> Next Spotify track.
+* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Up</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Down</kbd> / <kbd>Cmd</kbd><kbd>S</kbd> Play/pause Spotify.
 * <kbd>Enter</kbd> Browse the selection from its first item, or play a song.
-* <kbd>Option</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
-* <kbd>Command</kbd><kbd>Down</kbd> Open the selection, restoring its previous selection and filter.
-* <kbd>Command</kbd><kbd>Up</kbd> Go up one level, restoring the parent selection and filter.
-* <kbd>Command</kbd><kbd>5</kbd> Open **Search** for Spotify’s full catalogue.
-* <kbd>Command</kbd><kbd>Enter</kbd> Carry your current query into catalogue search.
+* <kbd>Opt</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist, or all Liked Songs directly; browse-only items open normally.
+* <kbd>Cmd</kbd><kbd>Down</kbd> Open the selection, restoring its previous selection and filter.
+* <kbd>Cmd</kbd><kbd>Up</kbd> Go up one level, restoring the parent selection and filter.
+* <kbd>Cmd</kbd><kbd>5</kbd> Open **Search** for Spotify’s full catalogue.
+* <kbd>Cmd</kbd><kbd>Enter</kbd> Carry your current query into catalogue search.
 * <kbd>Backspace</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
-* <kbd>Command</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
-* <kbd>Command</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.
-* <kbd>Escape</kbd> / <kbd>Command</kbd><kbd>W</kbd> Hide the player.
+* <kbd>Cmd</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
+* <kbd>Cmd</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.
+* <kbdEsc/kbd> / <kbd>Cmd</kbd><kbd>W</kbd> Hide the player.
 
 Only the launch Hotkey is global and configurable. All other shortcuts are fixed
 and active only in the mini player. Alfred clears the launch assignment on a fresh

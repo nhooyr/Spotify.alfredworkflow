@@ -6,6 +6,9 @@ identity (create one in Xcode → Settings → Accounts → Manage Certificates)
 C launcher are packaged into `dist/Spotify.alfredworkflow`, or the output file passed
 as the first argument. Its parent directories are created automatically.
 Run `./test.sh [WORKFLOW]` to check an export. Both scripts support `-h` and `--help`.
+Use `./build.sh --test` to build an ad hoc signed test export without a certificate.
+CI installs Spotify for its AppleScript dictionary, builds this way, then runs
+`test.sh`. Test builds skip the Finder reveal.
 
 Native binaries are cached in `~/Library/Caches/ca.aqsnow.alfred.spotify/build`.
 Source, build-script, compiler, or SDK changes invalidate the binaries. Documentation,
@@ -13,9 +16,9 @@ images, and workflow configuration are always repackaged without recompiling.
 Delete the cache directory to force a clean build. Other intermediate files live
 in a temporary directory.
 
-The build signs the app and launcher with an available Developer ID Application
-identity, otherwise an Apple Development identity. It requires certificate-backed
-signing; ad hoc signing is not used. Both executables enable Hardened Runtime;
+Release builds sign the app and launcher with an available Developer ID Application
+identity, otherwise an Apple Development identity. They require certificate-backed
+signing; `--test` uses ad hoc signing for validation. Both executables enable Hardened Runtime;
 only the app receives the Apple Events entitlement needed to control Spotify.
 Keep the same signing identity across builds so Keychain recognizes app updates.
 

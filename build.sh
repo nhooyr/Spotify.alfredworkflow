@@ -3,17 +3,23 @@ set -eu
 
 usage() {
     cat <<'EOF'
-Usage: build.sh [-h | --help] [--] [OUTPUT]
+Usage: build.sh [-h | --help] [--test] [--] [OUTPUT]
 
 Build the universal Spotify.alfredworkflow using Xcode Command Line Tools
 and an Apple Development or Developer ID Application signing identity.
 OUTPUT defaults to dist/Spotify.alfredworkflow in the project directory.
 Parent directories are created automatically.
+Use --test for an ad hoc signed test export without a certificate or Finder reveal.
 
 Native binaries are cached in ~/Library/Caches/ca.aqsnow.alfred.spotify/build.
 EOF
 }
 
+test_build=false
+if [ "${1-}" = --test ]; then
+    test_build=true
+    shift
+fi
 case ${1-} in
     -h|--help) usage; exit 0 ;;
     --) shift ;;
@@ -41,15 +47,18 @@ printf 'building v%s into %s\n' "$(awk -F '"' '/^let workflowVersion = / { print
     "$output_display" >&2
 
 project_dir=$PWD
-identities=$(security find-identity -v -p codesigning)
-signing_identity=$(printf '%s\n' "$identities" | awk '
-    /"Developer ID Application:/ && !distribution { distribution=$2 }
-    /"Apple Development:/ && !development { development=$2 }
-    END { print distribution ? distribution : development }
-')
-if [ -z "$signing_identity" ]; then
-    printf 'No signing identity found. Create an Apple Development or Developer ID Application certificate in Xcode.\n' >&2
-    exit 1
+signing_identity=-
+if [ "$test_build" = false ]; then
+    identities=$(security find-identity -v -p codesigning)
+    signing_identity=$(printf '%s\n' "$identities" | awk '
+        /"Developer ID Application:/ && !distribution { distribution=$2 }
+        /"Apple Development:/ && !development { development=$2 }
+        END { print distribution ? distribution : development }
+    ')
+    if [ -z "$signing_identity" ]; then
+        printf 'No signing identity found. Create an Apple Development or Developer ID Application certificate in Xcode.\n' >&2
+        exit 1
+    fi
 fi
 identifier=$(find src -type f -exec shasum -a 256 {} + | LC_ALL=C sort | shasum -a 256)
 identifier=${identifier%% *}
@@ -113,4 +122,4 @@ sign --entitlements src/Entitlements.plist "$app"
 ditto -c -k --norsrc "$stage" "$output"
 
 printf '%s\n' "$output_display"
-open -R "$output"
+if [ "$test_build" = false ]; then open -R "$output"; fi

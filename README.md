@@ -160,7 +160,7 @@ rate limits a refresh. A confirmed account change clears the previous account’
 * <kbd>Backspace</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
 * <kbd>Cmd</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
 * <kbd>Cmd</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.
-* <kbd>Esc/kbd> / <kbd>Cmd</kbd><kbd>W</kbd> Hide the player.
+* <kbd>Esc</kbd> / <kbd>Cmd</kbd><kbd>W</kbd> Hide the player.
 
 Only the launch Hotkey is global and configurable. All other shortcuts are fixed
 and active only in the mini player. Alfred clears the launch assignment on a fresh
@@ -174,7 +174,7 @@ or controls clears that selection. Editing a filter selects the first result.
 Switching Spaces hides the player while keeping its filter and window ready.
 
 In demo mode, the player stays visible and focusable when it loses focus.
-Run `spot demo` again or press <kbd>Esc/kbd> in the player, to exit.
+Run `spot demo` again or press <kbd>Esc</kbd> in the player, to exit.
 
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and

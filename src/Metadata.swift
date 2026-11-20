@@ -31,7 +31,7 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
         var config = dict(objects[i]["config"])
         config["keyword"] = "{var:keyword}" + (text(objects[i]["uid"]) == "REAUTH" ? " reauth" : "")
         if text(objects[i]["uid"]) == "REAUTH" {
-            config["text"] = "Reset Spotify Sign-In to Reauthorize"
+            config["text"] = "Clear Sign-In to Reauthorize"
             config["subtext"] = "Clear sign-in and Client ID; reconnect on next open"
         }
         objects[i]["config"] = config

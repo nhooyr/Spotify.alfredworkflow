@@ -1155,7 +1155,7 @@ func runIntegrationTests() {
     let keywordSetting = settings.first { text($0["variable"]) == "keyword" }
     check(text(dict(keywordSetting?["config"])["default"]) == "spot" && dict(keywordSetting?["config"])["trim"] as? Bool == true, "The shared keyword defaults to spot and trims whitespace")
     let reauth = objects.first { text($0["uid"]) == "REAUTH" }
-    check(text(dict(reauth?["config"])["text"]) == "Reset Spotify Sign-In to Reauthorize", "Reauth uses the requested description")
+    check(text(dict(reauth?["config"])["text"]) == "Clear Sign-In to Reauthorize", "Reauth uses the requested description")
     let keywords = objects.compactMap { dict($0["config"])["keyword"] as? String }
     check(keywords.contains("{var:keyword}") && keywords.contains("{var:keyword} reauth"), "Opening and reauth use the shared keyword")
     for (verb, suffix) in [("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "noshuf"), ("screenshot", "demo"), ("refresh", "refresh")] {

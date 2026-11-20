@@ -1,0 +1,14 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+      - run: brew install --cask spotify
+      - run: ./build.sh --test
+      - run: ./test.sh

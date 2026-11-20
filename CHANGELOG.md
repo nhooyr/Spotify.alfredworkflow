@@ -2,7 +2,7 @@
 
 ## Staging (v0.5.4)
 
-- Fix demo toggles recreating system input popups and needing a second open to restore normal focus.
+- Keep the active search editor when toggling demo on but toggling demo off now resets and hides the player exactly like Escape.
 - Remove deprecated Keychain APIs from the credential test fixture.
 - README.md: Minor fixes
 

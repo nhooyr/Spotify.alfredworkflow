@@ -2151,8 +2151,9 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             : [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
     }
     private func toggleScreenshotMode() {
-        setScreenshotMode(!screenshotMode)
-        if screenshotMode { NSApp.activate(ignoringOtherApps: true) }
+        if screenshotMode { hide(); return }
+        setScreenshotMode(true)
+        NSApp.activate(ignoringOtherApps: true)
         show()
     }
     private func hide() {
@@ -3447,25 +3448,28 @@ private final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         panel.makeKeyAndOrderFront(nil)
         other.makeKeyAndOrderFront(nil)
         let visibleWithoutFocus = panel.isVisible && !panel.isKeyWindow
+        let showsBeforeOff = showCount
         toggleScreenshotMode()
         let togglesOff = !screenshotMode && panel.level == .floating && panel.collectionBehavior.contains(.transient)
-        let restoresFocus = visibleWithoutFocus && panel.isKeyWindow
+        let exitsImmediately = visibleWithoutFocus && !panel.isVisible && !hotkeyHandoffAllowed && showCount == showsBeforeOff
+        show()
+        let reopened = panel.isVisible && panel.isKeyWindow && !screenshotMode
         windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
         let ignoresStaleFocusLoss = panel.isVisible && panel.isKeyWindow && !screenshotMode
         other.makeKeyAndOrderFront(nil)
-        let hidesOnFirstFocusLoss = !panel.isVisible && !screenshotMode
-        show()
-        other.makeKeyAndOrderFront(nil)
-        let firstReopenNormal = !panel.isVisible && !screenshotMode
+        let firstReopenNormal = reopened && !panel.isVisible && !screenshotMode
         toggleScreenshotMode()
         panel.cancelOperation(nil)
+        let escapeExits = !screenshotMode && !panel.isVisible && !hotkeyHandoffAllowed
+            && panel.level == .floating && panel.collectionBehavior.contains(.transient)
         return ["status": "ok", "screenshot_mode_enabled": enabled,
                 "screenshot_mode_keeps_player_on_focus_loss": keptVisible,
                 "screenshot_mode_preserves_content": unchangedCaret, "screenshot_mode_toggles_off": togglesOff,
-                "demo_off_restores_focus_immediately": restoresFocus, "demo_off_hides_on_first_focus_loss": hidesOnFirstFocusLoss,
+                "demo_toggle_off_hides_without_reopening": exitsImmediately,
+                "demo_toggle_off_matches_escape": exitsImmediately && togglesOff && escapeExits,
                 "stale_focus_loss_does_not_hide_reopened_player": ignoresStaleFocusLoss,
                 "first_reopen_after_demo_off_is_normal": firstReopenNormal,
-                "escape_exits_screenshot_mode": !screenshotMode && !hotkeyHandoffAllowed,
+                "escape_exits_screenshot_mode": escapeExits,
                 "screenshot_mode_keeps_real_track": previousTrack == currentTrackURI]
     }
 

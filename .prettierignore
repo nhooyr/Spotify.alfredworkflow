@@ -1,0 +1,10 @@
+**/*.md*
+**/*.mkd*
+**/*.markdown
+**/*.livemd
+**/*.ronn
+**/*.scd
+**/*.workbook
+**/contents.lr
+**/README
+src/vendor/

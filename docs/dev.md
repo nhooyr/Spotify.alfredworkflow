@@ -5,16 +5,28 @@ Build with `./build.sh` using Xcode Command Line Tools and an installed code-sig
 identity (create one in Xcode → Settings → Accounts → Manage Certificates). The universal macOS app and
 C launcher are packaged into `dist/Spotify.alfredworkflow`, or the output file passed
 as the first argument. Its parent directories are created automatically.
-Run `./test.sh [WORKFLOW]` to check an export. Both scripts support `-h` and `--help`.
+Run `./ci/test.sh [WORKFLOW]` to check an export. Both scripts support `-h` and `--help`.
 Use `./build.sh --test` to build an ad hoc signed test export without a certificate.
-CI installs Spotify for its AppleScript dictionary, builds this way, then runs
-`test.sh`. Test builds skip the Finder reveal.
+CI builds this way, then `ci/test.sh` installs Spotify for its AppleScript
+dictionary when `GITHUB_ACTIONS` is set. Local test runs do not install it.
+Test builds skip the Finder reveal.
+
+Run `./ci/fmt.sh` to format shell scripts, supported non-Markdown text files, Swift,
+and C with shfmt, Prettier, `swift format`, and clang-format. Local runs need shfmt,
+clang-format, Node.js/npm, and Xcode Command Line Tools; CI installs the extra tools.
+Markdown and vendored code stay outside automatic formatting. The `ci / fmt` job
+runs the same script and prints a coloured diff if formatting changes committed files.
+Run `./ci/lint.sh` for shell syntax checks, Swift type-checking on both architectures, and C syntax
+and static-analysis checks. The `ci / lint` job runs it too; it creates no application
+binaries and runs no tests. This repository has no Go code to check with `go vet`.
 
 Native binaries are cached in `~/Library/Caches/ca.aqsnow.alfred.spotify/build`.
 Source, build-script, compiler, or SDK changes invalidate the binaries. Documentation,
 images, and workflow configuration are always repackaged without recompiling.
 Delete the cache directory to force a clean build. Other intermediate files live
 in a temporary directory.
+CI restores native binaries and Swift modules with keys based on Xcode, SDK,
+architecture, and source content. npm and Homebrew downloads are cached too.
 
 Release builds sign the app and launcher with an available Developer ID Application
 identity, otherwise an Apple Development identity. They require certificate-backed
@@ -75,7 +87,7 @@ Keychain item containing dummy credentials, a mock HTTPS transport, and native p
 The temporary item is deleted after the test; the real Spotify sign-in is untouched.
 They do not operate Alfred or Spotify or change the user’s library. The integration
 screenshot is saved as `alfred-spotify-native-panel.png` in a new temporary directory;
-`test.sh` prints its path.
+`ci/test.sh` prints its path.
 
 File-based icons live in `workflow`. The build generates the copies required
 by Alfred and the app bundle. Player controls use Apple’s SF Symbols and native vector paths for the extended

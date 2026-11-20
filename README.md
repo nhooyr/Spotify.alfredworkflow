@@ -69,7 +69,7 @@ text after any folder path to filter its contents.
 | `Artists/<artist>/` | Browse an artist’s albums or play all their tracks. |
 | `Artists/<artist>/<album>/` | Browse an artist’s album. |
 | `Songs/` | Browse Liked Songs. |
-| `Songs/All` | Press Enter on **All** at the top to play the collection. |
+| `Songs/All` | Press <kbd>Enter</kbd> on **All** at the top to play the collection. |
 | `<playlist>/`, `<album>/` or `<artist>/` | Open a library folder directly, as from library search. |
 | `<artist>/<album>/` | Open a library artist’s album directly. |
 | `/` | Open Spotify catalogue search, ready for a query. |
@@ -160,7 +160,7 @@ rate limits a refresh. A confirmed account change clears the previous account’
 * <kbd>Backspace</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
 * <kbd>Cmd</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
 * <kbd>Cmd</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.
-* <kbdEsc/kbd> / <kbd>Cmd</kbd><kbd>W</kbd> Hide the player.
+* <kbd>Esc/kbd> / <kbd>Cmd</kbd><kbd>W</kbd> Hide the player.
 
 Only the launch Hotkey is global and configurable. All other shortcuts are fixed
 and active only in the mini player. Alfred clears the launch assignment on a fresh
@@ -174,7 +174,7 @@ or controls clears that selection. Editing a filter selects the first result.
 Switching Spaces hides the player while keeping its filter and window ready.
 
 In demo mode, the player stays visible and focusable when it loses focus.
-Run `spot demo` again or press Escape in the player, to exit.
+Run `spot demo` again or press <kbd>Esc/kbd> in the player, to exit.
 
 The player follows your Alfred theme’s colours, cursor, fonts and window styling,
 while retaining its layout. Built-in themes use the available background and

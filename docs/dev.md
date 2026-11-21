@@ -39,7 +39,8 @@ Keep the same signing identity across builds so Keychain recognizes app updates.
 
 `workflow/info.plist` is a source template. The build inserts the staged README
 and the version into the exported plist without changing the template. Set
-`version` in `src/main.swift` for a release.
+`version` in `src/main.swift` for a release. Keep the next unreleased section of
+`CHANGELOG.md` current as implementation changes are made.
 
 `src/main.swift` handles startup and command-line arguments.
 `src/Player.swift` owns the persistent AppKit panel. `src/Backend.swift` keeps

@@ -1,6 +1,6 @@
 // The Alfred hotkey runs this small POSIX client, without loading the AppKit
 // host.
-#include "CacheCodec.h"
+#include "Bridge.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>

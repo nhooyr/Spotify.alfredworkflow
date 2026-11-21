@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.5 (Unreleased)
+
+- Rename the shared native helpers to `Bridge.c` and `Bridge.h` to reflect their codec and build-fingerprint roles.
+
 ## v0.5.4
 
 - Proper main.swift entrypoint instead of build shenanigans.

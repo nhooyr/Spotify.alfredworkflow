@@ -100,12 +100,12 @@ else
 	for arch in arm64 x86_64; do
 		xcrun clang -O3 -arch "$arch" -mmacosx-version-min=13.0 -c src/vendor/zstddeclib.c -o "$work/zstd-$arch.o"
 		xcrun clang -O3 -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 \
-			"-DBUILD_ID=\"$identifier\"" -c src/CacheCodec.c -o "$work/codec-$arch.o"
+			"-DBUILD_ID=\"$identifier\"" -c src/Bridge.c -o "$work/bridge-$arch.o"
 		xcrun swiftc -O -whole-module-optimization -swift-version 5 -target "$arch-apple-macosx13.0" \
 			-module-cache-path "$cache_root/modules" \
-			-import-objc-header "$project_dir/src/CacheCodec.h" \
+			-import-objc-header "$project_dir/src/Bridge.h" \
 			src/*.swift \
-			"$work/zstd-$arch.o" "$work/codec-$arch.o" \
+			"$work/zstd-$arch.o" "$work/bridge-$arch.o" \
 			-framework AppKit -framework ImageIO -framework Carbon -framework Security -framework SystemConfiguration -framework Network -lsqlite3 -lz -o "$work/player-$arch"
 		xcrun clang -Os -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 \
 			"-DBUILD_ID=\"$identifier\"" src/launcher.c -o "$work/show-$arch"

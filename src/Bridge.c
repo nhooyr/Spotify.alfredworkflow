@@ -1,4 +1,4 @@
-#include "CacheCodec.h"
+#include "Bridge.h"
 #include <zlib.h>
 extern size_t ZSTD_decompress(void *, size_t, const void *, size_t);
 extern unsigned long long ZSTD_getFrameContentSize(const void *, size_t);

@@ -1,6 +1,6 @@
 # Changelog
 
-## Staging (v0.5.4)
+## v0.5.4
 
 - Proper main.swift entrypoint instead of build shenanigans.
 - GitHub Actions CI.

@@ -52,7 +52,7 @@ if [ -d "$output" ]; then
 	exit 2
 fi
 mkdir -p "$(dirname "$output")"
-printf 'building v%s into %s\n' "$(awk -F '"' '/^let workflowVersion = / { print $2 }' src/version.swift)" \
+printf 'building v%s into %s\n' "$(awk -F '"' '/^let version = / { print $2 }' src/main.swift)" \
 	"$output_display" >&2
 
 project_dir=$PWD
@@ -97,16 +97,14 @@ if [ -x "$binaries/player" ] && [ -x "$binaries/show" ]; then
 	printf 'using cached native binaries\n' >&2
 else
 	cache_work=$(mktemp -d "$cache_root/.native.XXXXXX")
-	printf 'enum Build { static let identifier = "%s" }\n' "$identifier" >"$work/Build.swift"
-	cp src/Player.swift "$work/main.swift"
 	for arch in arm64 x86_64; do
 		xcrun clang -O3 -arch "$arch" -mmacosx-version-min=13.0 -c src/vendor/zstddeclib.c -o "$work/zstd-$arch.o"
-		xcrun clang -O3 -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 -c src/CacheCodec.c -o "$work/codec-$arch.o"
+		xcrun clang -O3 -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 \
+			"-DBUILD_ID=\"$identifier\"" -c src/CacheCodec.c -o "$work/codec-$arch.o"
 		xcrun swiftc -O -whole-module-optimization -swift-version 5 -target "$arch-apple-macosx13.0" \
 			-module-cache-path "$cache_root/modules" \
 			-import-objc-header "$project_dir/src/CacheCodec.h" \
-			"$work/main.swift" "$work/Build.swift" \
-			src/version.swift src/Core.swift src/Credentials.swift src/ClientID.swift src/Theme.swift src/Artwork.swift src/Cache.swift src/DesktopMetadata.swift src/Library.swift src/Playback.swift src/Authorization.swift src/Backend.swift src/Metadata.swift src/Tests.swift \
+			src/*.swift \
 			"$work/zstd-$arch.o" "$work/codec-$arch.o" \
 			-framework AppKit -framework ImageIO -framework Carbon -framework Security -framework SystemConfiguration -framework Network -lsqlite3 -lz -o "$work/player-$arch"
 		xcrun clang -Os -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min=13.0 \

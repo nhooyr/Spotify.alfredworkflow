@@ -27,6 +27,9 @@ Delete the cache directory to force a clean build. Other intermediate files live
 in a temporary directory.
 CI restores native binaries and Swift modules with keys based on Xcode, SDK,
 architecture, and source content. npm and Homebrew downloads are cached too.
+The source fingerprint is compiled into the C code and shared with Swift through
+the bridge, so changed code restarts an older player without a version bump or
+generated Swift source.
 
 Release builds sign the app and launcher with an available Developer ID Application
 identity, otherwise an Apple Development identity. They require certificate-backed
@@ -36,8 +39,9 @@ Keep the same signing identity across builds so Keychain recognizes app updates.
 
 `workflow/info.plist` is a source template. The build inserts the staged README
 and the version into the exported plist without changing the template. Set
-`workflowVersion` in `src/version.swift` for a release.
+`version` in `src/main.swift` for a release.
 
+`src/main.swift` handles startup and command-line arguments.
 `src/Player.swift` owns the persistent AppKit panel. `src/Backend.swift` keeps
 library navigation and I/O off the main thread. Storage, the public Spotify API,
 PKCE sign-in, and the read-only desktop cache adapter are in the other Swift files.

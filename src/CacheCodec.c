@@ -3,6 +3,8 @@
 extern size_t ZSTD_decompress(void *, size_t, const void *, size_t);
 extern unsigned long long ZSTD_getFrameContentSize(const void *, size_t);
 extern unsigned ZSTD_isError(size_t);
+const char *spotify_build_identifier(void) { return BUILD_ID; }
+
 size_t spotify_gzip_decode(void *destination, size_t capacity,
                            const void *source, size_t size) {
   z_stream stream = {0};

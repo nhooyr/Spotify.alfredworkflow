@@ -2,9 +2,9 @@
 
 ## Staging (v0.5.4)
 
-- Reuse native build, Swift module, npm, and Homebrew caches in CI.
+- Proper main.swift entrypoint instead of build shenanigans.
+- GitHub Actions CI.
 - Dismiss Alfred before showing either demo mode state.
-- Group formatting, lint, and test entrypoints under `ci/`, with matching CI checks for shell, Swift, C, and non-Markdown text files.
 - Prevent system input popups during demo toggles. Toggling off keeps the player open in normal mode; Escape hides it and resets demo mode.
 - Remove deprecated Keychain APIs from the credential test fixture.
 - README.md: Minor fixes

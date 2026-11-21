@@ -4,7 +4,7 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
   let original = try Data(contentsOf: root.appendingPathComponent("workflow/info.plist"))
   var workflow =
     try PropertyListSerialization.propertyList(from: original, format: nil) as! JSONObject
-  workflow["version"] = workflowVersion
+  workflow["version"] = version
   workflow["readme"] = try String(
     contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8)
   try PropertyListSerialization.data(fromPropertyList: workflow, format: .xml, options: 0).write(
@@ -12,8 +12,8 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
   let app: JSONObject = [
     "CFBundleIdentifier": workflowID + ".player", "CFBundleName": "Spotify Mini Player",
     "CFBundleDisplayName": "Spotify Mini Player", "CFBundleExecutable": "SpotifyMiniPlayer",
-    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": workflowVersion,
-    "CFBundleVersion": workflowVersion, "LSUIElement": true, "LSMinimumSystemVersion": "13.0",
+    "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
+    "CFBundleVersion": version, "LSUIElement": true, "LSMinimumSystemVersion": "13.0",
     "NSHighResolutionCapable": true,
     "NSAppleEventsUsageDescription": "Control playback in the Spotify desktop app.",
     "CFBundleIconFile": "icon.png",

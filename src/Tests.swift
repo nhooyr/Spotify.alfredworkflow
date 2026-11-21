@@ -2373,7 +2373,7 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
       text(generated["readme"]) == readme, "Generated help follows the staged README on every build"
     )
     check(
-      text(generated["version"]) == workflowVersion,
+      text(generated["version"]) == version,
       "The release version comes from Swift instead of the template")
     check(
       text(generated["bundleid"]) == text(template["bundleid"])
@@ -2547,7 +2547,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
       }
     }
     if connected != 0 { return [:] }
-    let packet = try! jsonData(["command": command, "build": Build.identifier]) + Data([10])
+    let packet = try! jsonData(["command": command, "build": buildIdentifier]) + Data([10])
     _ = packet.withUnsafeBytes { write(fd, $0.baseAddress, packet.count) }
     var bytes = [UInt8](repeating: 0, count: 8192)
     var data = Data()

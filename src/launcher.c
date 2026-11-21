@@ -1,5 +1,6 @@
 // The Alfred hotkey runs this small POSIX client, without loading the AppKit
 // host.
+#include "CacheCodec.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -14,9 +15,6 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#ifndef BUILD_ID
-#define BUILD_ID "development"
-#endif
 extern char **environ;
 static const char *command = "show";
 static char directory[PATH_MAX],

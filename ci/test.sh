@@ -33,6 +33,7 @@ cd "$(dirname "$0")/.."
 
 if [ "${GITHUB_ACTIONS-}" ]; then
 	brew install --cask spotify
+	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Spotify.app
 fi
 if [ ! -f "$workflow" ]; then
 	printf 'Workflow not found: %s\n' "$workflow" >&2

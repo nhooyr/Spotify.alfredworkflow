@@ -2,7 +2,7 @@
 
 ## v0.5.5 (Unreleased)
 
-- Document changelog maintenance and `Unreleased` capitalization rules in `AGENTS.md`.
+- Support development version tags while keeping macOS bundle versions numeric.
 - Rename the shared native helpers to `Bridge.c` and `Bridge.h` to reflect their codec and build-fingerprint roles.
 
 ## v0.5.4

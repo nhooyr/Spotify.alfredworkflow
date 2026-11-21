@@ -52,7 +52,7 @@ if [ -d "$output" ]; then
 	exit 2
 fi
 mkdir -p "$(dirname "$output")"
-printf 'building v%s into %s\n' "$(awk -F '"' '/^let version = / { print $2 }' src/main.swift)" \
+printf 'building %s into %s\n' "$(awk -F '"' '/^let version = / { print $2 }' src/main.swift)" \
 	"$output_display" >&2
 
 project_dir=$PWD

@@ -2342,6 +2342,17 @@ private func spawnClient(_ url: URL, _ arguments: [String] = [], environment: [S
   return String(decoding: data, as: UTF8.self)
 }
 private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
+  for input in ["0.5.5", "0.5.5-dev", "v0.5.5-dev", "v0.5.5-dev.1+build.2", "0.5.5+build"] {
+    check(
+      try appBundleVersion(input) == "0.5.5",
+      "Version labels produce numeric native bundle versions")
+  }
+  for input in ["", "vnext", "v0.5-dev"] {
+    do {
+      _ = try appBundleVersion(input)
+      check(false, "Invalid native bundle versions must be rejected")
+    } catch {}
+  }
   let root = tempDirectory("spotify-metadata-")
   defer { try? FileManager.default.removeItem(at: root) }
   let stage = root.appendingPathComponent("stage")
@@ -2368,6 +2379,17 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
         from: Data(contentsOf: stage.appendingPathComponent("info.plist")), format: nil)
       as! JSONObject
     let after = try Data(contentsOf: source)
+    let app =
+      try PropertyListSerialization.propertyList(
+        from: Data(
+          contentsOf: stage.appendingPathComponent("Spotify Mini Player.app/Contents/Info.plist")),
+        format: nil) as! JSONObject
+    let nativeVersion = try appBundleVersion(version)
+    check(
+      text(app["CFBundleVersion"]) == nativeVersion
+        && text(app["CFBundleShortVersionString"]) == nativeVersion,
+      "Native bundle metadata uses the numeric version while workflow metadata preserves the full label"
+    )
     check(after == original, "Metadata generation never rewrites its input template")
     check(
       text(generated["readme"]) == readme, "Generated help follows the staged README on every build"

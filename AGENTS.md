@@ -1,4 +1,4 @@
 # Project instructions
 
-- Update `CHANGELOG.md` under the next release as changes are made.
+- Record important app changes in `CHANGELOG.md` under the next release; omit contributor-instruction changes.
 - Use the exact capitalization `Unreleased` in changelog headings.

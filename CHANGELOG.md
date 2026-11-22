@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.5 (Unreleased)
+## v0.6.0
 
 - Support development version tags while keeping macOS bundle versions numeric.
 - Minor Player.swift fix.

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.1
+
+- Restore README badges while keeping them out of Alfred’s embedded help.
+
 ## v0.6.0
 
 - Support development version tags while keeping macOS bundle versions numeric.

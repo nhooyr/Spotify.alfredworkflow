@@ -2370,7 +2370,24 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
   try original.write(to: source)
   try "Unstaged README must not replace the export snapshot.".write(
     to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
-  for readme in ["Initial staged README.", "Updated staged README with new documentation."] {
+  let ciImage =
+    "![ci](https://github.com/nhooyr/Spotify.alfredworkflow/actions/workflows/ci.yml/badge.svg?branch=main)"
+  let ciLink = "https://github.com/nhooyr/Spotify.alfredworkflow/actions/workflows/ci.yml"
+  let releaseImage =
+    "![GitHub Release](https://img.shields.io/github/v/release/nhooyr/Spotify.alfredworkflow?include_prereleases&color=64C864)"
+  let releaseLink = "https://github.com/nhooyr/Spotify.alfredworkflow/releases"
+  let body =
+    "\n\n![Player](./docs/ss.png)\n\n![Remote cover](https://example.com/cover.png)\n\n[CI details](\(ciLink))\n"
+  let heading = "# Spotify.alfredworkflow"
+  for (readme, help) in [
+    ("Initial staged README.", "Initial staged README."),
+    (
+      "Updated staged README with new documentation.",
+      "Updated staged README with new documentation."
+    ),
+    ("\(heading) [\(ciImage)](\(ciLink)) \(releaseImage)" + body, heading + body),
+    ("\(heading) \(ciImage) [\(releaseImage)](\(releaseLink))" + body, heading + body),
+  ] {
     try readme.write(
       to: stage.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
     try writeWorkflowMetadata(root, stage: stage)
@@ -2392,8 +2409,11 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
     )
     check(after == original, "Metadata generation never rewrites its input template")
     check(
-      text(generated["readme"]) == readme, "Generated help follows the staged README on every build"
-    )
+      text(generated["readme"]) == help,
+      "Generated help omits badges while preserving staged documentation and screenshots")
+    check(
+      try String(contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8) == readme,
+      "Generating embedded help leaves the packaged README unchanged")
     check(
       text(generated["version"]) == version,
       "The release version comes from Swift instead of the template")

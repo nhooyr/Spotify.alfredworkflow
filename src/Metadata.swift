@@ -6,8 +6,11 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
   var workflow =
     try PropertyListSerialization.propertyList(from: original, format: nil) as! JSONObject
   workflow["version"] = version
-  workflow["readme"] = try String(
-    contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8)
+  let readme = try String(contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8)
+  workflow["readme"] = readme.replacingOccurrences(
+    of:
+      #"[ \t]*\[?!\[[^\]\r\n]*\]\(https://(?:github\.com/[^)\r\n]*/badge\.svg(?:\?[^)\r\n]*)?|img\.shields\.io/[^)\r\n]*)\)(?:\]\([^)\r\n]*\))?"#,
+    with: "", options: .regularExpression)
   try PropertyListSerialization.data(fromPropertyList: workflow, format: .xml, options: 0).write(
     to: stage.appendingPathComponent("info.plist"))
   let app: JSONObject = [

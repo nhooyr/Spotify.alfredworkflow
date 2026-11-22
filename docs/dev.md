@@ -38,7 +38,8 @@ only the app receives the Apple Events entitlement needed to control Spotify.
 Keep the same signing identity across builds so Keychain recognizes app updates.
 
 `workflow/info.plist` is a source template. The build inserts the staged README
-and the version into the exported plist without changing the template. Set
+and the version into the exported plist without changing the template. Badges stay
+in the source and packaged README; only the embedded help omits them. Set
 `version` in `src/main.swift` for a release. A label such as `v0.5.5-dev` is kept
 in the workflow metadata and build output; the macOS bundle uses its numeric part,
 `0.5.5`. Keep the next `Unreleased` section of `CHANGELOG.md` focused on important

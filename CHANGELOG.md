@@ -3,7 +3,7 @@
 ## v0.5.5 (Unreleased)
 
 - Support development version tags while keeping macOS bundle versions numeric.
-- Rename the shared native helpers to `Bridge.c` and `Bridge.h` to reflect their codec and build-fingerprint roles.
+- Minor Player.swift fix.
 
 ## v0.5.4
 

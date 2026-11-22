@@ -2622,21 +2622,40 @@ func runIntegrationTests(screenshot: URL? = nil) {
     }
     check(text(result["status"]) == "ok", command + " completed")
   }
+  func waitForDemoWindow(mode: Bool, shows: Double) -> JSONObject {
+    let deadline = Date().addingTimeInterval(3)
+    var state = request("test-demo-windows")
+    func ready() -> Bool {
+      ["active", "key", "visible", "editor", "handoff"].allSatisfy { state[$0] as? Bool == true }
+        && state["demo"] as? Bool == mode && number(state["shows"]) == shows
+    }
+    while !ready(), Date() < deadline {
+      usleep(5_000)
+      state = request("test-demo-windows")
+    }
+    print("demo window: \(String(decoding: try! jsonData(state), as: UTF8.self))")
+    check(ready(), "Demo window finishes activation and focus for mode=\(mode), shows=\(shows)")
+    return state
+  }
+  let showsBeforePrepare = number(request("state")["shows"])
   _ = request("test-demo-prepare")
-  usleep(150_000)  // Let AppKit finish creating the field editor's helper windows.
-  let demoWindows = request("test-demo-windows")["windows"] as? [Int]
-  check(demoWindows != nil, "Demo test reports its native windows")
+  let prepared = waitForDemoWindow(mode: false, shows: showsBeforePrepare + 1)
+  // AppKit creates hidden input helpers lazily; check visible windows and editor reuse.
+  let demoWindows = prepared["visibleWindows"] as? [Int]
+  let demoEditor = text(prepared["editorID"])
+  check(demoWindows?.count == 1, "Demo test starts with only the player visible")
+  check(!demoEditor.isEmpty, "Demo test reports its active search editor")
   for index in 0..<6 {
     let showsBefore = number(request("state")["shows"])
     spawnClient(workflow.appendingPathComponent("show"), ["--screenshot"], environment: env)
-    usleep(50_000)
-    let state = request("test-demo-windows")
+    let state = waitForDemoWindow(mode: index % 2 == 0, shows: showsBefore + 1)
     check(state["demo"] as? Bool == (index % 2 == 0), "One demo command changes mode exactly once")
     check(state["visible"] as? Bool == true, "Demo toggles leave the player open in either mode")
     check(state["editor"] as? Bool == true, "Demo toggles retain the active search editor")
+    check(text(state["editorID"]) == demoEditor, "Demo toggles reuse the same search editor")
     check(
-      state["windows"] as? [Int] == demoWindows,
-      "Demo toggles do not recreate system input popup windows")
+      state["visibleWindows"] as? [Int] == demoWindows,
+      "Demo toggles keep only the original player window visible")
     check(
       number(request("state")["shows"]) == showsBefore + 1, "Each demo toggle shows the player once"
     )

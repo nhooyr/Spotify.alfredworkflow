@@ -2642,17 +2642,22 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if let theme = value["theme"] as? [String: String] { themeContext = theme }
     if testMode && value["command"] as? String == "test-demo-prepare" {
+      setScreenshotMode(false)
       demo()
       search.isEnabled = true
       setSearchText("")
+      NSApp.activate(ignoringOtherApps: true)
       show()
       return ["status": "ok"]
     }
     if testMode && value["command"] as? String == "test-demo-windows" {
       return [
-        "status": "ok", "windows": NSApp.windows.map { $0.windowNumber }.sorted(),
-        "editor": search.currentEditor() != nil, "visible": panel.isVisible,
-        "demo": screenshotMode,
+        "status": "ok",
+        "visibleWindows": NSApp.windows.filter { $0.isVisible }.map { $0.windowNumber }.sorted(),
+        "editor": search.currentEditor() != nil,
+        "editorID": search.currentEditor().map { String(describing: ObjectIdentifier($0)) } ?? "",
+        "visible": panel.isVisible, "active": NSApp.isActive, "key": panel.isKeyWindow,
+        "handoff": hotkeyHandoffAllowed, "shows": showCount, "demo": screenshotMode,
       ]
     }
     if testMode && value["command"] as? String == "test-screenshot-mode" {

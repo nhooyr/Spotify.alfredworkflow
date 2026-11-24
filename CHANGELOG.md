@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.2 (Unreleased)
+## v0.6.2
 
 - Keep Alfred command results and workflow blocks in README order.
 - Use `spot mini` to open the mini player without conflicting with the Spotify app.

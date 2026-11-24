@@ -154,8 +154,8 @@ static int launch(void) {
 
 int main(int argc, char **argv) {
   if (argc > 1) {
-    const char *choices[] = {"hotkey",    "like",       "unlike", "shuffle",
-                             "noshuffle", "screenshot", "refresh"};
+    const char *choices[] = {"hotkey",    "like",       "unlike",  "shuffle",
+                             "noshuffle", "screenshot", "refresh", "quit"};
     int found = 0;
     for (size_t i = 0; i < sizeof(choices) / sizeof(*choices); i++) {
       if (strncmp(argv[1], "--", 2) == 0 &&
@@ -178,7 +178,10 @@ int main(int argc, char **argv) {
   if (snprintf(endpoint, sizeof(endpoint), "%s/player.sock", directory) >=
       (int)sizeof(endpoint))
     return 1;
-  if (send_command() == 0)
+  int quitting = strcmp(command, "quit") == 0;
+  if (!quitting && send_command() == 0)
+    return 0;
+  if (quitting && access(directory, F_OK) < 0 && errno == ENOENT)
     return 0;
   if (mkdir(directory, 0700) && errno != EEXIST)
     return 1;
@@ -196,6 +199,22 @@ int main(int argc, char **argv) {
   if (lock < 0 || flock(lock, LOCK_EX))
     return 1;
   int state = send_command();
+  if (quitting) {
+    if (state >= 0) {
+      for (int i = 0; i < 300; i++) {
+        if (access(endpoint, F_OK) < 0 && errno == ENOENT) {
+          close(lock);
+          return 0;
+        }
+        usleep(10000);
+      }
+      fputs("Spotify Mini Player did not quit. Try again.\n", stderr);
+      close(lock);
+      return 1;
+    }
+    close(lock);
+    return 0;
+  }
   if (state == 0) {
     close(lock);
     return 0;

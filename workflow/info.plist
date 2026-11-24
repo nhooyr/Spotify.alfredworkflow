@@ -47,6 +47,19 @@
 				<true/>
 			</dict>
 		</array>
+		<key>COMMAND_QUIT</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_QUIT</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+		</array>
 		<key>COMMAND_REFRESH</key>
 		<array>
 			<dict>
@@ -603,6 +616,50 @@
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>{var:keyword} quit</string>
+				<key>subtext</key>
+				<string>Open a fresh player next time</string>
+				<key>text</key>
+				<string>Quit mini player</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>COMMAND_QUIT</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --quit</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_QUIT</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
 	</array>
 	<key>uidata</key>
 	<dict>
@@ -619,6 +676,13 @@
 			<integer>300</integer>
 			<key>ypos</key>
 			<integer>930</integer>
+		</dict>
+		<key>ACTION_QUIT</key>
+		<dict>
+			<key>xpos</key>
+			<integer>300</integer>
+			<key>ypos</key>
+			<integer>1320</integer>
 		</dict>
 		<key>ACTION_REFRESH</key>
 		<dict>
@@ -668,6 +732,13 @@
 			<integer>50</integer>
 			<key>ypos</key>
 			<integer>930</integer>
+		</dict>
+		<key>COMMAND_QUIT</key>
+		<dict>
+			<key>xpos</key>
+			<integer>50</integer>
+			<key>ypos</key>
+			<integer>1320</integer>
 		</dict>
 		<key>COMMAND_REFRESH</key>
 		<dict>

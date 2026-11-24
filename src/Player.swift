@@ -849,7 +849,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var offline = false
   private var apiActive = false
   private var apiActivityVisible = false
-  private var apiActivityShownAt = Date.distantPast
   private var apiActivityWork: DispatchWorkItem?
   private let toggle = IconButton()
   private let like = IconButton()
@@ -922,6 +921,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var wasShown = false
   private var showCount = 0
   private var screenshotModeTestResult: [String: Any]?
+  private var apiActivityTestResult: [String: Any]?
   private var inlineError: String?
   private var statusTimer: Timer?
   private var lifeTimer: Timer?
@@ -2024,14 +2024,21 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     launchHotkeyStamp = stamp
     loadedLaunchHotkey = true
   }
+  private func quit() {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { NSApp.terminate(nil) }
+  }
   private func key(_ event: NSEvent) -> Bool {
+    let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+    let key = event.charactersIgnoringModifiers ?? ""
+    if modifiers == .command && key.lowercased() == "q" {
+      quit()
+      return true
+    }
     if launchHotkey?.matches(event) == true {
       collapseSearchSelection()
       showForHotkey(focused: true)
       return true
     }
-    let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-    let key = event.charactersIgnoringModifiers ?? ""
     if modifiers.isEmpty && event.keyCode == 53 {
       hide()
       return true
@@ -2463,24 +2470,19 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       let work = DispatchWorkItem { [weak self] in
         guard let self = self, self.apiActive else { return }
         self.apiActivityVisible = true
-        self.apiActivityShownAt = Date()
         self.renderStatus()
       }
       apiActivityWork = work
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-    } else if !active {
-      let remaining = max(0, 0.35 - Date().timeIntervalSince(apiActivityShownAt))
-      if remaining == 0 {
-        apiActivityVisible = false
-      } else {
-        let work = DispatchWorkItem { [weak self] in
-          guard let self = self, !self.apiActive else { return }
-          self.apiActivityVisible = false
-          self.renderStatus()
-        }
-        apiActivityWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
+    } else if !active && apiActivityVisible {
+      // Keep one indicator across short gaps between paginated API requests.
+      let work = DispatchWorkItem { [weak self] in
+        guard let self = self, !self.apiActive else { return }
+        self.apiActivityVisible = false
+        self.renderStatus()
       }
+      apiActivityWork = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
     renderStatus()
   }
@@ -2640,7 +2642,24 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { NSApp.terminate(nil) }
       return ["status": "restart"]
     }
+    if value["command"] as? String == "quit" {
+      quit()
+      return ["status": "ok"]
+    }
+    if testMode, let command = value["command"] as? String,
+      ["test-quit-panel", "test-quit-search"].contains(command)
+    {
+      let event = NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "q",
+        charactersIgnoringModifiers: "q", isARepeat: false, keyCode: 12)!
+      let handled =
+        command == "test-quit-search"
+        ? search.performKeyEquivalent(with: event) : panel.performKeyEquivalent(with: event)
+      return ["status": handled ? "ok" : "error"]
+    }
     if let theme = value["theme"] as? [String: String] { themeContext = theme }
+
     if testMode && value["command"] as? String == "test-demo-prepare" {
       setScreenshotMode(false)
       demo()
@@ -2679,7 +2698,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-single-line" { return singleLineChecks() }
     if testMode && value["command"] as? String == "test-offline-ui" { return offlineUIChecks() }
-    if testMode && value["command"] as? String == "test-api-activity" { return apiActivityChecks() }
+    if testMode && value["command"] as? String == "test-api-activity" {
+      apiActivityTestResult = nil
+      Task { @MainActor [weak self] in
+        guard let self = self else { return }
+        self.apiActivityTestResult = await self.apiActivityChecks()
+      }
+      return ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-api-activity-result" {
+      return apiActivityTestResult ?? ["status": "pending"]
+    }
     if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
     if testMode && value["command"] as? String == "test-playback-context" {
       return playbackContextChecks()
@@ -2881,6 +2910,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
           ? refreshRequests == refreshes + 1
           : transportCommands == transports + 1 && lastTransportCommand == command)
     }
+    let systemQuit =
+      !key(event(12, "q", [.control, .command]))
+      && !key(event(12, "q", [.shift, .command]))
     let objects: [JSONObject] = [
       [
         "uid": "HOTKEY", "type": "alfred.workflow.trigger.hotkey",
@@ -2895,6 +2927,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let fixedAfterChange = key(event(1, "s", .command)) && lastTransportCommand == "toggle"
     return [
       "status": "ok", "fixed_shortcuts_work_without_alfred_assignments": fixed,
+      "other_quit_modifiers_remain_unhandled": systemQuit,
       "only_launch_hotkey_is_configurable": customized && fixedAfterChange,
       "fixed_keys_do_not_open_apps_or_rebuild_window": beforeShows + 1 == showCount
         && beforeOpened + 1 == openedSpotify,
@@ -4556,16 +4589,33 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "online_hides_offline_label": hidden,
     ]
   }
-  private func apiActivityChecks() -> [String: Any] {
+  @MainActor
+  private func apiActivityChecks() async -> [String: Any] {
     demo()
     setSearchText("")
     let cachedSilent = activityStatus.isHidden
     receive(["type": "api-activity", "api_active": true])
     let shortRequestsQuiet = activityStatus.isHidden
-    apiActivityWork?.perform()
+    let revealDeadline = Date().addingTimeInterval(1)
+    while activityStatus.isHidden, Date() < revealDeadline {
+      try? await Task.sleep(nanoseconds: 5_000_000)
+    }
     let library =
       !activityStatus.isHidden && activityStatus.stringValue == "Syncing with Spotify…"
       && activityStatus.frame.minX == 12 && activityStatus.textColor == playerTheme.secondary
+    // Let the former minimum display lifetime expire during a long first request.
+    try? await Task.sleep(nanoseconds: 400_000_000)
+    receive(["type": "api-activity", "api_active": false])
+    let betweenPages = !activityStatus.isHidden && apiActivityWork != nil
+    let pendingHide = apiActivityWork
+    receive(["type": "api-activity", "api_active": true])
+    pendingHide?.perform()
+    let resumed = !activityStatus.isHidden && apiActivityWork == nil
+    let navigation = source.indices.allSatisfy { index in
+      table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+      previewSelection()
+      return !activityStatus.isHidden && activityStatus.stringValue == "Syncing with Spotify…"
+    }
     enterCatalog("query")
     let search = activityStatus.stringValue == "Searching Spotify…"
     showError("Spotify request failed")
@@ -4591,6 +4641,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "status": "ok", "cached_results_have_no_activity": cachedSilent,
       "short_requests_avoid_flicker": shortRequestsQuiet && fastRequestNoFlash,
       "library_activity_on_bottom_left": library, "catalogue_search_shows_api_activity": search,
+      "paginated_requests_keep_one_indicator": betweenPages && resumed,
+      "home_navigation_keeps_activity_stable": navigation,
       "errors_remain_visible_beside_activity": errorVisible,
       "offline_takes_priority_on_left": offlineWins,
       "completion_hides_activity_and_retains_error": finished,
@@ -4983,7 +5035,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     apiActivityWork = nil
     apiActive = false
     apiActivityVisible = false
-    apiActivityShownAt = .distantPast
     offline = false
     activityStatus.isHidden = true
     routeKind = "home"

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Keep Spotify’s sync indicator steady between startup requests.
+- Add `spot quit` and Command–Q to stop the mini player and start fresh on its next launch.
+
 ## v0.6.1
 
 - Restore README badges while keeping them out of Alfred’s embedded help.

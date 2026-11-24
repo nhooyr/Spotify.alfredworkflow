@@ -133,7 +133,8 @@ and `spotify demo`.
 | `spot unshuf` | Turn shuffle off. |
 | `spot demo` | Toggle demo mode for taking screenshots. |
 | `spot refresh` | Refresh the desktop cache index and connected library. |
-| `spot reauth` | Clear Sign-In to Reauthorize |
+| `spot quit` | Quit the mini player; the next open starts fresh. |
+| `spot reauth` | Clear sign-in to reauthorize |
 
 The like, unlike, shuf and unshuf commands set a state rather than toggling it.
 
@@ -161,6 +162,7 @@ rate limits a refresh. A confirmed account change clears the previous account’
 * <kbd>Cmd</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
 * <kbd>Cmd</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.
 * <kbd>Esc</kbd> / <kbd>Cmd</kbd><kbd>W</kbd> Hide the player.
+* <kbd>Cmd</kbd><kbd>Q</kbd> Quit the player, like `spot quit`.
 
 Only the launch Hotkey is global and configurable. All other shortcuts are fixed
 and active only in the mini player. Alfred clears the launch assignment on a fresh

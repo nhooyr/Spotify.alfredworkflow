@@ -2461,7 +2461,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "Opening and reauth use the shared keyword")
   for (verb, suffix) in [
     ("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "unshuf"),
-    ("screenshot", "demo"), ("refresh", "refresh"),
+    ("screenshot", "demo"), ("refresh", "refresh"), ("quit", "quit"),
   ] {
     let input = objects.first { text($0["uid"]) == "COMMAND_" + verb.uppercased() }
     let action = objects.first { text($0["uid"]) == "ACTION_" + verb.uppercased() }
@@ -2478,7 +2478,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
       Set(resolved)
         == Set([
           prefix, prefix + " reauth", prefix + " like", prefix + " unlike", prefix + " shuf",
-          prefix + " unshuf", prefix + " demo", prefix + " refresh",
+          prefix + " unshuf", prefix + " demo", prefix + " refresh", prefix + " quit",
         ]), "Changing one keyword updates every command")
   }
   check(
@@ -2554,6 +2554,10 @@ func runIntegrationTests(screenshot: URL? = nil) {
   check(
     ((failed["items"] as? [JSONObject])?.first?["valid"] as? Bool) == false,
     "Inline reauth errors cannot open a falsely successful result")
+  spawnClient(workflow.appendingPathComponent("show"), ["--quit"], environment: env)
+  check(
+    !FileManager.default.fileExists(atPath: env["SPOTIFY_NATIVE_SOCKET_DIR"]!),
+    "Quitting an absent player succeeds without starting or creating it")
   let parent = Process()
   parent.executableURL = URL(fileURLWithPath: "/bin/sleep")
   parent.arguments = ["60"]
@@ -2728,6 +2732,39 @@ func runIntegrationTests(screenshot: URL? = nil) {
   liveParent.executableURL = URL(fileURLWithPath: "/bin/sleep")
   liveParent.arguments = ["20"]
   try! liveParent.run()
+  for command in ["test-quit-panel", "test-quit-search"] {
+    let host = Process()
+    host.executableURL = executable
+    host.arguments = ["--test-server", "--lifetime-pid", String(liveParent.processIdentifier)]
+    host.environment = env
+    host.standardOutput = FileHandle.nullDevice
+    host.standardError = FileHandle.nullDevice
+    try! host.run()
+    let deadline = Date().addingTimeInterval(6)
+    while request("state")["pid"] == nil && Date() < deadline { usleep(20000) }
+    check(request("state")["pid"] != nil, "Command-Q test host starts")
+    if command == "test-quit-search" {
+      _ = request("test-demo-prepare")
+      check(
+        request("test-demo-windows")["editor"] as? Bool == true,
+        "Command-Q works with the search field editor active")
+    } else {
+      check(
+        text(request("state")["connection"]) != "connected",
+        "Command-Q also works before Spotify is connected")
+    }
+    check(text(request(command)["status"]) == "ok", "Command-Q is handled by the native responder")
+    host.waitUntilExit()
+    check(host.terminationStatus == 0, "Command-Q exits the player normally")
+    check(
+      request("state").isEmpty
+        && !FileManager.default.fileExists(
+          atPath: env["SPOTIFY_NATIVE_SOCKET_DIR"]! + "/player.sock"),
+      "Command-Q stops the process and cleans up its socket")
+    check(liveParent.isRunning, "Command-Q leaves Alfred's lifetime owner running")
+  }
+  print(
+    "Command-Q checks passed: search field, disconnected setup, process exit, and socket cleanup.")
   let live = Process()
   live.executableURL = executable
   live.arguments = ["--test-backend", "--lifetime-pid", String(liveParent.processIdentifier)]
@@ -2748,9 +2785,52 @@ func runIntegrationTests(screenshot: URL? = nil) {
   check(
     number(liveState["backend_pid"]) == number(liveState["pid"]),
     "Library backend runs in the same native process")
+  let preserved = URL(fileURLWithPath: env["alfred_workflow_cache"]!)
+    .appendingPathComponent("quit-preserved")
+  try! Data("Keep cached metadata and artwork".utf8).write(to: preserved)
+  spawnClient(workflow.appendingPathComponent("show"), ["--quit"], environment: env)
+  live.waitUntilExit()
+  check(liveParent.isRunning, "Quitting the player leaves its Alfred lifetime owner running")
+  check(
+    !FileManager.default.fileExists(atPath: env["SPOTIFY_NATIVE_SOCKET_DIR"]! + "/player.sock"),
+    "spot quit stops the player and its in-process backend and removes the socket")
+  spawnClient(workflow.appendingPathComponent("show"), ["--quit"], environment: env)
+  check(request("state").isEmpty, "Repeated quit commands never restart the player")
+  let freshRoot = root.appendingPathComponent("fresh-launch")
+  let freshLauncher = freshRoot.appendingPathComponent("show")
+  let freshHost = freshRoot.appendingPathComponent(
+    "Spotify Mini Player.app/Contents/MacOS/SpotifyMiniPlayer")
+  try! FileManager.default.createDirectory(
+    at: freshHost.deletingLastPathComponent(), withIntermediateDirectories: true)
+  try! FileManager.default.copyItem(at: workflow.appendingPathComponent("show"), to: freshLauncher)
+  let quotedExecutable = "'" + executable.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+  try!
+    "#!/bin/sh\nexec \(quotedExecutable) --test-backend --lifetime-pid \(liveParent.processIdentifier)\n"
+    .write(to: freshHost, atomically: true, encoding: .utf8)
+  try! FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: freshHost.path)
+  spawnClient(freshLauncher, environment: env)
+  var freshState: JSONObject = [:]
+  let freshDeadline = Date().addingTimeInterval(6)
+  repeat {
+    freshState = request("state")
+    if text(freshState["connection"]) == "credentials" { break }
+    usleep(20000)
+  } while Date() < freshDeadline
+  check(
+    number(freshState["pid"]) != number(liveState["pid"])
+      && number(freshState["pid"]) > 0 && number(freshState["shows"]) == 1
+      && text(freshState["connection"]) == "credentials",
+    "Opening after quit starts a fresh player process exactly once")
+  check(
+    FileManager.default.fileExists(atPath: preserved.path),
+    "Quitting preserves cached metadata and artwork")
+  spawnClient(freshLauncher, ["--quit"], environment: env)
+  check(request("state").isEmpty, "The fresh player can also be quit cleanly")
   liveParent.terminate()
   liveParent.waitUntilExit()
-  live.waitUntilExit()
+  print(
+    "Quit launcher checks passed: absent player, backend shutdown, retained cache, and a fresh next launch."
+  )
   let snapshot = screenshot ?? root.appendingPathComponent("player.png")
   _ = run(executable, ["--snapshot", snapshot.path], environment: env)
   check(

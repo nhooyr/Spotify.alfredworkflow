@@ -21,95 +21,17 @@
 				<false/>
 			</dict>
 		</array>
-		<key>COMMAND_LIKE</key>
+		<key>COMMANDS</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
-				<string>ACTION_LIKE</string>
+				<string>ROUTE_COMMAND</string>
 				<key>modifiers</key>
 				<integer>0</integer>
 				<key>modifiersubtext</key>
 				<string></string>
 				<key>vitoclose</key>
-				<true/>
-			</dict>
-		</array>
-		<key>COMMAND_NOSHUFFLE</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>ACTION_NOSHUFFLE</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<true/>
-			</dict>
-		</array>
-		<key>COMMAND_QUIT</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>ACTION_QUIT</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<true/>
-			</dict>
-		</array>
-		<key>COMMAND_REFRESH</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>ACTION_REFRESH</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<true/>
-			</dict>
-		</array>
-		<key>COMMAND_SCREENSHOT</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>ACTION_SCREENSHOT</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<true/>
-			</dict>
-		</array>
-		<key>COMMAND_SHUFFLE</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>ACTION_SHUFFLE</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<true/>
-			</dict>
-		</array>
-		<key>COMMAND_UNLIKE</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>ACTION_UNLIKE</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<true/>
+				<false/>
 			</dict>
 		</array>
 		<key>HOTKEY</key>
@@ -125,7 +47,7 @@
 				<true/>
 			</dict>
 		</array>
-		<key>OPEN</key>
+		<key>REAUTH_RESULT</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
@@ -138,20 +60,7 @@
 				<true/>
 			</dict>
 		</array>
-		<key>REAUTH</key>
-		<array>
-			<dict>
-				<key>destinationuid</key>
-				<string>CLEAR_ACTION</string>
-				<key>modifiers</key>
-				<integer>0</integer>
-				<key>modifiersubtext</key>
-				<string></string>
-				<key>vitoclose</key>
-				<false/>
-			</dict>
-		</array>
-		<key>REAUTH_RESULT</key>
+		<key>ROUTE_COMMAND</key>
 		<array>
 			<dict>
 				<key>destinationuid</key>
@@ -160,6 +69,104 @@
 				<integer>0</integer>
 				<key>modifiersubtext</key>
 				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_MINI</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_LIKE</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_LIKE</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_UNLIKE</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_UNLIKE</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_SHUFFLE</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_SHUFFLE</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_NOSHUFFLE</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_NOSHUFFLE</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_REFRESH</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_REFRESH</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>CLEAR_ACTION</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_REAUTH</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_SCREENSHOT</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_SCREENSHOT</string>
+				<key>vitoclose</key>
+				<true/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>ACTION_QUIT</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>ROUTE_QUIT</string>
 				<key>vitoclose</key>
 				<true/>
 			</dict>
@@ -175,27 +182,6 @@
 	<string>Spotify</string>
 	<key>objects</key>
 	<array>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} mini</string>
-				<key>subtext</key>
-				<string>Browse and play music</string>
-				<key>text</key>
-				<string>Show Spotify Mini Player</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>OPEN</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
 		<dict>
 			<key>config</key>
 			<dict>
@@ -235,6 +221,212 @@
 				<key>escaping</key>
 				<integer>0</integer>
 				<key>script</key>
+				<string>exec ./show --hotkey</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>HOTKEY_PLAYER</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>alfredfiltersresults</key>
+				<false/>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>keyword</key>
+				<string>{var:keyword}</string>
+				<key>queuedelayimmediatelyinitially</key>
+				<true/>
+				<key>queuedelaymode</key>
+				<integer>0</integer>
+				<key>queuemode</key>
+				<integer>1</integer>
+				<key>runningsubtext</key>
+				<string></string>
+				<key>script</key>
+				<string>exec ./show --commands "$1"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>subtext</key>
+				<string>Choose a command or type its name</string>
+				<key>title</key>
+				<string>Spotify commands</string>
+				<key>type</key>
+				<integer>0</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>COMMANDS</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>conditions</key>
+				<array>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>mini</string>
+						<key>outputlabel</key>
+						<string>mini</string>
+						<key>uid</key>
+						<string>ROUTE_MINI</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>like</string>
+						<key>outputlabel</key>
+						<string>like</string>
+						<key>uid</key>
+						<string>ROUTE_LIKE</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>unlike</string>
+						<key>outputlabel</key>
+						<string>unlike</string>
+						<key>uid</key>
+						<string>ROUTE_UNLIKE</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>shuffle</string>
+						<key>outputlabel</key>
+						<string>shuf</string>
+						<key>uid</key>
+						<string>ROUTE_SHUFFLE</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>noshuffle</string>
+						<key>outputlabel</key>
+						<string>unshuf</string>
+						<key>uid</key>
+						<string>ROUTE_NOSHUFFLE</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>refresh</string>
+						<key>outputlabel</key>
+						<string>refresh</string>
+						<key>uid</key>
+						<string>ROUTE_REFRESH</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>reauth</string>
+						<key>outputlabel</key>
+						<string>reauth</string>
+						<key>uid</key>
+						<string>ROUTE_REAUTH</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>screenshot</string>
+						<key>outputlabel</key>
+						<string>demo</string>
+						<key>uid</key>
+						<string>ROUTE_SCREENSHOT</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{query}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>quit</string>
+						<key>outputlabel</key>
+						<string>quit</string>
+						<key>uid</key>
+						<string>ROUTE_QUIT</string>
+					</dict>
+				</array>
+				<key>elselabel</key>
+				<string>Else, do nothing</string>
+				<key>hideelse</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.utility.conditional</string>
+			<key>uid</key>
+			<string>ROUTE_COMMAND</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
 				<string>exec ./show</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
@@ -253,23 +445,117 @@
 		<dict>
 			<key>config</key>
 			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} reauth</string>
-				<key>subtext</key>
-				<string>Clear sign-in and Client ID; reconnect on next open</string>
-				<key>text</key>
-				<string>Clear sign-in to reauthorize</string>
-				<key>withspace</key>
-				<false/>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --like</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
 			</dict>
 			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
+			<string>alfred.workflow.action.script</string>
 			<key>uid</key>
-			<string>REAUTH</string>
+			<string>ACTION_LIKE</string>
 			<key>version</key>
-			<integer>1</integer>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --unlike</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_UNLIKE</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --shuffle</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_SHUFFLE</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --noshuffle</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_NOSHUFFLE</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<true/>
+				<key>escaping</key>
+				<integer>0</integer>
+				<key>script</key>
+				<string>exec ./show --refresh</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>ACTION_REFRESH</string>
+			<key>version</key>
+			<integer>2</integer>
 		</dict>
 		<dict>
 			<key>config</key>
@@ -291,29 +577,6 @@
 			<string>alfred.workflow.action.script</string>
 			<key>uid</key>
 			<string>CLEAR_ACTION</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<true/>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>script</key>
-				<string>exec ./show --hotkey</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>HOTKEY_PLAYER</string>
 			<key>version</key>
 			<integer>2</integer>
 		</dict>
@@ -355,203 +618,6 @@
 		<dict>
 			<key>config</key>
 			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} like</string>
-				<key>subtext</key>
-				<string>Set the current playback state</string>
-				<key>text</key>
-				<string>Like current song</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_LIKE</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<true/>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>script</key>
-				<string>exec ./show --like</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>ACTION_LIKE</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} unlike</string>
-				<key>subtext</key>
-				<string>Set the current playback state</string>
-				<key>text</key>
-				<string>Unlike current song</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_UNLIKE</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<true/>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>script</key>
-				<string>exec ./show --unlike</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>ACTION_UNLIKE</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} shuf</string>
-				<key>subtext</key>
-				<string>Set the current playback state</string>
-				<key>text</key>
-				<string>Turn shuffle on</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_SHUFFLE</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<true/>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>script</key>
-				<string>exec ./show --shuffle</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>ACTION_SHUFFLE</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} unshuf</string>
-				<key>subtext</key>
-				<string>Set the current playback state</string>
-				<key>text</key>
-				<string>Turn shuffle off</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_NOSHUFFLE</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<true/>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>script</key>
-				<string>exec ./show --noshuffle</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>ACTION_NOSHUFFLE</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} demo</string>
-				<key>subtext</key>
-				<string>Keep the mini player visible for screenshots; Esc exits</string>
-				<key>text</key>
-				<string>Toggle demo mode</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_SCREENSHOT</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
 				<key>concurrently</key>
 				<true/>
 				<key>escaping</key>
@@ -571,71 +637,6 @@
 			<string>ACTION_SCREENSHOT</string>
 			<key>version</key>
 			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} refresh</string>
-				<key>subtext</key>
-				<string>Refresh the desktop cache index and connected library</string>
-				<key>text</key>
-				<string>Refresh music library</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_REFRESH</string>
-			<key>version</key>
-			<integer>1</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>concurrently</key>
-				<true/>
-				<key>escaping</key>
-				<integer>0</integer>
-				<key>script</key>
-				<string>exec ./show --refresh</string>
-				<key>scriptargtype</key>
-				<integer>1</integer>
-				<key>scriptfile</key>
-				<string></string>
-				<key>type</key>
-				<integer>0</integer>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.action.script</string>
-			<key>uid</key>
-			<string>ACTION_REFRESH</string>
-			<key>version</key>
-			<integer>2</integer>
-		</dict>
-		<dict>
-			<key>config</key>
-			<dict>
-				<key>argumenttype</key>
-				<integer>2</integer>
-				<key>keyword</key>
-				<string>{var:keyword} quit</string>
-				<key>subtext</key>
-				<string>Open a fresh player next time</string>
-				<key>text</key>
-				<string>Quit Spotify Mini Player</string>
-				<key>withspace</key>
-				<false/>
-			</dict>
-			<key>type</key>
-			<string>alfred.workflow.input.keyword</string>
-			<key>uid</key>
-			<string>COMMAND_QUIT</string>
-			<key>version</key>
-			<integer>1</integer>
 		</dict>
 		<dict>
 			<key>config</key>
@@ -665,108 +666,82 @@
 	<dict>
 		<key>ACTION_LIKE</key>
 		<dict>
+			<key>note</key>
+			<string>like</string>
 			<key>xpos</key>
-			<integer>300</integer>
+			<integer>650</integer>
 			<key>ypos</key>
-			<integer>540</integer>
+			<integer>360</integer>
 		</dict>
 		<key>ACTION_NOSHUFFLE</key>
 		<dict>
+			<key>note</key>
+			<string>unshuf</string>
 			<key>xpos</key>
-			<integer>300</integer>
+			<integer>650</integer>
 			<key>ypos</key>
-			<integer>930</integer>
+			<integer>750</integer>
 		</dict>
 		<key>ACTION_QUIT</key>
 		<dict>
+			<key>note</key>
+			<string>quit</string>
 			<key>xpos</key>
-			<integer>300</integer>
+			<integer>650</integer>
 			<key>ypos</key>
 			<integer>1320</integer>
 		</dict>
 		<key>ACTION_REFRESH</key>
 		<dict>
+			<key>note</key>
+			<string>refresh</string>
 			<key>xpos</key>
-			<integer>300</integer>
+			<integer>650</integer>
 			<key>ypos</key>
-			<integer>1190</integer>
+			<integer>880</integer>
 		</dict>
 		<key>ACTION_SCREENSHOT</key>
 		<dict>
+			<key>note</key>
+			<string>demo</string>
 			<key>xpos</key>
-			<integer>300</integer>
-			<key>ypos</key>
-			<integer>1060</integer>
-		</dict>
-		<key>ACTION_SHUFFLE</key>
-		<dict>
-			<key>xpos</key>
-			<integer>300</integer>
-			<key>ypos</key>
-			<integer>800</integer>
-		</dict>
-		<key>ACTION_UNLIKE</key>
-		<dict>
-			<key>xpos</key>
-			<integer>300</integer>
-			<key>ypos</key>
-			<integer>670</integer>
-		</dict>
-		<key>CLEAR_ACTION</key>
-		<dict>
-			<key>xpos</key>
-			<integer>300</integer>
-			<key>ypos</key>
-			<integer>360</integer>
-		</dict>
-		<key>COMMAND_LIKE</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>540</integer>
-		</dict>
-		<key>COMMAND_NOSHUFFLE</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>930</integer>
-		</dict>
-		<key>COMMAND_QUIT</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>1320</integer>
-		</dict>
-		<key>COMMAND_REFRESH</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
+			<integer>650</integer>
 			<key>ypos</key>
 			<integer>1190</integer>
 		</dict>
-		<key>COMMAND_SCREENSHOT</key>
+		<key>ACTION_SHUFFLE</key>
 		<dict>
+			<key>note</key>
+			<string>shuf</string>
 			<key>xpos</key>
-			<integer>50</integer>
+			<integer>650</integer>
 			<key>ypos</key>
-			<integer>1060</integer>
+			<integer>620</integer>
 		</dict>
-		<key>COMMAND_SHUFFLE</key>
+		<key>ACTION_UNLIKE</key>
 		<dict>
+			<key>note</key>
+			<string>unlike</string>
 			<key>xpos</key>
-			<integer>50</integer>
+			<integer>650</integer>
 			<key>ypos</key>
-			<integer>800</integer>
+			<integer>490</integer>
 		</dict>
-		<key>COMMAND_UNLIKE</key>
+		<key>CLEAR_ACTION</key>
+		<dict>
+			<key>note</key>
+			<string>reauth</string>
+			<key>xpos</key>
+			<integer>650</integer>
+			<key>ypos</key>
+			<integer>1010</integer>
+		</dict>
+		<key>COMMANDS</key>
 		<dict>
 			<key>xpos</key>
 			<integer>50</integer>
 			<key>ypos</key>
-			<integer>670</integer>
+			<integer>220</integer>
 		</dict>
 		<key>HOTKEY</key>
 		<dict>
@@ -785,33 +760,28 @@ Default: ⌃⌘Space; press again in the player to open Spotify</string>
 			<key>ypos</key>
 			<integer>20</integer>
 		</dict>
-		<key>OPEN</key>
+		<key>PLAYER</key>
 		<dict>
+			<key>note</key>
+			<string>mini</string>
 			<key>xpos</key>
-			<integer>50</integer>
+			<integer>650</integer>
 			<key>ypos</key>
 			<integer>220</integer>
 		</dict>
-		<key>PLAYER</key>
+		<key>REAUTH_RESULT</key>
+		<dict>
+			<key>xpos</key>
+			<integer>950</integer>
+			<key>ypos</key>
+			<integer>1010</integer>
+		</dict>
+		<key>ROUTE_COMMAND</key>
 		<dict>
 			<key>xpos</key>
 			<integer>300</integer>
 			<key>ypos</key>
 			<integer>220</integer>
-		</dict>
-		<key>REAUTH</key>
-		<dict>
-			<key>xpos</key>
-			<integer>50</integer>
-			<key>ypos</key>
-			<integer>360</integer>
-		</dict>
-		<key>REAUTH_RESULT</key>
-		<dict>
-			<key>xpos</key>
-			<integer>550</integer>
-			<key>ypos</key>
-			<integer>360</integer>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>

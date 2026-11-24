@@ -2451,45 +2451,110 @@ func runIntegrationTests(screenshot: URL? = nil) {
     text(dict(keywordSetting?["config"])["default"]) == "spot"
       && dict(keywordSetting?["config"])["trim"] as? Bool == true,
     "The shared keyword defaults to spot and trims whitespace")
-  let reauth = objects.first { text($0["uid"]) == "REAUTH" }
+  let commands = objects.first { text($0["uid"]) == "COMMANDS" }
+  let commandConfig = dict(commands?["config"])
   check(
-    text(dict(reauth?["config"])["text"]) == "Clear sign-in to reauthorize",
-    "Reauth uses the requested description")
-  let quit = objects.first { text($0["uid"]) == "COMMAND_QUIT" }
-  check(
-    text(dict(quit?["config"])["text"]) == "Quit Spotify Mini Player",
-    "Quit uses the requested description")
+    text(commands?["type"]) == "alfred.workflow.input.scriptfilter"
+      && text(commandConfig["keyword"]) == "{var:keyword}"
+      && text(commandConfig["script"]) == "exec ./show --commands \"$1\""
+      && number(commandConfig["argumenttype"]) == 1
+      && commandConfig["alfredfiltersresults"] as? Bool == false,
+    "One native command list controls result order and query-dependent completion")
   let keywords = objects.compactMap { dict($0["config"])["keyword"] as? String }
-  check(
-    keywords.contains("{var:keyword} mini") && !keywords.contains("{var:keyword}")
-      && keywords.contains("{var:keyword} reauth"),
-    "Opening and reauth use the shared keyword")
-  for (verb, suffix) in [
-    ("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "unshuf"),
-    ("screenshot", "demo"), ("refresh", "refresh"), ("quit", "quit"),
-  ] {
-    let input = objects.first { text($0["uid"]) == "COMMAND_" + verb.uppercased() }
-    let action = objects.first { text($0["uid"]) == "ACTION_" + verb.uppercased() }
-    check(
-      text(dict(input?["config"])["keyword"]) == "{var:keyword} " + suffix,
-      "Short keyword inherits its prefix: " + suffix)
-    check(
-      text(dict(action?["config"])["script"]) == "exec ./show --" + verb,
-      "Short keyword preserves its action: " + suffix)
+  check(keywords == ["{var:keyword}"], "Every command uses the shared configurable prefix")
+  let readme = try! String(
+    contentsOf: workflow.appendingPathComponent("README.md"), encoding: .utf8)
+  let documented = readme.split(separator: "\n").compactMap { line -> String? in
+    let prefix = "| `spot "
+    guard line.hasPrefix(prefix) else { return nil }
+    return line.dropFirst(prefix.count).split(separator: "`", maxSplits: 1).first.map { String($0) }
   }
+  check(documented.count == 9, "The README documents all commands")
+  var commandEnvironment = ProcessInfo.processInfo.environment
+  let commandSocket = root.appendingPathComponent("command-menu-not-running")
+  commandEnvironment["SPOTIFY_NATIVE_SOCKET_DIR"] = commandSocket.path
+  func commandRows(_ query: String) -> [JSONObject] {
+    let output = run(
+      workflow.appendingPathComponent("show"), ["--commands", query],
+      environment: commandEnvironment)
+    return dict(try? JSONSerialization.jsonObject(with: Data(output.utf8)))["items"]
+      as? [JSONObject] ?? []
+  }
+  let allCommands = commandRows("")
+  check(
+    allCommands.map { text($0["autocomplete"]) } == documented,
+    "Alfred command results follow the README order")
+  check(
+    allCommands.allSatisfy { $0["uid"] == nil && $0["valid"] as? Bool == false },
+    "Bare prefix completes commands instead of launching, without learned result reordering")
+  check(
+    allCommands.first { text($0["arg"]) == "reauth" }?["title"] as? String
+      == "Clear sign-in to reauthorize"
+      && allCommands.first { text($0["arg"]) == "quit" }?["title"] as? String
+        == "Quit Spotify Mini Player",
+    "Native command results retain the requested descriptions")
+  let aliases = ["shuf": "shuffle", "unshuf": "noshuffle", "demo": "screenshot"]
+  let destinations = [
+    "mini": "PLAYER", "like": "ACTION_LIKE", "unlike": "ACTION_UNLIKE",
+    "shuffle": "ACTION_SHUFFLE", "noshuffle": "ACTION_NOSHUFFLE", "refresh": "ACTION_REFRESH",
+    "reauth": "CLEAR_ACTION", "screenshot": "ACTION_SCREENSHOT", "quit": "ACTION_QUIT",
+  ]
+  let arguments = documented.map { aliases[$0] ?? $0 }
+  check(
+    allCommands.map { text($0["arg"]) } == arguments, "Command arguments match the documented names"
+  )
+  let router = objects.first { text($0["uid"]) == "ROUTE_COMMAND" }
+  let conditions = dict(router?["config"])["conditions"] as? [JSONObject] ?? []
+  check(
+    text(router?["type"]) == "alfred.workflow.utility.conditional"
+      && conditions.map { text($0["matchstring"]) } == arguments
+      && conditions.map { text($0["outputlabel"]) } == documented,
+    "Workflow routes follow the same README order")
+  let routes = dict(info["connections"])["ROUTE_COMMAND"] as? [JSONObject] ?? []
+  check(routes.count == arguments.count, "Every command has one route")
+  let inputLinks = dict(info["connections"])["COMMANDS"] as? [JSONObject] ?? []
+  check(
+    inputLinks.count == 1 && text(inputLinks[0]["destinationuid"]) == "ROUTE_COMMAND",
+    "The ordered list dispatches through the command router")
+  for (index, suffix) in documented.enumerated() {
+    let argument = arguments[index]
+    let rows = commandRows("  " + suffix.uppercased() + "  ")
+    check(
+      rows.count == 1 && text(rows[0]["arg"]) == argument && rows[0]["valid"] as? Bool == true,
+      "Typing a full command selects only its action: " + suffix)
+    let condition = conditions[index]
+    check(
+      text(condition["inputstring"]) == "{query}" && number(condition["matchmode"]) == 0
+        && condition["matchcasesensitive"] as? Bool == false,
+      "Command routes use exact case-insensitive argument matches")
+    let route = routes.first { text($0["sourceoutputuid"]) == text(condition["uid"]) }
+    check(
+      text(route?["destinationuid"]) == destinations[argument]
+        && route?["vitoclose"] as? Bool == (argument != "reauth"),
+      "Command reaches its existing action and preserves reauth feedback: " + suffix)
+    if argument != "reauth" {
+      let action = objects.first { text($0["uid"]) == destinations[argument] }
+      check(
+        text(dict(action?["config"])["script"])
+          == (argument == "mini" ? "exec ./show" : "exec ./show --" + argument),
+        "Command retains its execution path: " + suffix)
+    }
+  }
+  check(
+    commandRows("lik").map { text($0["arg"]) } == ["like", "unlike"]
+      && commandRows("huf").map { text($0["arg"]) } == ["shuffle", "noshuffle"]
+      && commandRows("toggle mode").map { text($0["arg"]) } == ["screenshot"]
+      && commandRows("not-a-command").isEmpty,
+    "Filtering keeps README-relative order and handles exact, partial, and multiword queries")
+  check(
+    !FileManager.default.fileExists(atPath: commandSocket.path),
+    "Listing commands never starts the player or creates its socket")
   for prefix in ["spot", "spotify", "music"] {
-    let resolved = keywords.map { $0.replacingOccurrences(of: "{var:keyword}", with: prefix) }
     check(
-      Set(resolved)
-        == Set([
-          prefix + " mini", prefix + " reauth", prefix + " like", prefix + " unlike",
-          prefix + " shuf",
-          prefix + " unshuf", prefix + " demo", prefix + " refresh", prefix + " quit",
-        ]), "Changing one keyword updates every command")
+      text(commandConfig["keyword"]).replacingOccurrences(of: "{var:keyword}", with: prefix)
+        == prefix,
+      "Changing one prefix applies to the whole command list")
   }
-  check(
-    keywords.allSatisfy { $0.hasPrefix("{var:keyword}") },
-    "No input hardcodes a separate command prefix")
   check(
     Set(objects.map { text($0["uid"]) }).count == objects.count,
     "Workflow object identifiers remain unique")
@@ -2525,9 +2590,17 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "Only the launch shortcut is global")
   let canvas = dict(info["uidata"])
   check(
-    number(dict(canvas["HOTKEY"])["ypos"]) < number(dict(canvas["OPEN"])["ypos"]),
+    number(dict(canvas["HOTKEY"])["ypos"]) < number(dict(canvas["COMMANDS"])["ypos"]),
     "Launch hotkey is visible at the top of the canvas")
+  let orderedActions = arguments.compactMap { destinations[$0] }
+  check(
+    objects.map { text($0["uid"]) }.filter { orderedActions.contains($0) } == orderedActions
+      && orderedActions.sorted {
+        number(dict(canvas[$0])["ypos"]) < number(dict(canvas[$1])["ypos"])
+      } == orderedActions,
+    "Stored action order and visible workflow layout match the README")
   let launch = objects.first { text($0["uid"]) == "HOTKEY_PLAYER" }
+
   check(
     text(dict(launch?["config"])["script"]) == "exec ./show --hotkey",
     "The launch hotkey opens the mini player from other apps")

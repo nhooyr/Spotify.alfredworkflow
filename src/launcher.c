@@ -1,6 +1,7 @@
 // The Alfred hotkey runs this small POSIX client, without loading the AppKit
 // host.
 #include "Bridge.h"
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -46,6 +48,96 @@ static int json_string(char **end, size_t *remaining, const char *value) {
       return -1;
   }
   return append(end, remaining, "\"");
+}
+
+struct command_item {
+  const char *keyword, *argument, *title, *subtitle;
+};
+
+static const struct command_item command_items[] = {
+    {"mini", "mini", "Show Spotify Mini Player", "Browse and play music"},
+    {"like", "like", "Like current song", "Set the current playback state"},
+    {"unlike", "unlike", "Unlike current song",
+     "Set the current playback state"},
+    {"shuf", "shuffle", "Turn shuffle on", "Set the current playback state"},
+    {"unshuf", "noshuffle", "Turn shuffle off",
+     "Set the current playback state"},
+    {"refresh", "refresh", "Refresh music library",
+     "Refresh the desktop cache index and connected library"},
+    {"reauth", "reauth", "Clear sign-in to reauthorize",
+     "Clear sign-in and Client ID; reconnect on next open"},
+    {"demo", "screenshot", "Toggle demo mode",
+     "Keep the mini player visible for screenshots; Esc exits"},
+    {"quit", "quit", "Quit Spotify Mini Player",
+     "Open a fresh player next time"},
+};
+
+static int contains_token(const char *text, const char *token, size_t length) {
+  for (; *text; text++) {
+    if (strncasecmp(text, token, length) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+static int command_matches(const struct command_item *item, const char *query) {
+  while (*query) {
+    while (isspace((unsigned char)*query))
+      query++;
+    const char *end = query;
+    while (*end && !isspace((unsigned char)*end))
+      end++;
+    size_t length = (size_t)(end - query);
+    if (length && !contains_token(item->keyword, query, length) &&
+        !contains_token(item->title, query, length))
+      return 0;
+    query = end;
+  }
+  return 1;
+}
+
+static int list_commands(const char *query) {
+  while (isspace((unsigned char)*query))
+    query++;
+  size_t length = strlen(query);
+  while (length && isspace((unsigned char)query[length - 1]))
+    length--;
+  const struct command_item *exact = NULL;
+  for (size_t i = 0; i < sizeof(command_items) / sizeof(*command_items); i++) {
+    if (length == strlen(command_items[i].keyword) &&
+        strncasecmp(query, command_items[i].keyword, length) == 0) {
+      exact = &command_items[i];
+      break;
+    }
+  }
+  char output[8192], *end = output;
+  size_t remaining = sizeof(output);
+  if (append(&end, &remaining, "{\"items\":["))
+    return 1;
+  int first = 1;
+  for (size_t i = 0; i < sizeof(command_items) / sizeof(*command_items); i++) {
+    const struct command_item *item = &command_items[i];
+    if (exact ? item != exact : !command_matches(item, query))
+      continue;
+    // Omitting UIDs preserves this order instead of Alfred's learned ranking.
+    if ((!first && append(&end, &remaining, ",")) ||
+        append(&end, &remaining, "{\"title\":") ||
+        json_string(&end, &remaining, item->title) ||
+        append(&end, &remaining, ",\"subtitle\":") ||
+        json_string(&end, &remaining, item->subtitle) ||
+        append(&end, &remaining, ",\"arg\":") ||
+        json_string(&end, &remaining, item->argument) ||
+        append(&end, &remaining, ",\"autocomplete\":") ||
+        json_string(&end, &remaining, item->keyword) ||
+        append(&end, &remaining, ",\"valid\":") ||
+        append(&end, &remaining, length ? "true" : "false") ||
+        append(&end, &remaining, ",\"icon\":{\"path\":\"icon.png\"}}"))
+      return 1;
+    first = 0;
+  }
+  if (append(&end, &remaining, "]}"))
+    return 1;
+  return puts(output) == EOF ? 1 : 0;
 }
 
 // 0 = ready, 1 = old build is exiting, -1 = no server.
@@ -153,6 +245,13 @@ static int launch(void) {
 }
 
 int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--commands") == 0) {
+    if (argc > 3) {
+      fputs("Usage: show --commands [QUERY]\n", stderr);
+      return 1;
+    }
+    return list_commands(argc == 3 ? argv[2] : "");
+  }
   if (argc > 1) {
     const char *choices[] = {"hotkey",    "like",       "unlike",  "shuffle",
                              "noshuffle", "screenshot", "refresh", "quit"};

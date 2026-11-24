@@ -6,7 +6,7 @@ if [ "${GITHUB_ACTIONS-}" ]; then
 	brew install shfmt clang-format
 fi
 
-npx prettier -w --print-width=110 --no-semi --bracket-same-line \
+npx prettier --log-level warn -w --print-width=110 --no-semi --bracket-same-line \
 	--ignore-path .gitignore --ignore-path .prettierignore .
 shfmt -s -w .
 xcrun swift format --in-place --parallel src/*.swift

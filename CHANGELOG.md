@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.6.2 (Unreleased)
 
+- Use `spot mini` to open the mini player without conflicting with the Spotify app.
 - Keep Spotify’s sync indicator steady between startup requests.
 - Add `spot quit` and Command–Q to stop the mini player and start fresh on its next launch.
 

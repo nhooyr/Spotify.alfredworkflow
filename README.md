@@ -1,6 +1,6 @@
 # Spotify.alfredworkflow [![ci](https://github.com/nhooyr/Spotify.alfredworkflow/actions/workflows/ci.yml/badge.svg)](https://github.com/nhooyr/Spotify.alfredworkflow/actions/workflows/ci.yml) [![GitHub Release](https://img.shields.io/github/v/release/nhooyr/Spotify.alfredworkflow?include_prereleases&display_name=tag&color=64C864)](https://github.com/nhooyr/Spotify.alfredworkflow/releases)
 
-Search and play music from Spotify with the `spot` keyword or <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd>.
+Search and play music from Spotify with the `spot mini` keyword or <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd>.
 
 ![Spotify Mini Player](./docs/ss.png)
 
@@ -126,15 +126,15 @@ and `spotify demo`.
 
 | Keyword | Action |
 | --- | --- |
-| `spot` | Open the mini player. |
+| `spot mini` | Open Spotify Mini Player. |
 | `spot like` | Save the current song to Liked Songs. |
 | `spot unlike` | Remove the current song from Liked Songs. |
 | `spot shuf` | Turn shuffle on. |
 | `spot unshuf` | Turn shuffle off. |
-| `spot demo` | Toggle demo mode for taking screenshots. |
 | `spot refresh` | Refresh the desktop cache index and connected library. |
-| `spot quit` | Quit the mini player; the next open starts fresh. |
 | `spot reauth` | Clear sign-in to reauthorize |
+| `spot demo` | Toggle demo mode for taking screenshots. |
+| `spot quit` | Quit Spotify Mini Player |
 
 The like, unlike, shuf and unshuf commands set a state rather than toggling it.
 

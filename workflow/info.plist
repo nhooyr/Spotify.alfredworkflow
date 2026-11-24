@@ -181,7 +181,7 @@
 				<key>argumenttype</key>
 				<integer>2</integer>
 				<key>keyword</key>
-				<string>{var:keyword}</string>
+				<string>{var:keyword} mini</string>
 				<key>subtext</key>
 				<string>Browse and play music</string>
 				<key>text</key>
@@ -260,7 +260,7 @@
 				<key>subtext</key>
 				<string>Clear sign-in and Client ID; reconnect on next open</string>
 				<key>text</key>
-				<string>Clear Sign-In to Reauthorize</string>
+				<string>Clear sign-in to reauthorize</string>
 				<key>withspace</key>
 				<false/>
 			</dict>
@@ -626,7 +626,7 @@
 				<key>subtext</key>
 				<string>Open a fresh player next time</string>
 				<key>text</key>
-				<string>Quit mini player</string>
+				<string>Quit Spotify Mini Player</string>
 				<key>withspace</key>
 				<false/>
 			</dict>

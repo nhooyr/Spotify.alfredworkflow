@@ -2453,11 +2453,16 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "The shared keyword defaults to spot and trims whitespace")
   let reauth = objects.first { text($0["uid"]) == "REAUTH" }
   check(
-    text(dict(reauth?["config"])["text"]) == "Clear Sign-In to Reauthorize",
+    text(dict(reauth?["config"])["text"]) == "Clear sign-in to reauthorize",
     "Reauth uses the requested description")
+  let quit = objects.first { text($0["uid"]) == "COMMAND_QUIT" }
+  check(
+    text(dict(quit?["config"])["text"]) == "Quit Spotify Mini Player",
+    "Quit uses the requested description")
   let keywords = objects.compactMap { dict($0["config"])["keyword"] as? String }
   check(
-    keywords.contains("{var:keyword}") && keywords.contains("{var:keyword} reauth"),
+    keywords.contains("{var:keyword} mini") && !keywords.contains("{var:keyword}")
+      && keywords.contains("{var:keyword} reauth"),
     "Opening and reauth use the shared keyword")
   for (verb, suffix) in [
     ("like", "like"), ("unlike", "unlike"), ("shuffle", "shuf"), ("noshuffle", "unshuf"),
@@ -2477,7 +2482,8 @@ func runIntegrationTests(screenshot: URL? = nil) {
     check(
       Set(resolved)
         == Set([
-          prefix, prefix + " reauth", prefix + " like", prefix + " unlike", prefix + " shuf",
+          prefix + " mini", prefix + " reauth", prefix + " like", prefix + " unlike",
+          prefix + " shuf",
           prefix + " unshuf", prefix + " demo", prefix + " refresh", prefix + " quit",
         ]), "Changing one keyword updates every command")
   }

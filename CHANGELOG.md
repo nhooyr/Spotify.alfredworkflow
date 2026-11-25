@@ -11,6 +11,7 @@
 - Keep the now-playing header stable through incomplete metadata and empty Spotify playback-state replies.
 - Add secure timestamps to Developer ID signatures for distribution.
 - Signed release binaries, with optional notarization via `build.sh --notarize`.
+- Prevent macOS’s “damaged app” warning when importing notarized releases into Alfred.
 - Fall back to AppleScript for play/pause when Spotify supplies no playback state.
 
 ## v0.6.2

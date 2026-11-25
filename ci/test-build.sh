@@ -5,7 +5,6 @@ cd "$(dirname "$0")/.."
 perl - "$PWD/build.sh" <<'PERL'
 use strict;
 use warnings;
-use Digest::SHA qw(sha256_hex);
 use File::Basename qw(basename);
 use File::Copy qw(copy);
 use File::Path qw(make_path);
@@ -90,7 +89,7 @@ if ($tool eq 'security') {
   }
 } elsif ($tool eq 'spctl') {
   die "fixture assessment rejected\n" if $state->{fail} eq 'assessment';
-  die "Assessment requires a stapled ticket\n" unless -f "$ARGV[-1]/Contents/fixture-ticket";
+  die "Assessment requires a stapled ticket\n" unless -f "$ARGV[-1]/Contents/CodeResources";
 } elsif ($tool eq 'xcrun') {
   my $command = shift @ARGV;
   if ($command eq '--show-sdk-path') { print "/fixture/MacOSX.sdk\n" }
@@ -146,7 +145,7 @@ PLAYER
     } else { die "Unexpected notarytool action: $action\n" }
   } elsif ($command eq 'stapler') {
     my $action = shift @ARGV;
-    my $ticket = "$ARGV[-1]/Contents/fixture-ticket";
+    my $ticket = "$ARGV[-1]/Contents/CodeResources";
     if ($action eq 'staple') {
       die "fixture staple failed\n" if $state->{fail} eq 'staple';
       open my $output, '>', $ticket or die $!;
@@ -179,6 +178,7 @@ sub fixture {
   write_file("$repo/src/vendor/zstddeclib.c", 'fixture decoder');
   write_file("$repo/src/vendor/ZSTD-LICENSE", 'fixture license');
   write_file("$repo/workflow/icon.png", 'fixture icon');
+  system('/usr/bin/xattr', '-w', 'com.aqsnow.fixture.source', 'fixture', "$repo/workflow/icon.png") == 0 or die $!;
   write_file("$repo/workflow/spotify-liked-songs.png", 'fixture liked songs');
   write_file("$repo/docs/screenshot.png", 'fixture screenshot');
   write_file("$repo/README.md", 'fixture help');
@@ -231,18 +231,19 @@ sub preserved_failure {
   check(read_file(output($case)) eq 'previous release', "$name preserves the previous output");
   return $case;
 }
+sub archive_entries {
+  open my $unzip, '-|', '/usr/bin/unzip', '-Z', '-1', $_[0] or die $!;
+  my @entries = <$unzip>;
+  close $unzip or die "Could not list export archive\n";
+  return @entries;
+}
 sub ticket {
   my ($case) = @_;
-  open my $unzip, '-|', '/usr/bin/unzip', '-p', output($case), 'Spotify Mini Player.app/Contents/fixture-ticket' or die $!;
+  check(!grep(m{(?:^|/)\._}, archive_entries(output($case))),
+    'notarized export contains no AppleDouble files that invalidate imported app signatures');
+  open my $unzip, '-|', '/usr/bin/unzip', '-p', output($case), 'Spotify Mini Player.app/Contents/CodeResources' or die $!;
   my $contents = do { local $/; <$unzip> };
-  close $unzip;
-  my $extracted = tempdir('ticket-XXXXXX', DIR => $root);
-  system('/usr/bin/ditto', '-x', '-k', output($case), $extracted) == 0 or die "Could not extract notarized archive\n";
-  open my $xattr, '-|', '/usr/bin/xattr', '-p', 'com.aqsnow.fixture.notary', "$extracted/Spotify Mini Player.app" or die $!;
-  my $metadata = do { local $/; <$xattr> };
-  close $xattr;
-  chomp $metadata;
-  check($metadata eq $contents, 'notarized archive preserves stapled app extended metadata');
+  close $unzip or die "Could not read stapled ticket\n";
   return $contents;
 }
 sub no_notary_cache {
@@ -302,7 +303,17 @@ my @signing = grep { $_->[1] eq '--force' } @$signs;
 my @verification = grep { grep { $_ eq '--verify' } @$_ } @$signs;
 check(@signing == 2 && !grep({ $_->[3] ne $distribution || $_->[4] ne '--timestamp' } @signing), 'notarized build prefers Developer ID and requests a secure timestamp');
 check(@verification >= 2 && @{calls($accepted, 'spctl')} == 1, 'launcher and app signatures and Gatekeeper assessment are verified');
-my $archive = sha256_hex(read_file(output($accepted)));
+my @cached_exports;
+File::Find::find({ no_chdir => 1, wanted => sub { push @cached_exports, $_ if m{/notarized\.zip\z} } }, "$accepted/cache");
+check(@cached_exports == 1, 'accepted export has one reusable notarization cache');
+my $legacy_stage = tempdir('legacy-export-XXXXXX', DIR => $root);
+system('/usr/bin/ditto', '-x', '-k', $cached_exports[0], $legacy_stage) == 0 or die $!;
+system('/usr/bin/xattr', '-w', 'com.aqsnow.fixture.legacy', 'fixture',
+  "$legacy_stage/Spotify Mini Player.app/Contents/Resources/icon.png") == 0 or die $!;
+system('/usr/bin/ditto', '-c', '-k', $legacy_stage, "$accepted/legacy.zip") == 0 or die $!;
+check(scalar(grep(m{(?:^|/)\._}, archive_entries("$accepted/legacy.zip"))),
+  'legacy cache fixture contains AppleDouble metadata');
+copy("$accepted/legacy.zip", $cached_exports[0]) or die $!;
 sub mutations {
   my ($case) = @_;
   return scalar(grep { $_->[1] eq '--force' } @{calls($case, 'codesign')})
@@ -312,7 +323,9 @@ sub mutations {
 my $before = mutations($accepted);
 run($accepted, 1, '--notarize', 'output with spaces/Spotify.alfredworkflow');
 my $after = mutations($accepted);
-check($before == $after && sha256_hex(read_file(output($accepted))) eq $archive, 'accepted cache reuses the final archive without signing, submitting or stapling');
+check($before == $after && ticket($accepted) eq state($accepted)->{id}
+  && !grep(m{(?:^|/)\._}, archive_entries($cached_exports[0])),
+  'legacy accepted cache is repaired without signing, submitting or stapling');
 write_file("$accepted/repo/workflow/icon.png", 'changed fixture icon');
 run($accepted, 1, '--notarize', 'output with spaces/Spotify.alfredworkflow');
 check(state($accepted)->{submissions} == 2 && ticket($accepted) eq state($accepted)->{id}, 'changed payload starts a new submission and receives its own ticket');

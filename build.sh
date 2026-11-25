@@ -176,7 +176,7 @@ if [ "$notarize" = true ]; then
 		else
 			sign_payload
 			verify_signatures
-			ditto -c -k "$stage" "$work/signed.zip"
+			ditto -c -k --norsrc "$stage" "$work/signed.zip"
 			mv "$work/signed.zip" "$notarization/signed.zip"
 		fi
 		if [ ! -f "$notarization/submission.plist" ]; then
@@ -210,10 +210,8 @@ if [ "$notarize" = true ]; then
 	verify_signatures
 	xcrun stapler validate "$app"
 	spctl --assess --type execute --verbose=2 "$app"
-	if [ ! -f "$notarization/notarized.zip" ]; then
-		ditto -c -k "$stage" "$work/notarized.zip"
-		mv "$work/notarized.zip" "$notarization/notarized.zip"
-	fi
+	ditto -c -k --norsrc "$stage" "$work/notarized.zip"
+	mv "$work/notarized.zip" "$notarization/notarized.zip"
 	cp "$notarization/notarized.zip" "$output"
 else
 	sign_payload

@@ -569,10 +569,12 @@ final class SpotifyAPI {
         throw SpotifyFailure(message: message, status: 429)
       }
       guard (200..<300).contains(response.statusCode) else {
+        var message = "Spotify could not complete this request (\(response.statusCode))."
+        let detail = text(
+          dict(dict(try? JSONSerialization.jsonObject(with: data))["error"])["message"])
+        if !detail.isEmpty { message += " " + detail }
         throw SpotifyFailure(
-          message: response.statusCode == 401
-            ? "Reconnect to Spotify to renew access."
-            : "Spotify could not complete this request (\(response.statusCode)).",
+          message: response.statusCode == 401 ? "Reconnect to Spotify to renew access." : message,
           status: response.statusCode)
       }
       // Successful playback commands may return a plain-text command ID.

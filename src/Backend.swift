@@ -700,7 +700,9 @@ final class NativeBackend {
           ])
         case "transport":
           let request = args.count > 1 ? Int(args[1]) ?? 0 : 0
-          self.playbackCancellation?.cancel()
+          if !["shuffle-on", "shuffle-off"].contains(argument) {
+            self.playbackCancellation?.cancel()
+          }
           let cancellation = RequestCancellation()
           self.transportLock.lock()
           self.transportCancellations.append(cancellation)

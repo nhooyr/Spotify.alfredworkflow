@@ -977,7 +977,7 @@ private func testWebTransport() throws {
   stateStatus = 200
   stateOverride = nil
   for (command, expected) in [
-    ("toggle", "toggle"), ("pause", "toggle"), ("resume", "toggle"),
+    ("toggle", "toggle"), ("pause", "pause"), ("resume", "resume"),
     ("next", "next"), ("previous", "previous"),
   ] {
     let fallback: JSONObject = ["fallback": true, "command": command]
@@ -992,7 +992,7 @@ private func testWebTransport() throws {
     WebPlayback.appleScriptCommand(
       for: ["command": "next", "fallback": true, "fallback_reason": "missing-playback-state"],
       offline: false, remote: true) == nil,
-    "Playback-state regression test limits the missing-state exception to toggle")
+    "Playback-state regression test limits the missing-state exception to play/pause")
   for status in [403, 500, 429] {
     stateStatus = status
     let before = calls.count
@@ -1041,6 +1041,184 @@ private func testWebTransport() throws {
   }
   print(
     "Active-device transport regression tests passed: phone controls, missing-state local toggle, failure isolation, and offline behavior."
+  )
+}
+
+private func testPlaybackIntent() {
+  for (command, code): (String, UInt32) in [("pause", 0x5061_7573), ("resume", 0x506c_6179)] {
+    let event = SpotifyCommands.playbackEvent(command, uri: "", context: "")
+    check(
+      event?.eventClass == 0x7370_6679 && event?.eventID == code,
+      "Local playback regression test sends explicit " + command + " rather than a toggle")
+  }
+  let now = Date(timeIntervalSince1970: 1000)
+  for desired in [false, true] {
+    var intent = PlaybackIntent(request: 42, desired: desired, previous: !desired)
+    check(
+      intent.request == 42 && intent.desired == desired && intent.previous == !desired
+        && !intent.accepts(desired, now: now) && !intent.accepts(!desired, now: now)
+        && !intent.accepts(!desired, now: now.addingTimeInterval(60)),
+      "Playback intent regression test rejects all snapshots until command acknowledgement")
+    intent.acknowledge(now: now)
+    intent.acknowledge(now: now.addingTimeInterval(2))
+    check(
+      intent.request == 42 && intent.accepts(desired, now: now)
+        && !intent.accepts(!desired, now: now.addingTimeInterval(2.999))
+        && intent.accepts(!desired, now: now.addingTimeInterval(3)),
+      "Playback intent regression test accepts confirmation and bounds stale-state protection")
+  }
+  print(
+    "Playback intent regression tests passed: acknowledgement, confirmation, and bounded expiry.")
+}
+
+private func testExplicitTransportRecovery() throws {
+  let root = tempDirectory("spotify-explicit-transport-regression-")
+  defer { try? FileManager.default.removeItem(at: root) }
+  let paths = testPaths(root: root, clientID: String(repeating: "a", count: 32), environment: [:])
+  try paths.prepare()
+  try paths.authorization.save([
+    "client_id": String(repeating: "a", count: 32), "access_token": "test", "refresh_token": "test",
+    "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes,
+  ])
+  let config = URLSessionConfiguration.ephemeral
+  config.protocolClasses = [TestURLProtocol.self]
+  let session = URLSession(configuration: config)
+  defer { session.invalidateAndCancel() }
+  let playback = WebPlayback(SpotifyAPI(paths, session: session), online: { true })
+  let restriction = "Player command failed: Restriction violated"
+  let errorBody = try jsonData(["error": ["status": 403, "message": restriction]])
+  var mutationStatus = 403
+  var stateStatus = 200
+  var statePayload: JSONObject = [:]
+  var calls: [(String, String)] = []
+  var cancelProbe: RequestCancellation?
+  TestURLProtocol.response = { request in
+    let method = request.httpMethod ?? ""
+    let path = request.url!.path
+    calls.append((method, path))
+    check(
+      request.url!.queryItemsForTesting.allSatisfy { $0.name != "device_id" },
+      "Explicit transport regression test never transfers playback to another device")
+    if path == "/api/token" {
+      return (200, try! jsonData(["access_token": "refreshed", "expires_in": 3600]))
+    }
+    if path == "/v1/me/player" {
+      cancelProbe?.cancel()
+      return (stateStatus, stateStatus == 204 ? Data() : try! jsonData(statePayload))
+    }
+    check(
+      method == "PUT" && ["/v1/me/player/pause", "/v1/me/player/play"].contains(path),
+      "Explicit transport regression test only mutates the requested playback state")
+    return (mutationStatus, errorBody)
+  }
+  defer { TestURLProtocol.response = nil }
+  func reset() throws {
+    calls = []
+    stateStatus = 200
+    statePayload = [:]
+    cancelProbe = nil
+    let cooldown = paths.data.appendingPathComponent("api-cooldown.json")
+    if FileManager.default.fileExists(atPath: cooldown.path) {
+      try FileManager.default.removeItem(at: cooldown)
+    }
+  }
+  for status in [403, 404] {
+    mutationStatus = status
+    for (command, desired, endpoint) in [("pause", false, "pause"), ("resume", true, "play")] {
+      try reset()
+      statePayload = [
+        "is_playing": desired, "device": ["id": "phone", "type": "Smartphone", "name": "Phone"],
+      ]
+      let confirmed = try playback.transport(command)
+      check(
+        confirmed["playing"] as? Bool == desired
+          && dict(confirmed["state"])["is_playing"] as? Bool == desired
+          && text(dict(dict(confirmed["state"])["device"])["id"]) == "phone"
+          && confirmed["fallback"] == nil
+          && calls.map { $0.0 } == ["PUT", "GET"]
+          && calls.map { $0.1 } == ["/v1/me/player/" + endpoint, "/v1/me/player"],
+        "Explicit transport regression test confirms an already satisfied " + command
+          + " after HTTP " + String(status))
+      for (probeStatus, payload): (Int, JSONObject) in [
+        (200, [:]), (204, [:]), (200, ["device": ["id": "phone"]]),
+        (200, ["is_playing": NSNull()]),
+      ] {
+        try reset()
+        stateStatus = probeStatus
+        statePayload = payload
+        let fallback = try playback.transport(command)
+        let event = fallback.merging(["command": command]) { _, new in new }
+        check(
+          fallback["fallback"] as? Bool == true
+            && text(fallback["fallback_reason"]) == "missing-playback-state"
+            && WebPlayback.appleScriptCommand(for: event, offline: false, remote: true) == command
+            && calls.map { $0.0 } == ["PUT", "GET"]
+            && calls.map { $0.1 } == ["/v1/me/player/" + endpoint, "/v1/me/player"],
+          "Explicit transport regression test preserves " + command + " when the probe has no state"
+        )
+      }
+      try reset()
+      statePayload = ["is_playing": !desired, "device": ["id": "phone", "type": "Smartphone"]]
+      do {
+        _ = try playback.transport(command)
+        check(false, "Contradictory remote playback must preserve the original command error")
+      } catch {
+        check(
+          (error as? SpotifyFailure)?.status == status
+            && error.localizedDescription.contains(restriction)
+            && error.localizedDescription.contains("(\(status))")
+            && calls.map { $0.0 } == ["PUT", "GET"],
+          "Explicit transport regression test preserves Spotify's restriction reason on a remote device"
+        )
+      }
+    }
+  }
+  mutationStatus = 403
+  for status in [401, 429, 500] {
+    try reset()
+    stateStatus = status
+    do {
+      _ = try playback.transport("pause")
+      check(false, "A failed state probe must not trigger local playback")
+    } catch {
+      check(
+        (error as? SpotifyFailure)?.status == 403
+          && error.localizedDescription.contains(restriction)
+          && calls.filter { $0.0 == "PUT" }.count == 1
+          && calls.contains { $0 == ("GET", "/v1/me/player") },
+        "Explicit transport regression test retains the original error when probe status is "
+          + String(status))
+    }
+  }
+  for status in [401, 429, 500] {
+    try reset()
+    mutationStatus = status
+    do {
+      _ = try playback.transport("pause")
+      check(false, "Ordinary API errors must remain errors")
+    } catch {
+      check(
+        (error as? SpotifyFailure)?.status == status
+          && !calls.contains { $0.0 == "GET" },
+        "Explicit transport regression test does not probe or fall back on initial HTTP "
+          + String(status))
+    }
+  }
+  try reset()
+  mutationStatus = 403
+  let cancellation = RequestCancellation()
+  cancelProbe = cancellation
+  do {
+    _ = try playback.transport("pause", cancellation: cancellation)
+    check(false, "A cancelled state probe must remain cancelled")
+  } catch {
+    check(
+      (error as? URLError)?.code == .cancelled
+        && calls.map { $0.0 } == ["PUT", "GET"],
+      "Explicit transport regression test propagates cancellation without local playback")
+  }
+  print(
+    "Explicit transport regression tests passed: satisfied commands, missing state, original errors, cancellation, and no device transfer."
   )
 }
 
@@ -2697,6 +2875,10 @@ func runModelTests() {
     check(false, "Active-device transport regression test: " + error.localizedDescription)
   }
   testPlaybackTarget()
+  testPlaybackIntent()
+  do { try testExplicitTransportRecovery() } catch {
+    check(false, "Explicit transport regression test: " + error.localizedDescription)
+  }
   do { try testPlaybackPolling() } catch {
     check(false, "Playback polling regression test: " + error.localizedDescription)
   }

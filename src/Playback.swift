@@ -153,6 +153,28 @@ final class NetworkAvailability {
   }
 }
 
+struct PlaybackIntent {
+  let request: Int
+  let desired: Bool
+  let previous: Bool
+  var acknowledged = false
+  var expiresAt = Date.distantFuture
+
+  init(request: Int, desired: Bool, previous: Bool) {
+    self.request = request
+    self.desired = desired
+    self.previous = previous
+  }
+  mutating func acknowledge(now: Date = Date()) {
+    guard !acknowledged else { return }
+    acknowledged = true
+    expiresAt = now.addingTimeInterval(3)
+  }
+  func accepts(_ observed: Bool, now: Date = Date()) -> Bool {
+    acknowledged && (observed == desired || now >= expiresAt)
+  }
+}
+
 // Kept on the backend's playback queue, separate from library sync and status polling.
 final class WebPlayback {
   private let api: SpotifyAPI
@@ -264,11 +286,13 @@ final class WebPlayback {
   static func appleScriptCommand(for result: JSONObject, offline: Bool, remote: Bool) -> String? {
     guard result["fallback"] as? Bool == true else { return nil }
     let command = text(result["command"])
-    if command == "toggle", text(result["fallback_reason"]) == "missing-playback-state" {
+    if ["toggle", "pause", "resume"].contains(command),
+      text(result["fallback_reason"]) == "missing-playback-state"
+    {
       return command
     }
     guard offline && !remote else { return nil }
-    return ["pause", "resume"].contains(command) ? "toggle" : command
+    return command
   }
   func transport(_ command: String, cancellation: RequestCancellation? = nil) throws -> JSONObject {
     if cancellation?.isCancelled == true { throw URLError(.cancelled) }
@@ -307,9 +331,27 @@ final class WebPlayback {
     default: throw SpotifyFailure(message: "Unknown Spotify playback command.")
     }
     // An omitted device_id keeps control on Spotify's current output device.
-    _ = try api.request(
-      "/me/player/" + path, params: params, method: method, timeout: 2, expectJSON: false,
-      cancellation: cancellation)
+    do {
+      _ = try api.request(
+        "/me/player/" + path, params: params, method: method, timeout: 2, expectJSON: false,
+        cancellation: cancellation)
+    } catch let failure as SpotifyFailure
+      where playing != nil && [403, 404].contains(failure.status)
+    {
+      do {
+        state = dict(try api.request("/me/player", timeout: 2, cancellation: cancellation))
+      } catch {
+        if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
+          throw URLError(.cancelled)
+        }
+        throw failure
+      }
+      if cancellation?.isCancelled == true { throw URLError(.cancelled) }
+      guard let observed = state["is_playing"] as? Bool else {
+        return ["fallback": true, "fallback_reason": "missing-playback-state"]
+      }
+      guard observed == playing else { throw failure }
+    }
     var result: JSONObject = [:]
     if let playing = playing {
       result["playing"] = playing

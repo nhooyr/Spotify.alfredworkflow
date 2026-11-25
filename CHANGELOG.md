@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.1 (Unreleased)
+
+- Keep play/pause controls steady while Spotify catches up, use explicit AppleScript pause/resume commands, and show the reason for playback errors.
+
 ## v0.7.0
 
 - Keep Web API playback controls on Spotify’s active output device.

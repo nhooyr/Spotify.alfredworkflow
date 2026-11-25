@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0 (Unreleased)
+## v0.7.0
 
 - Keep Web API playback controls on Spotify’s active output device.
 - Speed up album browsing, local search, menu navigation and artwork cache updates.

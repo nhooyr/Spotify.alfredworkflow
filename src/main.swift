@@ -1,7 +1,7 @@
 import AppKit
 import Darwin
 
-let version = "v0.7.0"
+let version = "v0.7.1-dev"
 let buildIdentifier = String(cString: spotify_build_identifier())
 
 private var delegate: PlayerDelegate!

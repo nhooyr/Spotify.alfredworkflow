@@ -7,6 +7,7 @@
 - Detect desktop playback immediately while play requests are pending, without reverting to the previous song or playlist.
 - Show the selected song, album, artist or playlist type in artwork captions.
 - Preserve typed path casing and insert lowercase browsing paths automatically.
+- Rename the play-all item to Liked Songs and retain `songs/all` as a search alias.
 
 ## v0.6.2
 

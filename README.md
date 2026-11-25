@@ -61,15 +61,15 @@ text after any folder path to filter its contents.
 
 | Typed path | Action |
 | --- | --- |
-| `Playlists/` | Browse playlists in Spotify’s custom order when available. |
-| `Playlists/<playlist>/` | Browse a playlist’s songs. |
-| `Albums/` | Browse albums saved to your library. |
-| `Albums/<album>/` | Browse an album’s songs. |
-| `Artists/` | Browse artists you follow. |
-| `Artists/<artist>/` | Browse an artist’s albums or play all their tracks. |
-| `Artists/<artist>/<album>/` | Browse an artist’s album. |
-| `Songs/` | Browse Liked Songs. |
-| `Songs/All` | Press <kbd>Enter</kbd> on **All** at the top to play the collection. |
+| `playlists/` | Browse playlists in Spotify’s custom order when available. |
+| `playlists/<playlist>/` | Browse a playlist’s songs. |
+| `albums/` | Browse albums saved to your library. |
+| `albums/<album>/` | Browse an album’s songs. |
+| `artists/` | Browse artists you follow. |
+| `artists/<artist>/` | Browse an artist’s albums or play all their tracks. |
+| `artists/<artist>/<album>/` | Browse an artist’s album. |
+| `songs/` | Browse Liked Songs. |
+| `songs/liked songs` or `songs/all` | Press <kbd>Enter</kbd> on **Liked Songs** at the top to play the collection. |
 | `<playlist>/`, `<album>/` or `<artist>/` | Open a library folder directly, as from library search. |
 | `<artist>/<album>/` | Open a library artist’s album directly. |
 | `/` | Open Spotify catalogue search, ready for a query. |

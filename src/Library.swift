@@ -197,10 +197,11 @@ final class MusicLibrary {
       }
       return [
         actionItem(
-          "All", "play",
+          "Liked Songs", "play",
           [
             "play_uri": PlaybackContext.likedSongs.uri, "playback_context": context,
             "symbol": "play.fill", "detail": "Play all Liked Songs",
+            "match": "Liked Songs All",
           ])
       ]
         + songs.map { $0.merging(["playback_context": context]) { _, new in new } }

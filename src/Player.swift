@@ -3349,6 +3349,30 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let reopenRequestsPath = pendingPlaintextPath == "Albums/"
     reply("albums", "Albums/", raw: "Albums/", rows: albumRows)
     let reopened = reopenRequestsPath && routeKind == "albums" && filtered.count == 2
+    let liked = actionItem(
+      "Liked Songs", "play",
+      [
+        "play_uri": PlaybackContext.likedSongs.uri, "match": "Liked Songs All",
+      ])
+    let songRows: [[String: Any]] = [
+      [
+        "uri": text(liked["uri"]), "name": "Liked Songs", "kind": "action",
+        "match": "Liked Songs All", "item": liked,
+      ],
+      ["uri": "track:saved", "name": "Saved Song", "kind": "track"],
+    ]
+    type("songs/all")
+    reply("songs", "songs/", raw: "songs/", rows: songRows)
+    let aliasMatches =
+      filtered.count == 1 && selectedItem()?.name == "Liked Songs"
+      && search.stringValue == "songs/all"
+    let beforePlay = playbackRequest
+    activateSelection()
+    let aliasPlaysCollection =
+      playbackRequest == beforePlay + 1
+      && currentPlaybackContext?.uri == PlaybackContext.likedSongs.uri
+    type("songs/liked songs")
+    let nameMatches = filtered.count == 1 && selectedItem()?.name == "Liked Songs"
     demo()
     setSearchText("")
     return [
@@ -3358,6 +3382,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "all_categories_work_as_plaintext": categories,
       "typed_category_casing_is_preserved": categories && mixedCase,
       "typed_singular_alias_casing_is_preserved": aliasCase,
+      "songs_all_alias_plays_liked_songs": aliasMatches && aliasPlaysCollection,
+      "songs_liked_songs_matches_collection": nameMatches,
       "deleting_and_retyping_path_recovers": lateHomeIgnored && retyped,
       "nested_paths_filter_their_contents": nested,
       "deleting_pending_path_cancels_navigation": deletedPending,
@@ -3579,7 +3605,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "prefix": "Songs/", "search_text": "Songs/",
       "rows": [
         [
-          "uri": "action:play:All", "name": "All", "kind": "action",
+          "uri": "action:play:Liked Songs", "name": "Liked Songs", "kind": "action",
           "item": [
             "action": "play", "play_uri": PlaybackContext.likedSongs.uri,
             "playback_context": PlaybackContext.likedSongs.object,
@@ -3591,7 +3617,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     activateSelection()
     let allStartsCollection =
       playing && nowContext.stringValue == "Liked Songs" && routeKind == "songs"
-      && selectedItem()?.name == "All" && search.stringValue == "Songs/"
+      && selectedItem()?.name == "Liked Songs" && search.stringValue == "Songs/"
     receive(["type": "playback", "request": playbackRequest])
     receive([
       "type": "playback-state", "request": playbackRequest, "remote": false,
@@ -4526,7 +4552,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let playlistCover = NSImage(size: NSSize(width: 32, height: 32))
     imageCache.setObject(albumCover, forKey: "fixture-play-album")
     imageCache.setObject(playlistCover, forKey: "fixture-play-playlist")
-    let all = actionItem("All", "play", ["play_uri": PlaybackContext.likedSongs.uri])
+    let all = actionItem("Liked Songs", "play", ["play_uri": PlaybackContext.likedSongs.uri])
     guard let likedCover = bundledArtwork(all, root: workflowRoot()) else {
       return ["status": "error"]
     }
@@ -4543,7 +4569,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         "art": "fixture-play-playlist", "symbol": "play.fill", "item": ["action": "play"],
       ]),
       MusicItem([
-        "uri": text(all["uri"]), "kind": "action", "name": "All", "art": likedCover,
+        "uri": text(all["uri"]), "kind": "action", "name": "Liked Songs", "art": likedCover,
         "symbol": "play.fill", "item": all,
       ]),
     ]
@@ -4573,7 +4599,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if loadingImages.contains(playArtworkTestPath) { return ["status": "pending"] }
     let cover = imageCache.object(forKey: playArtworkTestPath as NSString)
     let liked =
-      cover != nil && preview.image === cover && previewIsCover && previewTitle.stringValue == "All"
+      cover != nil && preview.image === cover && previewIsCover
+      && previewTitle.stringValue == "Liked Songs"
     let bounded = cover?.size == NSSize(width: 512, height: 512)
     demo()
     setSearchText("")

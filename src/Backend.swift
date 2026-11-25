@@ -191,6 +191,7 @@ final class NativeBackend {
     let albumInfo = dict(item["album"])
     let kind = text(item["kind"])
     let album = text(albumInfo["name"])
+    let match = text(item["match"])
     let detail =
       kind == "track"
       ? [artists, album].filter { !$0.isEmpty }.joined(separator: " · ")
@@ -201,7 +202,7 @@ final class NativeBackend {
       "symbol": item["symbol"] ?? Self.rowSymbols[kind] ?? "music.note", "artist": artists,
       "album": album, "album_uri": kind == "album" ? text(item["uri"]) : text(albumInfo["uri"]),
       "album_total": number(kind == "album" ? item["total"] : albumInfo["total"]),
-      "match": [text(item["name"]), artists, album].joined(separator: " "),
+      "match": match.isEmpty ? [text(item["name"]), artists, album].joined(separator: " ") : match,
     ]
   }
   private func connectionItems() -> [JSONObject] {

@@ -257,12 +257,12 @@ private func testPlaybackContexts() throws {
     "Unavailable metadata is cached without repeated failed requests")
   let songs = try library.browse(["kind": "songs"])
   check(
-    text(songs.first?["name"]) == "All" && text(songs.first?["action"]) == "play"
+    text(songs.first?["name"]) == "Liked Songs" && text(songs.first?["action"]) == "play"
       && text(songs.first?["play_uri"]) == PlaybackContext.likedSongs.uri,
     "Songs starts with an action for the full Liked Songs collection")
   check(
     songs.filter { text($0["kind"]) == "track" }.map { text($0["uri"]) } == [track],
-    "All does not replace saved songs or inflate the song count")
+    "The Liked Songs action does not replace saved songs or inflate the song count")
   check(
     songs.allSatisfy {
       PlaybackContext(dict($0["playback_context"]))?.label == "Liked Songs"
@@ -1763,6 +1763,26 @@ private func testPlaintextPaths() throws {
     text(command("path", ["sOnG/"])["prefix"]) == "sOnG/"
       && text(command("show")["prefix"]) == "sOnG/",
     "Backend path casing regression test keeps typed singular category aliases unchanged")
+  for query in ["songs/all", "songs/liked songs"] {
+    let result = command("path", [query])
+    let rows = result["rows"] as? [JSONObject] ?? []
+    let collection = rows.first ?? [:]
+    let words = text(collection["match"]).lowercased().split(whereSeparator: { $0.isWhitespace })
+    let filter = String(query.dropFirst(text(result["path_prefix"]).count))
+    check(
+      text(result["path_prefix"]) == "songs/"
+        && text(collection["name"]) == "Liked Songs"
+        && text(dict(collection["item"])["play_uri"]) == PlaybackContext.likedSongs.uri
+        && filter.split(whereSeparator: { $0.isWhitespace }).allSatisfy { term in
+          words.contains { $0.hasPrefix(term) }
+        },
+      "Liked Songs regression test preserves the display label and collection playback for " + query
+    )
+    check(
+      rows.dropFirst().allSatisfy {
+        !text($0["match"]).lowercased().split(whereSeparator: { $0.isWhitespace }).contains("all")
+      }, "Liked Songs regression test limits the all alias to the collection action")
+  }
   print(
     "Plaintext paths passed: categories, aliases, nested folders, casing, slash names, filters, and offline resolution."
   )

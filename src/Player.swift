@@ -1640,10 +1640,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       loaded = image(path)
     }
     // A late reply may warm the cache, but only the current selection can paint the preview.
-    if responseURI == selectedItem()?.uri && responseURI == previewURI {
+    if let item = selectedItem(), responseURI == item.uri && responseURI == previewURI {
       if let title = variables["preview_title"] as? String { previewTitle.stringValue = title }
       if let detail = variables["preview_detail"] as? String {
-        previewDetail.stringValue = detail
+        previewDetail.stringValue = previewDescription(detail, for: item)
         previewDetail.textColor = playerTheme.secondary
       }
       if let cover = loaded {
@@ -1861,12 +1861,28 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       applyPreview(item)
     }
   }
+  private func previewDescription(_ detail: String, for item: MusicItem) -> String {
+    var kind = item.kind
+    if kind == "action", item.payload["action"] as? String == "play" {
+      let uri = item.payload["play_uri"] as? String ?? ""
+      kind = validTrack(uri) ? "track" : PlaybackContext(uri: uri)?.kind ?? ""
+    }
+    let type: String
+    switch kind {
+    case "track": type = "Song"
+    case "album": type = "Album"
+    case "artist": type = "Artist"
+    case "playlist", "collection": type = "Playlist"
+    default: return detail
+    }
+    return detail.isEmpty || detail == type ? type : type + " · " + detail
+  }
   private func applyPreview(_ item: MusicItem) {
     guard connection == "connected", selectedItem()?.uri == item.uri else { return }
     previewURI = item.uri
     previewTitle.stringValue =
       item.payload["action"] as? String == "catalog" ? "Search Spotify" : item.name
-    previewDetail.stringValue = item.detail
+    previewDetail.stringValue = previewDescription(item.detail, for: item)
     previewDetail.textColor = playerTheme.secondary
     let path = previewPaths[item.uri] ?? item.art
     if let cover = image(path) {
@@ -4036,7 +4052,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "query": "winter", "rows": [],
     ])
     let stale = search.stringValue == "/winter bird" && routeKind == "catalog"
-    _ = control(search, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:)))
+    _ = handleInputCommand(
+      #selector(NSResponder.moveDown(_:)), editor: editor, modifiers: [])
     let navigated = routeKind == "catalog" && editor.selectedRange().length == 0
     setSearchText("local query")
     controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))

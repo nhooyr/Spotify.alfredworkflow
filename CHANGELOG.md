@@ -5,6 +5,7 @@
 - Keep playback on Spotify’s active output device; use AppleScript only without internet access.
 - Speed up album browsing, local search, menu navigation and artwork cache updates.
 - Detect desktop playback immediately while play requests are pending, without reverting to the previous song or playlist.
+- Show the selected song, album, artist or playlist type in artwork captions.
 
 ## v0.6.2
 

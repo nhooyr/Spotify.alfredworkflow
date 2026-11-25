@@ -9,6 +9,7 @@
 - Preserve typed path casing and insert lowercase browsing paths automatically.
 - Use Liked Songs throughout the menus, with preferred `liked songs/` paths, existing `songs/` aliases and the same heart cover for matching playlist entries.
 - Keep the now-playing header stable through incomplete metadata and empty Spotify playback-state replies.
+- Add secure timestamps to Developer ID signatures for distribution.
 
 ## v0.6.2
 

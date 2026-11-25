@@ -57,6 +57,7 @@ printf 'building %s into %s\n' "$(awk -F '"' '/^let version = / { print $2 }' sr
 
 project_dir=$PWD
 signing_identity=-
+signing_timestamp=--timestamp=none
 if [ "$test_build" = false ]; then
 	identities=$(security find-identity -v -p codesigning)
 	signing_identity=$(printf '%s\n' "$identities" | awk '
@@ -68,6 +69,9 @@ if [ "$test_build" = false ]; then
 		printf 'No signing identity found. Create an Apple Development or Developer ID Application certificate in Xcode.\n' >&2
 		exit 1
 	fi
+	case "$identities" in
+	*'"Developer ID Application:'*) signing_timestamp=--timestamp ;;
+	esac
 fi
 identifier=$(find src -type f -exec shasum -a 256 {} + | LC_ALL=C sort | shasum -a 256)
 identifier=${identifier%% *}
@@ -119,7 +123,7 @@ cp "$binaries/player" "$app/Contents/MacOS/SpotifyMiniPlayer"
 cp "$binaries/show" "$stage/show"
 "$app/Contents/MacOS/SpotifyMiniPlayer" --write-metadata "$project_dir" "$stage"
 sign() {
-	if ! codesign --force --sign "$signing_identity" --timestamp=none --options runtime "$@" 2>"$work/signing.log"; then
+	if ! codesign --force --sign "$signing_identity" "$signing_timestamp" --options runtime "$@" 2>"$work/signing.log"; then
 		cat "$work/signing.log" >&2
 		return 1
 	fi

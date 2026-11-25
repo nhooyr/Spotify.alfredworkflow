@@ -9,11 +9,11 @@ Search and play music from Spotify with the `spot mini` keyword or <kbd>Ctrl</kb
 The workflow requires a **Spotify Premium** account and a **Spotify Client ID** from a Spotify developer
 application.
 
-1. Build the workflow with [`./build.sh`](./build.sh).
+1. Download **Spotify.alfredworkflow** from the [latest release](https://github.com/nhooyr/Spotify.alfredworkflow/releases), or build it with [`./build.sh`](./build.sh).
 
 ![Screenshot for install step 1](./docs/install-1.png)
 
-2. Double click [Spotify.alfredworkflow](./dist/Spotify.alfredworkflow) to install the workflow.
+2. Double click **Spotify.alfredworkflow** to install the workflow.
 
 ![Screenshot for install step 2](./docs/install-2.png)
 

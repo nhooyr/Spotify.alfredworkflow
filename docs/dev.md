@@ -3,8 +3,9 @@
 The workflow uses C and Swift, with no interpreter or package installation at runtime.
 Build with `./build.sh` using Xcode Command Line Tools and an installed code-signing
 identity (create one in Xcode → Settings → Accounts → Manage Certificates). The universal macOS app and
-C launcher are packaged into `dist/Spotify.alfredworkflow`, or the output file passed
-as the first argument. Its parent directories are created automatically.
+C launcher are packaged into `dist/Spotify-dev.alfredworkflow` by default.
+Use `--notarize` for `dist/Spotify.alfredworkflow`, or pass an output file as the
+first argument. Its parent directories are created automatically.
 Run `./ci/test.sh [WORKFLOW]` to check an export. Both scripts support `-h` and `--help`.
 Use `./build.sh --test` to build an ad hoc signed test export without a certificate.
 CI builds this way, then `ci/test.sh` installs Spotify for its AppleScript

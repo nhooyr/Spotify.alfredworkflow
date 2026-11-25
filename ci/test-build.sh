@@ -255,6 +255,22 @@ sub no_notary_cache {
   check(!@{calls($case, 'xcrun', 'stapler')}, basename($case) . ' does not staple');
 }
 
+for my $mode (
+  ['ordinary', [], 'Spotify-dev.alfredworkflow', 'Spotify.alfredworkflow'],
+  ['test', ['--test'], 'Spotify-dev.alfredworkflow', 'Spotify.alfredworkflow'],
+  ['notarized', ['--notarize'], 'Spotify.alfredworkflow', 'Spotify-dev.alfredworkflow'],
+) {
+  my ($name, $flags, $written, $untouched) = @$mode;
+  my $case = fixture("default-output-$name");
+  make_path("$case/repo/dist");
+  write_file("$case/repo/dist/$untouched", 'previous export');
+  run($case, 1, @$flags);
+  check(-s "$case/repo/dist/$written"
+    && read_file("$case/repo/dist/$untouched") eq 'previous export'
+    && read_file("$case/stdout") eq "dist/$written\n",
+    "$name default output keeps development and release exports separate");
+}
+
 my $default = fixture('default', identities => qq{  1) $development "Apple Development: Fixture (TEAM123456)"\n});
 run($default, 1, 'output with spaces/Spotify.alfredworkflow');
 check(-f output($default), 'default build exports successfully from another working directory');

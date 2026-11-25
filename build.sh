@@ -7,7 +7,8 @@ Usage: build.sh [-h | --help] [--test | --notarize] [--] [OUTPUT]
 
 Build the universal Spotify.alfredworkflow using Xcode Command Line Tools
 and an Apple Development or Developer ID Application signing identity.
-OUTPUT defaults to dist/Spotify.alfredworkflow in the project directory.
+OUTPUT defaults to dist/Spotify-dev.alfredworkflow, or dist/Spotify.alfredworkflow
+with --notarize, in the project directory.
 Parent directories are created automatically.
 Use --test for an ad hoc signed test export without a certificate or Finder reveal.
 Use --notarize to submit, staple and verify a Developer ID-signed export using
@@ -48,7 +49,11 @@ if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ -z "$1" ]; }; then
 	usage >&2
 	exit 2
 fi
-output_display=${1-dist/Spotify.alfredworkflow}
+if [ "$notarize" = true ]; then
+	output_display=${1-dist/Spotify.alfredworkflow}
+else
+	output_display=${1-dist/Spotify-dev.alfredworkflow}
+fi
 output=$output_display
 if [ "$#" -eq 1 ]; then
 	case $output in /*) ;; *) output=$PWD/$output ;; esac

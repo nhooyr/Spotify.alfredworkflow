@@ -6,7 +6,7 @@ usage() {
 Usage: ci/test.sh [-h | --help] [--] [WORKFLOW]
 
 Validate an exported workflow and run its model and native UI integration tests.
-WORKFLOW defaults to dist/Spotify.alfredworkflow in the project directory.
+WORKFLOW defaults to dist/Spotify-dev.alfredworkflow in the project directory.
 EOF
 }
 
@@ -25,7 +25,7 @@ if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ -z "$1" ]; }; then
 	usage >&2
 	exit 2
 fi
-workflow=${1-dist/Spotify.alfredworkflow}
+workflow=${1-dist/Spotify-dev.alfredworkflow}
 if [ "$#" -eq 1 ]; then
 	case $workflow in /*) ;; *) workflow=$PWD/$workflow ;; esac
 fi

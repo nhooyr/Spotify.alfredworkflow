@@ -4,6 +4,7 @@
 
 - Keep Web API playback controls on Spotify’s active output device.
 - Speed up album browsing, local search, menu navigation and artwork cache updates.
+- Keep menu rows and selection highlighting steady while scrolling with the Up/Down keys.
 - Detect desktop playback immediately while play requests are pending, without reverting to the previous song or playlist.
 - Show the selected song, album, artist or playlist type in artwork captions.
 - Preserve typed path casing and insert lowercase browsing paths automatically.

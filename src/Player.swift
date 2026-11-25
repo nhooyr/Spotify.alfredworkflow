@@ -1171,6 +1171,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     search.setFrameOrigin(
       NSPoint(
         x: search.frame.minX, y: (nowArt.frame.minY + scroll.frame.maxY - search.frame.height) / 2))
+    scroll.wantsLayer = true
     scroll.hasVerticalScroller = true
     scroll.verticalScroller = ThemeScroller()
     scroll.scrollerStyle = .overlay
@@ -1291,7 +1292,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     table.enumerateAvailableRowViews { row, index in
       row.needsDisplay = true
       if self.filtered.indices.contains(index) {
-        (self.table.view(atColumn: 0, row: index, makeIfNecessary: false) as? MusicCell)?.display(
+        (row.view(atColumn: 0) as? MusicCell)?.display(
           self.filtered[index], index: index, selected: index == self.table.selectedRow)
       }
     }
@@ -1803,11 +1804,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   func tableViewSelectionDidChange(_ notification: Notification) {
     guard !suppressSelection else { return }
     collapseSearchSelection()
-    for row in table.rows(in: table.visibleRect)
-      .location..<NSMaxRange(table.rows(in: table.visibleRect)) where filtered.indices.contains(row)
-    {
-      (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MusicCell)?.display(
-        filtered[row], index: row, selected: table.selectedRow == row)
+    // Include prepared rows outside the viewport before they scroll into view.
+    table.enumerateAvailableRowViews { row, index in
+      guard self.filtered.indices.contains(index) else { return }
+      (row.view(atColumn: 0) as? MusicCell)?.display(
+        self.filtered[index], index: index, selected: self.table.selectedRow == index)
     }
     previewSelection()
   }
@@ -2277,6 +2278,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     collapseSearchSelection()
     guard !filtered.isEmpty else { return }
     let index = min(filtered.count - 1, max(0, table.selectedRow + offset))
+    guard index != table.selectedRow || !table.visibleRect.contains(table.rect(ofRow: index))
+    else { return }
     table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
     table.scrollRowToVisible(index)
   }
@@ -3046,6 +3049,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-editing" {
       return editingChecks()
+    }
+    if testMode && value["command"] as? String == "test-menu-scrolling" {
+      return menuScrollingChecks()
     }
     if testMode && value["command"] as? String == "test-ui" {
       return previewChecks()
@@ -4206,6 +4212,74 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     guard bottom >= top else { return .infinity }
     let scale = CGFloat(bitmap.pixelsHigh) / view.bounds.height
     return abs(CGFloat(top + bottom + 1) / (2 * scale) - view.bounds.midY)
+  }
+  private func menuScrollingChecks() -> [String: Any] {
+    demo()
+    defer { demo() }
+    search.isEnabled = true
+    setSearchText("")
+    focusSearch(selectAll: false)
+    guard let editor = search.currentEditor() as? NSTextView else { return ["status": "error"] }
+    source = (0..<40).map {
+      MusicItem(["name": "Song \($0)", "uri": "scroll:\($0)", "kind": "track"])
+    }
+    filter(resetSelection: true)
+    panel.contentView?.layoutSubtreeIfNeeded()
+    table.layoutSubtreeIfNeeded()
+    let firstRow = table.rowView(atRow: 0, makeIfNecessary: false)
+    let initialOffset = scroll.contentView.bounds.origin
+    var appearanceStable = true
+    var selectedRowVisible = true
+    var preparedRowsChecked = false
+    var limitsStable = true
+    for direction in [1, -1] {
+      let command =
+        direction == 1 ? #selector(NSResponder.moveDown(_:)) : #selector(NSResponder.moveUp(_:))
+      for _ in 1..<source.count {
+        table.prepareContent(in: table.bounds)
+        table.enumerateAvailableRowViews { _, index in
+          if !table.rect(ofRow: index).intersects(table.visibleRect) { preparedRowsChecked = true }
+        }
+        _ = handleInputCommand(command, editor: editor, modifiers: [])
+        table.layoutSubtreeIfNeeded()
+        table.enumerateAvailableRowViews { row, index in
+          guard let cell = row.view(atColumn: 0) as? MusicCell else {
+            appearanceStable = false
+            return
+          }
+          let selected = index == table.selectedRow
+          appearanceStable =
+            appearanceStable
+            && cell.returnArrow.isHidden == !selected
+            && cell.title.textColor == (selected ? playerTheme.selectedText : playerTheme.text)
+            && cell.title.stringValue == filtered[index].name
+        }
+        let row = table.rect(ofRow: table.selectedRow)
+        selectedRowVisible =
+          selectedRowVisible
+          && row.intersection(table.visibleRect).height >= row.height - 0.5
+        if direction == 1 && table.selectedRow == 1 {
+          appearanceStable =
+            appearanceStable
+            && table.rowView(atRow: 0, makeIfNecessary: false) === firstRow
+            && scroll.contentView.bounds.origin == initialOffset
+        }
+      }
+      let selected = table.selectedRow
+      let origin = scroll.contentView.bounds.origin
+      for _ in 0..<5 { _ = handleInputCommand(command, editor: editor, modifiers: []) }
+      limitsStable =
+        limitsStable && table.selectedRow == selected
+        && scroll.contentView.bounds.origin == origin
+    }
+    return [
+      "status": "ok", "prepared_rows_exercised": preparedRowsChecked,
+      "scrolling_rows_keep_content_and_selection": appearanceStable,
+      "selected_row_stays_visible": selectedRowVisible,
+      "repeated_keys_at_limits_do_not_scroll": limitsStable,
+      "menu_uses_cached_drawing": scroll.wantsLayer && table.layer != nil,
+      "keyboard_navigation_keeps_input_focus": panel.firstResponder === editor,
+    ]
   }
   private func previewChecks() -> [String: Any] {
     let cell = MusicCell(frame: NSRect(x: 0, y: 0, width: 320, height: 25))

@@ -971,6 +971,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var playbackTargetUntil = Date.distantPast
   private var playbackConfirmationWork: DispatchWorkItem?
   private var playbackConfirmationAttempts = 0
+  private var selectionStatusPolls = 0
   private var currentImageURL = ""
   private var currentArtPath = ""
   private let imageCache = NSCache<NSString, NSImage>()
@@ -1437,8 +1438,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         } else if playbackTarget != nil {
           playbackTarget?.acknowledged = true
           playbackTargetUntil = Date().addingTimeInterval(4)
+          playbackConfirmationAttempts = 0
           spotify.invalidateStatus()
-          if !testMode, !remotePlaybackDevice { spotify.poll() }
+          pollSelectedPlayback()
           schedulePlaybackConfirmation()
         }
         if !testMode { refreshRepeat() }
@@ -2335,6 +2337,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
           uri: contextURI, name: catalog.first { $0.uri == contextURI }?.name ?? "")
       selectedSourceTrack = currentPlaybackContext?.kind == "collection" ? uri : ""
       updateContextLabel()
+      pollSelectedPlayback()
+      schedulePlaybackConfirmation()
     } else if let data = try? JSONSerialization.data(withJSONObject: item.payload),
       let text = String(data: data, encoding: .utf8)
     {
@@ -2505,21 +2509,33 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if Date() >= playbackTargetUntil { clearPlaybackTarget() }
     return playbackTarget
   }
+  private func canPollSelectedPlayback(_ target: PlaybackTarget) -> Bool {
+    !remotePlaybackDevice && target.displayedTrack == nil
+      && (target.allowsLocal || validTrack(target.uri))
+  }
+  private func pollSelectedPlayback() {
+    guard let target = activePlaybackTarget(), canPollSelectedPlayback(target) else { return }
+    if testMode { selectionStatusPolls += 1 } else { spotify.poll() }
+  }
+  private func needsPlaybackConfirmation(_ target: PlaybackTarget) -> Bool {
+    target.acknowledged ? target.confirmedTrack == nil : canPollSelectedPlayback(target)
+  }
   private func schedulePlaybackConfirmation() {
-    guard let target = activePlaybackTarget(), target.acknowledged,
-      target.confirmedTrack == nil, !offline
+    guard let target = activePlaybackTarget(), needsPlaybackConfirmation(target), !offline
     else { return }
     playbackConfirmationWork?.cancel()
     let request = playbackRequest
-    let delay = min(0.2 * pow(1.6, Double(playbackConfirmationAttempts)), 0.8)
+    let delay = min(
+      (target.acknowledged ? 0.2 : 0.1) * pow(1.6, Double(playbackConfirmationAttempts)), 0.8)
     let work = DispatchWorkItem { [weak self] in
       guard let self = self, request == self.playbackRequest else { return }
       self.playbackConfirmationWork = nil
-      guard let target = self.activePlaybackTarget(), target.acknowledged,
-        target.confirmedTrack == nil, !self.offline
+      guard let target = self.activePlaybackTarget(), self.needsPlaybackConfirmation(target),
+        !self.offline
       else { return }
       self.playbackConfirmationAttempts += 1
-      self.refreshRepeat()
+      self.pollSelectedPlayback()
+      if target.acknowledged { self.refreshRepeat() }
       if self.playbackConfirmationAttempts < 6 { self.schedulePlaybackConfirmation() }
     }
     playbackConfirmationWork = work
@@ -5143,7 +5159,19 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     snapshot(oldState)
     currentPlaybackContext = PlaybackContext(uri: oldList, name: "Old playlist")
     updateContextLabel()
+    let pollsBeforeSelection = selectionStatusPolls
+    let apiPollBeforeSelection = lastRepeatPoll
     select(newList, "New playlist")
+    let startsBeforeAcknowledgement =
+      selectionStatusPolls == pollsBeforeSelection + 1
+      && playbackTarget?.acknowledged == false && playbackConfirmationWork != nil
+    let eagerDeadline = Date().addingTimeInterval(1)
+    while selectionStatusPolls < pollsBeforeSelection + 2, Date() < eagerDeadline {
+      try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    let eagerRetry =
+      selectionStatusPolls >= pollsBeforeSelection + 2
+      && playbackTarget?.acknowledged == false && lastRepeatPoll == apiPollBeforeSelection
     let optimisticSource = nowContext.stringValue == "Playlist · New playlist"
     snapshot(oldState)
     let preCompletion = nowContext.stringValue == "Playlist · New playlist"
@@ -5188,7 +5216,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       playbackTarget?.confirmedTrack == newTrack && playbackConfirmationWork == nil
     select(oldList, "Old playlist")
     let superseded = playbackRequest
+    let pollsBeforeRapidSwitch = selectionStatusPolls
     select(thirdList, "Third playlist")
+    let rapidDoesNotProbeWrongPlaylist = selectionStatusPolls == pollsBeforeRapidSwitch
     updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
     receive(["type": "playback", "request": superseded])
     let rapidStable = nowTitle.stringValue == "New song" && playbackTarget?.acknowledged == false
@@ -5205,7 +5235,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     receive(["type": "playback", "request": playbackRequest, "error": "Fixture failure"])
     let failureClears = playbackTarget == nil && playbackConfirmationWork == nil
     select(newList, "New playlist")
+    // An eager read can still be in flight when ACK invalidates its status generation.
     receive(["type": "playback", "request": playbackRequest])
+    let pollsAfterAcknowledgement = selectionStatusPolls
+    let acknowledgementResetsBudget = playbackConfirmationAttempts == 0
+    let postAckDeadline = Date().addingTimeInterval(1)
+    while selectionStatusPolls == pollsAfterAcknowledgement, Date() < postAckDeadline {
+      try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    let retriesInvalidatedRead = selectionStatusPolls > pollsAfterAcknowledgement
     receive(["type": "update", "offline": true])
     let offlineClears = playbackTarget == nil && playbackConfirmationWork == nil
     receive(["type": "update", "offline": false])
@@ -5217,11 +5255,23 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     receive(["type": "playback", "request": playbackRequest])
     nextTrack()
     let skipClears = playbackTarget == nil && playbackConfirmationWork == nil
+    remotePlaybackDevice = true
+    let pollsBeforeRemote = selectionStatusPolls
+    select(newList, "Remote playlist")
+    let remoteDoesNotProbeMac =
+      selectionStatusPolls == pollsBeforeRemote
+      && playbackConfirmationWork == nil
     demo()
     optimisticUntil = .distantPast
     setSearchText("")
     return [
       "status": "ok", "selected_source_is_immediate": optimisticSource,
+      "desktop_detection_starts_before_play_response": startsBeforeAcknowledgement,
+      "desktop_detection_retries_without_extra_api_requests": eagerRetry,
+      "acknowledgement_resets_and_retries_invalidated_read": acknowledgementResetsBudget
+        && retriesInvalidatedRead,
+      "remote_and_ambiguous_selections_do_not_probe_mac": remoteDoesNotProbeMac
+        && rapidDoesNotProbeWrongPlaylist,
       "pre_command_snapshot_keeps_selected_source": preCompletion,
       "fresh_desktop_snapshot_updates_header_immediately": immediateLocal,
       "pending_header_and_cover_do_not_revert": pendingStable && postCompletion,

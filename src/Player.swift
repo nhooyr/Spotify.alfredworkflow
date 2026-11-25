@@ -1406,12 +1406,18 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       // Invalidate state reads that began before this command finished.
       playbackRequest += 1
       spotify.invalidateStatus()
-      let command = value["command"] as? String ?? ""
       if value["fallback"] as? Bool == true {
-        if !offline || remotePlaybackDevice {
+        if let localCommand = WebPlayback.appleScriptCommand(
+          for: value, offline: offline, remote: remotePlaybackDevice)
+        {
+          if value["fallback_reason"] as? String == "missing-playback-state" {
+            clearPlaybackTarget()
+            remotePlaybackDevice = false
+            lastWebPlaybackAt = .distantPast
+          }
+          if !testMode { spotify.play(localCommand) }
+        } else {
           showError("Go online to control the Spotify device already playing.")
-        } else if !testMode {
-          spotify.play(["pause", "resume"].contains(command) ? "toggle" : command)
         }
       } else if let error = value["error"] as? String {
         optimisticUntil = .distantPast
@@ -2652,6 +2658,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func updateWebPlayback(_ state: JSONObject, remote: Bool) {
     guard !offline else { return }
+    guard let isPlaying = state["is_playing"] as? Bool else {
+      lastWebPlaybackAt = .distantPast
+      return
+    }
     if var target = activePlaybackTarget() {
       guard target.acceptsWeb(state) else { return }
       let uri = text(dict(state["item"])["uri"])
@@ -2673,7 +2683,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     optimisticUntil = .distantPast
     updatePlayback(
       [
-        state["is_playing"] as? Bool == true ? "playing" : "paused", text(track["name"]), artists,
+        isPlaying ? "playing" : "paused", text(track["name"]), artists,
         text(album["name"]), image, validTrack(uri) ? uri : "",
         state["shuffle_state"] as? Bool == true ? "true" : "false",
       ], fromWeb: true)
@@ -5504,6 +5514,23 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let offlineRemote =
       sentTestCommands.count == commands && remotePlaybackDevice && inlineError != nil
     demo()
+    receive(["type": "playback-state", "state": state, "remote": true, "request": playbackRequest])
+    var incompleteState = state
+    incompleteState.removeValue(forKey: "is_playing")
+    receive([
+      "type": "playback-state", "state": incompleteState, "remote": true,
+      "request": playbackRequest,
+    ])
+    let missingStateKeepsHeader = playing && currentTrackURI == phoneTrack
+    togglePlayback()
+    let missingStateRequestsToggle = lastTransportTarget == "toggle"
+    receive([
+      "type": "transport", "command": "toggle", "fallback": true,
+      "fallback_reason": "missing-playback-state", "request": playbackRequest,
+    ])
+    let missingStateFallsBack =
+      !remotePlaybackDevice && inlineError == nil && lastWebPlaybackAt == .distantPast
+    demo()
     return [
       "status": "ok", "remote_header_tracks_active_spotify_device": header,
       "local_snapshot_does_not_overwrite_phone": keepsRemote,
@@ -5513,6 +5540,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "stale_transport_confirmation_ignored": staleIgnored,
       "pre_completion_snapshot_cannot_undo_pause": confirmed,
       "online_errors_never_fall_back_to_desktop": onlineErrorsDoNotMoveDevice,
+      "missing_api_state_allows_local_toggle": missingStateFallsBack,
+      "missing_api_state_does_not_invent_pause": missingStateKeepsHeader,
+      "missing_api_state_bypasses_fresh_state_shortcut": missingStateRequestsToggle,
       "offline_remote_device_is_not_moved_to_mac": offlineRemote,
     ]
   }

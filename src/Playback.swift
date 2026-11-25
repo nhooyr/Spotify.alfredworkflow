@@ -261,6 +261,15 @@ final class WebPlayback {
     else { return }
     _ = try? likedSongsURI(cancellation)
   }
+  static func appleScriptCommand(for result: JSONObject, offline: Bool, remote: Bool) -> String? {
+    guard result["fallback"] as? Bool == true else { return nil }
+    let command = text(result["command"])
+    if command == "toggle", text(result["fallback_reason"]) == "missing-playback-state" {
+      return command
+    }
+    guard offline && !remote else { return nil }
+    return ["pause", "resume"].contains(command) ? "toggle" : command
+  }
   func transport(_ command: String, cancellation: RequestCancellation? = nil) throws -> JSONObject {
     if cancellation?.isCancelled == true { throw URLError(.cancelled) }
     guard online() else {
@@ -279,8 +288,7 @@ final class WebPlayback {
       }
       state = dict(try api.request("/me/player", timeout: 2, cancellation: cancellation))
       guard let playing = state["is_playing"] as? Bool else {
-        throw SpotifyFailure(
-          message: "Start playing music in Spotify, then try again.", status: 404)
+        return ["fallback": true, "fallback_reason": "missing-playback-state"]
       }
       command = playing ? "pause" : "resume"
     }

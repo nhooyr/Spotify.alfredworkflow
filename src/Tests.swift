@@ -881,7 +881,8 @@ private func testWebTransport() throws {
   ])
   var playing = true
   var shuffleStates: [String] = []
-  var noCurrentDevice = false
+  var stateStatus = 200
+  var stateOverride: JSONObject?
   var response = 204
   var calls: [(String, String)] = []
   TestURLProtocol.response = { request in
@@ -893,11 +894,11 @@ private func testWebTransport() throws {
       "Playback-device regression test never targets or transfers to the desktop")
     if path == "/v1/me/player" {
       return (
-        200,
-        try! jsonData(
-          noCurrentDevice
-            ? [:]
-            : [
+        stateStatus,
+        stateStatus == 204
+          ? Data()
+          : try! jsonData(
+            stateOverride ?? [
               "device": ["id": "phone", "name": "Phone", "type": "Smartphone"],
               "is_playing": playing,
             ])
@@ -954,17 +955,61 @@ private func testWebTransport() throws {
   check(
     shuffleStates == ["true", "true", "false", "false"],
     "Shuffle regression test uses idempotent explicit on and off states")
-  noCurrentDevice = true
-  do {
-    _ = try playback.transport("toggle")
-    check(false, "Missing playback state must not select a different device")
-  } catch {
+  for (name, status, payload): (String, Int, JSONObject) in [
+    ("empty JSON", 200, [:]), ("no content", 204, [:]),
+    ("missing is_playing", 200, ["device": ["id": "phone"]]),
+    ("null is_playing", 200, ["is_playing": NSNull()]),
+  ] {
+    stateStatus = status
+    stateOverride = payload
+    let before = calls.count
+    let fallback = try playback.transport("toggle")
+    let event = fallback.merging(["command": "toggle"]) { _, new in new }
     check(
-      (error as? SpotifyFailure)?.status == 404,
-      "Playback-device regression test rejects local fallback for an unknown online device")
+      fallback["fallback"] as? Bool == true
+        && text(fallback["fallback_reason"]) == "missing-playback-state"
+        && calls.count == before + 1 && calls.last?.0 == "GET"
+        && calls.last?.1 == "/v1/me/player"
+        && WebPlayback.appleScriptCommand(for: event, offline: false, remote: true) == "toggle",
+      "Playback-state regression test requests local toggle without changing API output for " + name
+    )
   }
-  noCurrentDevice = false
+  stateStatus = 200
+  stateOverride = nil
+  for (command, expected) in [
+    ("toggle", "toggle"), ("pause", "toggle"), ("resume", "toggle"),
+    ("next", "next"), ("previous", "previous"),
+  ] {
+    let fallback: JSONObject = ["fallback": true, "command": command]
+    check(
+      WebPlayback.appleScriptCommand(for: fallback, offline: true, remote: false) == expected
+        && WebPlayback.appleScriptCommand(for: fallback, offline: false, remote: false) == nil
+        && WebPlayback.appleScriptCommand(for: fallback, offline: true, remote: true) == nil,
+      "Playback-state regression test retains the offline local-only fallback policy for " + command
+    )
+  }
+  check(
+    WebPlayback.appleScriptCommand(
+      for: ["command": "next", "fallback": true, "fallback_reason": "missing-playback-state"],
+      offline: false, remote: true) == nil,
+    "Playback-state regression test limits the missing-state exception to toggle")
   for status in [403, 500, 429] {
+    stateStatus = status
+    let before = calls.count
+    do {
+      _ = try playback.transport("toggle")
+      check(false, "A rejected playback-state request must remain an error")
+    } catch {
+      check(
+        (error as? SpotifyFailure)?.status == status
+          && calls.count == before + 1 && calls.last?.0 == "GET"
+          && calls.last?.1 == "/v1/me/player",
+        "Playback-state regression test does not request fallback on API status " + String(status))
+    }
+    if status == 429 {
+      try FileManager.default.removeItem(at: paths.data.appendingPathComponent("api-cooldown.json"))
+    }
+    stateStatus = 200
     response = status
     do {
       _ = try playback.transport("shuffle-on")
@@ -995,7 +1040,7 @@ private func testWebTransport() throws {
       "Playback-device regression test cancels without sending or falling back")
   }
   print(
-    "Active-device transport regression tests passed: phone controls, one-request commands, failure isolation, and offline behavior."
+    "Active-device transport regression tests passed: phone controls, missing-state local toggle, failure isolation, and offline behavior."
   )
 }
 

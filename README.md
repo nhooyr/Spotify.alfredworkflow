@@ -96,7 +96,8 @@ or Liked Songs. This source can stay the same when Spotify continues with autopl
 
 Playback uses the Web API online and keeps Spotify’s active output device, including
 your phone or speaker. It starts Spotify on the Mac when no device is active.
-AppleScript is used only without internet access and may bring Spotify forward.
+AppleScript is used without internet access or when the API cannot report whether
+Spotify is playing, and may bring Spotify forward.
 
 ### Offline and caching
 

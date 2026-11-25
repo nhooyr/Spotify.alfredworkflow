@@ -2,7 +2,7 @@
 
 ## v0.6.3 (Unreleased)
 
-- Keep playback on Spotify’s active output device; use AppleScript only without internet access.
+- Keep Web API playback controls on Spotify’s active output device.
 - Speed up album browsing, local search, menu navigation and artwork cache updates.
 - Detect desktop playback immediately while play requests are pending, without reverting to the previous song or playlist.
 - Show the selected song, album, artist or playlist type in artwork captions.
@@ -11,6 +11,7 @@
 - Keep the now-playing header stable through incomplete metadata and empty Spotify playback-state replies.
 - Add secure timestamps to Developer ID signatures for distribution.
 - Signed release binaries, with optional notarization via `build.sh --notarize`.
+- Fall back to AppleScript for play/pause when Spotify supplies no playback state.
 
 ## v0.6.2
 

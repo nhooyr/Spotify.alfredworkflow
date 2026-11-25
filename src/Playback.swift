@@ -156,14 +156,25 @@ final class NetworkAvailability {
 struct PlaybackIntent {
   let request: Int
   let desired: Bool
-  let previous: Bool
+  let coalesces: Bool
+  private(set) var latestDesired: Bool
   var acknowledged = false
   var expiresAt = Date.distantFuture
 
-  init(request: Int, desired: Bool, previous: Bool) {
+  init(request: Int, desired: Bool, coalesces: Bool = false) {
     self.request = request
     self.desired = desired
-    self.previous = previous
+    self.coalesces = coalesces
+    latestDesired = desired
+  }
+  mutating func request(_ playing: Bool) {
+    latestDesired = playing
+  }
+  func followup(after observed: Bool) -> Bool? {
+    guard coalesces, acknowledged, observed == desired, latestDesired != observed else {
+      return nil
+    }
+    return latestDesired
   }
   mutating func acknowledge(now: Date = Date()) {
     guard !acknowledged else { return }

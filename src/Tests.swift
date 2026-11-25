@@ -1053,9 +1053,9 @@ private func testPlaybackIntent() {
   }
   let now = Date(timeIntervalSince1970: 1000)
   for desired in [false, true] {
-    var intent = PlaybackIntent(request: 42, desired: desired, previous: !desired)
+    var intent = PlaybackIntent(request: 42, desired: desired)
     check(
-      intent.request == 42 && intent.desired == desired && intent.previous == !desired
+      intent.request == 42 && intent.desired == desired
         && !intent.accepts(desired, now: now) && !intent.accepts(!desired, now: now)
         && !intent.accepts(!desired, now: now.addingTimeInterval(60)),
       "Playback intent regression test rejects all snapshots until command acknowledgement")
@@ -1067,8 +1067,52 @@ private func testPlaybackIntent() {
         && intent.accepts(!desired, now: now.addingTimeInterval(3)),
       "Playback intent regression test accepts confirmation and bounds stale-state protection")
   }
+  for sent in [false, true] {
+    var burst = PlaybackIntent(request: 77, desired: sent, coalesces: true)
+    for _ in 0..<10_000 { burst.request(!burst.latestDesired) }
+    check(
+      burst.latestDesired == sent && burst.desired == sent && burst.request == 77,
+      "Playback burst regression test coalesces ten thousand toggles with the correct parity")
+    burst.request(!sent)
+    check(
+      burst.followup(after: sent) == nil,
+      "Playback burst regression test cannot dispatch a follow-up before acknowledgement")
+    burst.acknowledge(now: now)
+    check(
+      burst.followup(after: !sent) == nil,
+      "Playback burst regression test requires actual target confirmation after acknowledgement")
+    check(
+      burst.accepts(!sent, now: now.addingTimeInterval(3))
+        && burst.followup(after: !sent) == nil,
+      "Playback burst regression test never dispatches queued intent from unconfirmed or expired state"
+    )
+    burst.request(sent)
+    check(
+      burst.followup(after: sent) == nil,
+      "Playback burst regression test collapses a net no-op queue after confirmation")
+    burst.request(!sent)
+    burst.request(sent)
+    burst.request(!sent)
+    let latest = burst.followup(after: sent)
+    check(
+      latest == !sent && burst.desired == sent && burst.latestDesired == !sent,
+      "Playback burst regression test dispatches only the latest requested state after confirmation"
+    )
+    var followup = PlaybackIntent(request: 78, desired: latest!, coalesces: true)
+    followup.acknowledge(now: now)
+    check(
+      followup.followup(after: !sent) == nil,
+      "Playback burst regression test finishes a confirmed burst without another follow-up")
+    var direct = PlaybackIntent(request: 79, desired: sent)
+    direct.request(!sent)
+    direct.acknowledge(now: now)
+    check(
+      direct.followup(after: sent) == nil,
+      "Playback burst regression test leaves ordinary noncoalescing intents unchanged")
+  }
   print(
-    "Playback intent regression tests passed: acknowledgement, confirmation, and bounded expiry.")
+    "Playback intent regression tests passed: acknowledgement, confirmation, bounded expiry, and burst coalescing."
+  )
 }
 
 private func testExplicitTransportRecovery() throws {

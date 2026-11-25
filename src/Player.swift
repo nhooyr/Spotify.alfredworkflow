@@ -1018,6 +1018,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var initialFiles: [String: Date] = [:]
   private var alfredPID: pid_t = 0
   private var playbackIntent: PlaybackIntent?
+  private var playbackIntentExpiry: DispatchWorkItem?
+  private var confirmedPlaying = false
   private var localPlaybackCancellation: RequestCancellation?
   private var optimisticUntil = Date.distantPast
   private var playbackRequest = 0
@@ -1384,7 +1386,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       artworkPaths = artworkPaths.filter { !$0.value.isEmpty }
       imagesRequested = Set(artworkPaths.keys)
     }
-    if !["preview", "liked", "image"].contains(command) {
+    if !["preview", "liked", "image", "repeat-state"].contains(command) {
       inlineError = nil
       renderStatus()
     }
@@ -1748,8 +1750,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     clearPlaybackTarget()
     desktopPlaybackAvailable = false
     remotePlaybackDevice = false
+    confirmedPlaying = false
     pendingTransportRequest = nil
-    playbackIntent = nil
+    clearPlaybackIntent()
     localPlaybackCancellation?.cancel()
     spotify.invalidateStatus()
     playbackRequest += 1
@@ -2509,9 +2512,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         send("play", args: [uri, context, "running", String(request)])
       }
       pendingTransportRequest = nil
+      playbackIntentExpiry?.cancel()
       localPlaybackCancellation?.cancel()
       playbackIntent = PlaybackIntent(
-        request: playbackRequest, desired: true, previous: playbackIntent?.previous ?? playing)
+        request: playbackRequest, desired: true)
       playing = true
       optimisticUntil = Date().addingTimeInterval(1)
       updateToggle()
@@ -2547,12 +2551,25 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       showError("Go online to control the Spotify device already playing.")
       return
     }
-    let target = command == "toggle" ? (playing ? "pause" : "resume") : command
-    let previous = playbackIntent?.previous ?? playing
+    let desired: Bool?
+    switch command {
+    case "toggle": desired = !playing
+    case "pause": desired = false
+    case "resume": desired = true
+    default: desired = nil
+    }
+    if let desired = desired, var intent = playbackIntent, intent.coalesces {
+      intent.request(desired)
+      playbackIntent = intent
+      playing = desired
+      updateToggle()
+      return
+    }
+    let target = desired.map { $0 ? "resume" : "pause" } ?? command
     let cancelsSelection =
       playbackTarget?.acknowledged == false
       && !["shuffle-on", "shuffle-off"].contains(command)
-    if cancelsSelection { playbackIntent = nil }
+    if cancelsSelection { clearPlaybackIntent() }
     if command == "previous" || command == "next" || cancelsSelection {
       clearPlaybackTarget()
     }
@@ -2560,24 +2577,47 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     playbackRequest += 1
     pendingTransportRequest = playbackRequest
     lastTransportTarget = target
-    if command == "toggle" {
+    if let desired = desired {
       localPlaybackCancellation?.cancel()
+      playbackIntentExpiry?.cancel()
       playbackIntent = PlaybackIntent(
-        request: playbackRequest, desired: !playing, previous: previous)
-      playing.toggle()
+        request: playbackRequest, desired: desired, coalesces: true)
+      playing = desired
       updateToggle()
     }
     send("transport", args: [target, String(playbackRequest)])
   }
+  private func clearPlaybackIntent() {
+    playbackIntentExpiry?.cancel()
+    playbackIntentExpiry = nil
+    playbackIntent = nil
+  }
   private func finishPlaybackIntent(request: Int, error: String?) {
-    guard playbackIntent?.request == request else { return }
+    guard var intent = playbackIntent, intent.request == request else { return }
     if error != nil {
-      if let intent = playbackIntent { playing = intent.previous }
-      playbackIntent = nil
+      clearPlaybackIntent()
+      playing = confirmedPlaying
+      optimisticUntil = .distantPast
       updateToggle()
     } else {
-      playbackIntent?.acknowledge()
+      intent.acknowledge()
+      playbackIntent = intent
+      playbackIntentExpiry?.cancel()
+      let work = DispatchWorkItem { [weak self] in self?.expirePlaybackIntent(request: request) }
+      playbackIntentExpiry = work
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + max(0, intent.expiresAt.timeIntervalSinceNow), execute: work)
     }
+  }
+  private func expirePlaybackIntent(request: Int) {
+    guard let intent = playbackIntent, intent.request == request, intent.acknowledged,
+      Date() >= intent.expiresAt
+    else { return }
+    clearPlaybackIntent()
+    playing = confirmedPlaying
+    optimisticUntil = .distantPast
+    updateToggle()
+    if inlineError == nil { showError("Spotify has not confirmed playback. Try again.") }
   }
   private func playLocally(_ command: String, request: Int, uri: String = "", context: String = "")
   {
@@ -2901,13 +2941,19 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if values.isEmpty, let intent = playbackIntent, Date() < intent.expiresAt { return }
     let observedPlaying = values.first == "playing"
     let useDesktopState = fromWeb && !remotePlaybackDevice && desktopPlaybackAvailable
-    if !useDesktopState, playbackIntent?.accepts(observedPlaying) != false {
-      if playbackIntent != nil {
-        if !fromWeb { playbackRequest += 1 }
-        spotify.invalidateStatus()
+    if !useDesktopState {
+      confirmedPlaying = observedPlaying
+      if playbackIntent?.accepts(observedPlaying) != false {
+        let followup = playbackIntent?.followup(after: observedPlaying)
+        if playbackIntent != nil {
+          if !fromWeb { playbackRequest += 1 }
+          spotify.invalidateStatus()
+        }
+        clearPlaybackIntent()
+        playing = followup ?? observedPlaying
+        updateToggle()
+        if let followup = followup { requestTransport(followup ? "resume" : "pause") }
       }
-      playbackIntent = nil
-      playing = observedPlaying
     }
     updateToggle()
     if values.count >= 7 {
@@ -5943,8 +5989,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       receive(result)
     }
-    func startSelection() {
-      begin(remote: false)
+    func transportCount() -> Int {
+      sentTestCommands.filter { $0 == "transport" }.count
+    }
+    func startSelection(reset: Bool = true) {
+      if reset { begin(remote: false) }
       setSearchText("")
       let uri = "spotify:track:" + String(repeating: "z", count: 22)
       let item: JSONObject = ["uri": uri, "name": "Selected song", "kind": "track"]
@@ -5986,19 +6035,77 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let resume = lastTransportTarget == "resume" && playing
 
     begin()
+    let coalescedBaseline = transportCount()
     togglePlayback()
-    let oldPause = playbackRequest
+    let firstPause = playbackRequest
     togglePlayback()
-    let latestResume = playbackRequest
-    acknowledge("pause", request: oldPause)
+    let queuedResume =
+      playing && playbackIntent?.request == firstPause
+      && playbackIntent?.latestDesired == true && transportCount() == coalescedBaseline + 1
+    acknowledge("pause", request: firstPause)
+    let acknowledgementWaitsForState =
+      playing && playbackIntent?.request == firstPause && playbackIntent?.acknowledged == true
+      && transportCount() == coalescedBaseline + 1
+    observe(pausedState)
+    let latestResume = playbackIntent?.request ?? -1
+    let oneFollowup =
+      playing && latestResume != firstPause && lastTransportTarget == "resume"
+      && playbackIntent?.acknowledged == false && transportCount() == coalescedBaseline + 2
+    acknowledge("pause", request: firstPause)
     let staleIgnored =
       playing && playbackIntent?.request == latestResume && playbackIntent?.acknowledged == false
-      && lastTransportTarget == "resume"
     acknowledge("resume", request: latestResume)
     observe(pausedState)
     let latestDesiredPreserved = playing && playbackIntent?.request == latestResume
     observe(state)
-    let latestConfirmed = playing && playbackIntent == nil
+    let latestConfirmed =
+      playing && playbackIntent == nil && transportCount() == coalescedBaseline + 2
+
+    begin()
+    let burstBaseline = transportCount()
+    togglePlayback()
+    let burstPause = playbackRequest
+    for _ in 0..<40 { togglePlayback() }
+    let burstCoalesced =
+      !playing && playbackIntent?.request == burstPause && transportCount() == burstBaseline + 1
+    acknowledge("pause", request: burstPause)
+    observe(pausedState)
+    let burstNeedsNoFollowup =
+      !playing && playbackIntent == nil && transportCount() == burstBaseline + 1
+
+    begin()
+    let limitedBaseline = transportCount()
+    togglePlayback()
+    let acceptedPause = playbackRequest
+    togglePlayback()
+    acknowledge("pause", request: acceptedPause)
+    observe(pausedState)
+    let rejectedResume = playbackIntent?.request ?? -1
+    let rateLimit = "Fixture rate limit (429)"
+    acknowledge("resume", request: rejectedResume, error: rateLimit)
+    acknowledge("pause", request: acceptedPause)
+    let observedFailureRestored =
+      !playing && !confirmedPlaying && playbackIntent == nil && remotePlaybackDevice
+      && inlineError == rateLimit && transportCount() == limitedBaseline + 2
+    send("repeat-state", args: [String(repeatRequest), String(playbackRequest)])
+    let pollingPreservesFailure = inlineError == rateLimit && !playing
+
+    begin()
+    let expiredBaseline = transportCount()
+    togglePlayback()
+    let expiredPause = playbackRequest
+    togglePlayback()
+    acknowledge("pause", request: expiredPause)
+    playbackIntent?.expiresAt = .distantPast
+    expirePlaybackIntent(request: expiredPause)
+    let expiryRestoresConfirmed =
+      playing && confirmedPlaying && playbackIntent == nil && inlineError != nil
+      && transportCount() == expiredBaseline + 1
+    togglePlayback()
+    let afterExpiry = playbackIntent?.request
+    expirePlaybackIntent(request: expiredPause)
+    let staleExpiryIgnored =
+      !playing && playbackIntent?.request == afterExpiry && playbackIntent?.acknowledged == false
 
     begin()
     togglePlayback()
@@ -6137,18 +6244,25 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       playbackRequest > offlineNextRequest && inlineError == offlineNextError
 
     begin(remote: false)
+    let localQueueBaseline = transportCount()
     togglePlayback()
     let cancelledRequest = playbackRequest
     let cancelledCompletion = RequestCancellation()
     localPlaybackCancellation = cancelledCompletion
     togglePlayback()
+    let queueKeepsLocalOperation =
+      !cancelledCompletion.isCancelled && playing
+      && playbackIntent?.request == cancelledRequest
+      && transportCount() == localQueueBaseline + 1
+    startSelection(reset: false)
     let replacementRequest = playbackIntent?.request
     completeLocalPlayback(
       request: cancelledRequest, cancellation: cancelledCompletion,
       error: "Superseded local completion")
     let cancelledCompletionIgnored =
       cancelledCompletion.isCancelled && playing && inlineError == nil
-      && playbackIntent?.request == replacementRequest && playbackIntent?.acknowledged == false
+      && replacementRequest != cancelledRequest && playbackIntent?.request == replacementRequest
+      && playbackIntent?.acknowledged == false
     return [
       "status": "ok", "remote_header_tracks_active_spotify_device": header,
       "local_snapshot_does_not_overwrite_phone": keepsRemote,
@@ -6159,8 +6273,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "pre_acknowledgement_read_is_stale_after_acknowledgement": staleReadIgnored,
       "post_acknowledgement_stale_state_cannot_undo_pause": afterAcknowledgement,
       "matching_state_confirms_playback_intent": observedConfirmation,
+      "rapid_resume_waits_for_pause_acknowledgement_and_observation": queuedResume
+        && acknowledgementWaitsForState && oneFollowup,
       "rapid_resume_ignores_old_pause_acknowledgement": staleIgnored && latestDesiredPreserved
         && latestConfirmed,
+      "rapid_noop_toggle_burst_sends_no_followup": burstCoalesced && burstNeedsNoFollowup,
+      "rate_limited_followup_restores_observed_paused_device": observedFailureRestored,
+      "background_polling_preserves_latest_transport_error": pollingPreservesFailure,
+      "unconfirmed_playback_expiry_discards_queued_target": expiryRestoresConfirmed
+        && staleExpiryIgnored,
       "unrelated_transport_preserves_playback_intent": unrelatedPreservesIntent
         && unrelatedDoesNotAcknowledge && ownerAcknowledges && unrelatedSettles,
       "local_confirmation_rejects_earlier_web_read": localConfirms && localFence,
@@ -6177,7 +6298,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "shuffle_preserves_unacknowledged_track_start": shuffleKeepsStart
         && shuffleDoesNotConfirmStart && selectedPlayAcknowledged && shuffledStartSettles,
       "offline_next_completion_survives_read_generation_change": offlineNextCompletion,
-      "superseded_local_completion_is_ignored": cancelledCompletionIgnored,
+      "queued_toggle_preserves_active_local_operation": queueKeepsLocalOperation,
+      "new_selection_cancels_superseded_local_completion": cancelledCompletionIgnored,
       "online_errors_never_fall_back_to_desktop": onlineErrorsDoNotMoveDevice,
       "missing_api_state_allows_explicit_local_pause": missingStateFallsBack
         && missingStateRequestsPause,
@@ -6372,9 +6494,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func demo() {
+    confirmedPlaying = playing
     desktopPlaybackAvailable = false
     pendingTransportRequest = nil
-    playbackIntent = nil
+    clearPlaybackIntent()
     clearPlaybackTarget()
     connection = "connected"
     remotePlaybackDevice = false

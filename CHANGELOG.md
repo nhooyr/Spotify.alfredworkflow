@@ -5,6 +5,7 @@
 - Keep Web API playback controls on Spotify’s active output device.
 - Speed up album browsing, local search, menu navigation and artwork cache updates.
 - Keep menu rows and selection highlighting steady while scrolling with the Up/Down keys.
+- Keep Command–1 through Command–9, Command–0 and Command–Minus aligned with all visible rows and support Fn–Up/Fn–Down paging.
 - Detect desktop playback immediately while play requests are pending, without reverting to the previous song or playlist.
 - Show the selected song, album, artist or playlist type in artwork captions.
 - Preserve typed path casing and insert lowercase browsing paths automatically.

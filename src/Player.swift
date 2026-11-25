@@ -583,12 +583,13 @@ private final class IconButton: NSButton {
   }
 }
 
+private let menuShortcutKeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-"]
+
 private final class MusicCell: NSTableCellView {
   private struct DisplayState: Equatable {
     let name: String
     let symbol: String
     let kind: String
-    let index: Int
     let selected: Bool
     let theme: Int
   }
@@ -614,8 +615,11 @@ private final class MusicCell: NSTableCellView {
   override func layout() {
     super.layout()
     artwork.frame = NSRect(x: 5, y: 2, width: 21, height: 21)
-    returnArrow.frame = NSRect(x: bounds.width - 37, y: 0, width: 20, height: bounds.height)
     center(title, x: 33, width: max(0, bounds.width - 77))
+    layoutShortcut()
+  }
+  private func layoutShortcut() {
+    returnArrow.frame = NSRect(x: bounds.width - 37, y: 0, width: 20, height: bounds.height)
     center(shortcut, x: bounds.width - 37, width: 20, glyphCentered: true)
     center(shortcutNumber, x: bounds.width - 22, width: 17, glyphCentered: true)
   }
@@ -635,16 +639,23 @@ private final class MusicCell: NSTableCellView {
     let scale = window?.backingScaleFactor ?? 2
     label.setFrameOrigin(NSPoint(x: x, y: (y * scale).rounded() / scale))
   }
+  func updateShortcut(_ index: Int, selected: Bool) {
+    let number =
+      !selected && menuShortcutKeys.indices.contains(index) ? menuShortcutKeys[index] : ""
+    guard shortcutNumber.stringValue != number || returnArrow.isHidden != !selected else { return }
+    shortcut.stringValue = number.isEmpty ? "" : "⌘"
+    shortcutNumber.stringValue = number
+    returnArrow.isHidden = !selected
+    if bounds.width > 0 { layoutShortcut() } else { needsLayout = true }
+  }
   func display(_ item: MusicItem, index: Int, selected: Bool) {
+    updateShortcut(index, selected: selected)
     let state = DisplayState(
-      name: item.name, symbol: item.symbol, kind: item.kind, index: index,
+      name: item.name, symbol: item.symbol, kind: item.kind,
       selected: selected, theme: playerThemeGeneration)
     guard displayed != state else { return }
     displayed = state
     title.stringValue = item.name
-    shortcut.stringValue = !selected && index < 9 ? "⌘" : ""
-    returnArrow.isHidden = !selected
-    shortcutNumber.stringValue = !selected && index < 9 ? String(index + 1) : ""
     title.font = playerTheme.font(playerTheme.resultFont, size: 16)
     shortcut.font = playerTheme.font(playerTheme.shortcutFont, size: 14)
     shortcutNumber.font = playerTheme.font(playerTheme.shortcutFont, size: 14)
@@ -962,6 +973,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var suppressSelection = false
   private var wasShown = false
   private var showCount = 0
+  private var menuViewportTestResult: [String: Any]?
   private var menuScrollingTestResult: [String: Any]?
   private var screenshotModeTestResult: [String: Any]?
   private var apiActivityTestResult: [String: Any]?
@@ -1204,6 +1216,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     table.focusRingType = .none
     table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
     scroll.documentView = table
+    scroll.contentView.postsBoundsChangedNotifications = true
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(menuBoundsChanged(_:)), name: NSView.boundsDidChangeNotification,
+      object: scroll.contentView)
     root.addSubview(scroll)
     preview.frame = NSRect(x: 342, y: 81, width: 230, height: 230)
     preview.imageScaling = .scaleProportionallyUpOrDown
@@ -1298,7 +1314,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       row.needsDisplay = true
       if self.filtered.indices.contains(index) {
         (self.table.view(atColumn: 0, row: index, makeIfNecessary: false) as? MusicCell)?.display(
-          self.filtered[index], index: index, selected: index == self.table.selectedRow)
+          self.filtered[index], index: self.shortcutIndex(for: index),
+          selected: index == self.table.selectedRow)
       }
     }
     scroll.verticalScroller?.needsDisplay = true
@@ -1761,6 +1778,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func filter(preferredURI: String? = nil, resetSelection: Bool = false) {
     guard pendingPlaintextPath == nil else { return }
     let selection = preferredURI ?? (resetSelection ? nil : selectedItem()?.uri)
+    let origin = scroll.contentView.bounds.origin
     let input = connection == "connected" ? search.stringValue : ""
     let query = input.hasPrefix(breadcrumb) ? String(input.dropFirst(breadcrumb.count)) : input
     let terms =
@@ -1785,10 +1803,38 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if !filtered.isEmpty {
       let index = selection.flatMap { uri in filtered.firstIndex { $0.uri == uri } } ?? 0
       table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-      table.scrollRowToVisible(index)
+      if !resetSelection, preferredURI == nil, selection == filtered[index].uri {
+        scrollMenu(to: origin)
+      } else {
+        table.scrollRowToVisible(index)
+      }
     }
     suppressSelection = false
+    updateMenuShortcuts()
     previewSelection(debounce: true)
+  }
+  private var visibleShortcutRows: Range<Int> {
+    let visible = scroll.contentView.documentVisibleRect
+    let rows = table.rows(in: visible)
+    guard rows.length > 0, rows.location < filtered.count else { return 0..<0 }
+    var first = rows.location
+    if table.rect(ofRow: first).minY < visible.minY - 0.01 { first += 1 }
+    var end = min(filtered.count, NSMaxRange(rows), first + menuShortcutKeys.count)
+    if end > first, table.rect(ofRow: end - 1).maxY > visible.maxY + 0.01 { end -= 1 }
+    return first..<end
+  }
+  private func shortcutIndex(for row: Int) -> Int {
+    let rows = visibleShortcutRows
+    return rows.contains(row) ? row - rows.lowerBound : menuShortcutKeys.count
+  }
+  @objc private func menuBoundsChanged(_ notification: Notification) { updateMenuShortcuts() }
+  private func updateMenuShortcuts() {
+    let rows = visibleShortcutRows
+    table.enumerateAvailableRowViews { row, index in
+      let slot = rows.contains(index) ? index - rows.lowerBound : menuShortcutKeys.count
+      (row.view(atColumn: 0) as? MusicCell)?.updateShortcut(
+        slot, selected: index == self.table.selectedRow)
+    }
   }
   private func selectedItem() -> MusicItem? {
     let index = table.selectedRow
@@ -1803,7 +1849,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let id = NSUserInterfaceItemIdentifier("musicCell")
     let cell = (tableView.makeView(withIdentifier: id, owner: self) as? MusicCell) ?? MusicCell()
     cell.identifier = id
-    cell.display(filtered[row], index: row, selected: tableView.selectedRow == row)
+    cell.display(
+      filtered[row], index: shortcutIndex(for: row), selected: tableView.selectedRow == row)
     return cell
   }
   func tableViewSelectionDidChange(_ notification: Notification) {
@@ -1813,7 +1860,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       .location..<NSMaxRange(table.rows(in: table.visibleRect)) where filtered.indices.contains(row)
     {
       (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MusicCell)?.display(
-        filtered[row], index: row, selected: table.selectedRow == row)
+        filtered[row], index: shortcutIndex(for: row), selected: table.selectedRow == row)
     }
     previewSelection()
   }
@@ -2134,6 +2181,14 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       return connection != "credentials"
     }
+    if modifiers.isEmpty && commandSelector == #selector(NSResponder.scrollPageUp(_:)) {
+      page(-1)
+      return true
+    }
+    if modifiers.isEmpty && commandSelector == #selector(NSResponder.scrollPageDown(_:)) {
+      page(1)
+      return true
+    }
     if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveDown(_:)) {
       move(1)
       return true
@@ -2215,7 +2270,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       guard connection == "credentials" else { return true }
       if modifiers == .command, ["s", "p", "n", "r"].contains(key.lowercased()) { return true }
       if modifiers.contains(.command),
-        modifiers.contains(.control) || Int(key) != nil || [125, 126].contains(event.keyCode)
+        modifiers.contains(.control) || menuShortcutKeys.contains(key)
+          || [125, 126].contains(event.keyCode)
       {
         return true
       }
@@ -2223,6 +2279,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if modifiers == .option && [36, 76].contains(event.keyCode) {
       openSelection(preservingSelection: false, playDirectly: true)
+      return true
+    }
+    if modifiers.isEmpty && [116, 121].contains(event.keyCode) {
+      page(event.keyCode == 116 ? -1 : 1)
       return true
     }
     let transport: String?
@@ -2258,9 +2318,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         openSelection(preservingSelection: true)
         return true
       }
-      if let number = Int(key), number >= 1, number <= 9 {
-        let index = number - 1
-        if filtered.indices.contains(index) {
+      if let slot = menuShortcutKeys.firstIndex(of: key) {
+        let rows = visibleShortcutRows
+        let index = rows.lowerBound + slot
+        if rows.contains(index) {
           table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
           activateSelection()
         }
@@ -2279,28 +2340,43 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     return false
   }
+  private func scrollMenu(to proposed: NSPoint, selecting row: Int? = nil) {
+    let clip = scroll.contentView
+    let visible = table.visibleRect
+    let bounds = clip.constrainBoundsRect(NSRect(origin: proposed, size: clip.bounds.size))
+    let scrolling = bounds.origin != clip.bounds.origin
+    if scrolling {
+      // Prepare and lay out incoming rows before exposing the new viewport.
+      table.prepareContent(in: visible.intersects(bounds) ? visible.union(bounds) : bounds)
+      table.layoutSubtreeIfNeeded()
+    }
+    clip.scroll(to: bounds.origin)
+    scroll.reflectScrolledClipView(clip)
+    if let row = row { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+    updateMenuShortcuts()
+    if scrolling {
+      table.layoutSubtreeIfNeeded()
+      clip.displayIfNeeded()
+    }
+  }
   private func move(_ offset: Int) {
     collapseSearchSelection()
     guard !filtered.isEmpty else { return }
     let index = min(filtered.count - 1, max(0, table.selectedRow + offset))
     let visible = table.visibleRect
     let incoming = table.rect(ofRow: index)
-    let scrolling = !visible.contains(incoming)
-    if scrolling {
-      // Prepare and lay out incoming rows before exposing the new viewport.
-      table.prepareContent(in: visible.union(incoming))
-      table.layoutSubtreeIfNeeded()
-    }
     var origin = scroll.contentView.bounds.origin
     if incoming.minY < visible.minY { origin.y -= visible.minY - incoming.minY }
     if incoming.maxY > visible.maxY { origin.y += incoming.maxY - visible.maxY }
-    scroll.contentView.scroll(to: origin)
-    scroll.reflectScrolledClipView(scroll.contentView)
-    table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-    if scrolling {
-      table.layoutSubtreeIfNeeded()
-      scroll.contentView.displayIfNeeded()
-    }
+    scrollMenu(to: origin, selecting: index)
+  }
+  private func page(_ direction: Int) {
+    collapseSearchSelection()
+    guard !filtered.isEmpty else { return }
+    var origin = scroll.contentView.bounds.origin
+    origin.y +=
+      CGFloat(direction) * max(1, scroll.contentView.bounds.height - scroll.verticalPageScroll)
+    scrollMenu(to: origin)
   }
   @objc private func activateSelection() { openSelection(preservingSelection: false) }
   private func openSelection(preservingSelection: Bool, playDirectly: Bool = false) {
@@ -3069,6 +3145,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-editing" {
       return editingChecks()
     }
+    if testMode && value["command"] as? String == "test-menu-viewport" {
+      menuViewportTestResult = nil
+      Task { @MainActor [weak self] in
+        guard let self = self else { return }
+        self.menuViewportTestResult = await self.menuViewportChecks()
+      }
+      return ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-menu-viewport-result" {
+      return menuViewportTestResult ?? ["status": "pending"]
+    }
     if testMode && value["command"] as? String == "test-menu-scrolling" {
       menuScrollingTestResult = nil
       Task { @MainActor [weak self] in
@@ -3150,6 +3237,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     clearPlaybackTarget()
     lifeTimer?.invalidate()
     statusTimer?.invalidate()
+    NotificationCenter.default.removeObserver(self)
     NSWorkspace.shared.notificationCenter.removeObserver(self)
     server.close()
     backend.stop()
@@ -4239,6 +4327,124 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     guard bottom >= top else { return .infinity }
     let scale = CGFloat(bitmap.pixelsHigh) / view.bounds.height
     return abs(CGFloat(top + bottom + 1) / (2 * scale) - view.bounds.midY)
+  }
+  @MainActor private func menuViewportChecks() async -> [String: Any] {
+    demo()
+    defer { demo() }
+    search.isEnabled = true
+    setSearchText("")
+    focusSearch(selectAll: false)
+    guard let editor = search.currentEditor() as? NSTextView else { return ["status": "error"] }
+    source = (0..<60).map {
+      MusicItem(["name": "Item \($0)", "uri": "viewport:\($0)", "kind": "track"])
+    }
+    catalog = source
+    filter(resetSelection: true)
+    panel.contentView?.layoutSubtreeIfNeeded()
+    table.layoutSubtreeIfNeeded()
+    func post(_ code: UInt16, _ text: String, _ modifiers: NSEvent.ModifierFlags) {
+      NSApp.postEvent(
+        NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: modifiers,
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, characters: text, charactersIgnoringModifiers: text,
+          isARepeat: false, keyCode: code)!, atStart: false)
+    }
+    func labelsMatch() -> Bool {
+      let rows = visibleShortcutRows
+      var correct = true
+      var count = 0
+      table.enumerateAvailableRowViews { row, index in
+        guard let cell = row.view(atColumn: 0) as? MusicCell else { return }
+        let expected =
+          rows.contains(index) && index != table.selectedRow
+          ? menuShortcutKeys[index - rows.lowerBound] : ""
+        correct = correct && cell.shortcutNumber.stringValue == expected
+        if rows.contains(index) { count += 1 }
+      }
+      return correct && count == rows.count
+    }
+    let codes: [UInt16] = [18, 19, 20, 21, 23, 22, 26, 28, 25, 29, 27]
+    var labels = true
+    var activation = true
+    for (offset, first, count): (CGFloat, Int, Int) in [(0, 0, 11), (326, 14, 10), (1224, 49, 11)] {
+      scrollMenu(to: NSPoint(x: 0, y: offset))
+      let rows = visibleShortcutRows
+      labels = labels && rows.lowerBound == first && rows.count == count && labelsMatch()
+      for slot in 0..<rows.count {
+        post(codes[slot], menuShortcutKeys[slot], .command)
+        try? await Task.sleep(nanoseconds: 25_000_000)
+        activation = activation && table.selectedRow == rows.lowerBound + slot
+        labels = labels && labelsMatch()
+      }
+    }
+    scrollMenu(to: NSPoint(x: 0, y: 300))
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 301))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let partialRowSkipped = visibleShortcutRows.lowerBound == 13 && labelsMatch()
+    scrollMenu(to: .zero, selecting: 0)
+    let selection = table.selectedRow
+    let caret = editor.selectedRange()
+    let distance = scroll.contentView.bounds.height - scroll.verticalPageScroll
+    post(121, "\u{f72d}", .function)
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let pageDistance = abs(scroll.contentView.bounds.origin.y - distance) < 0.01
+    let pagedOrigin = scroll.contentView.bounds.origin
+    filter()
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let refreshPreservedPage = scroll.contentView.bounds.origin == pagedOrigin && labelsMatch()
+    var preserved = table.selectedRow == selection && editor.selectedRange() == caret
+    labels = labels && labelsMatch()
+    for _ in 0..<8 {
+      post(121, "\u{f72d}", .function)
+      try? await Task.sleep(nanoseconds: 25_000_000)
+      preserved = preserved && table.selectedRow == selection && editor.selectedRange() == caret
+      labels = labels && labelsMatch()
+    }
+    let last = scroll.contentView.bounds.origin
+    post(121, "\u{f72d}", .function)
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let bottomClamped = scroll.contentView.bounds.origin == last && last.y > 0
+    post(125, "\u{f701}", .function)
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let arrowAfterPaging =
+      table.selectedRow == selection + 1
+      && table.visibleRect.contains(table.rect(ofRow: table.selectedRow)) && labelsMatch()
+    scrollMenu(to: last, selecting: selection)
+    for _ in 0..<9 {
+      post(116, "\u{f72c}", .function)
+      try? await Task.sleep(nanoseconds: 25_000_000)
+      preserved = preserved && table.selectedRow == selection && editor.selectedRange() == caret
+      labels = labels && labelsMatch()
+    }
+    let topClamped = scroll.contentView.bounds.origin.y == 0
+    setSearchText("no-fixture-match")
+    filter(resetSelection: true)
+    post(18, "1", .command)
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let emptySafe = visibleShortcutRows.isEmpty && table.selectedRow == -1
+    setSearchText("")
+    source = Array(source.prefix(3))
+    catalog = source
+    filter(resetSelection: true)
+    for slot in 8..<codes.count {
+      post(codes[slot], menuShortcutKeys[slot], .command)
+      try? await Task.sleep(nanoseconds: 25_000_000)
+    }
+    return [
+      "status": "ok", "numbers_follow_visible_rows": labels,
+      "number_keys_activate_visible_rows": activation,
+      "clipped_top_row_does_not_steal_command_1": partialRowSkipped,
+      "fn_down_uses_native_page_overlap": pageDistance,
+      "passive_refresh_preserves_paged_viewport": refreshPreservedPage,
+      "paging_preserves_selection_and_caret": preserved,
+      "paging_clamps_at_both_ends": bottomClamped && topClamped,
+      "arrow_after_paging_reveals_selection": arrowAfterPaging,
+      "empty_and_short_lists_ignore_missing_slots": emptySafe
+        && visibleShortcutRows.count == 3 && table.selectedRow == 0 && labelsMatch(),
+      "keyboard_navigation_keeps_input_focus": panel.firstResponder === editor,
+    ]
   }
   @MainActor private func menuScrollingChecks() async -> [String: Any] {
     demo()

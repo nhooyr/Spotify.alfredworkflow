@@ -3464,7 +3464,8 @@ func runIntegrationTests(screenshot: URL? = nil) {
     dict(request("state")["theme"])["id"] as? String == env["alfred_theme"],
     "C launcher safely forwards theme context")
   for command in [
-    "test-ui", "test-menu-scrolling", "test-editing", "test-local-bindings", "test-navigation",
+    "test-ui", "test-menu-scrolling", "test-menu-viewport", "test-editing", "test-local-bindings",
+    "test-navigation",
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",
     "test-single-line", "test-offline-ui", "test-api-activity", "test-remote-playback",

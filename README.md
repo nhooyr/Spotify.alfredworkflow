@@ -157,7 +157,9 @@ rate limits a refresh. A confirmed account change clears the previous account’
 * <kbd>Opt</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist or all Liked Songs directly; browse-only items open normally.
 * <kbd>Cmd</kbd><kbd>Down</kbd> Open the selection, restoring its previous selection and filter.
 * <kbd>Cmd</kbd><kbd>Up</kbd> Go up one level, restoring the parent selection and filter.
-* <kbd>Cmd</kbd><kbd>5</kbd> Open **Search** for Spotify’s full catalogue.
+* <kbd>Cmd</kbd><kbd>1</kbd>–<kbd>9</kbd>, <kbd>Cmd</kbd><kbd>0</kbd> and <kbd>Cmd</kbd><kbd>-</kbd> Open the eleven fully visible menu items; shortcuts follow scrolling.
+* <kbd>Fn</kbd><kbd>Up</kbd> / <kbd>Fn</kbd><kbd>Down</kbd> Scroll one page without changing the selection.
+* <kbd>Cmd</kbd><kbd>5</kbd> Open **Search** from the home menu.
 * <kbd>Cmd</kbd><kbd>Enter</kbd> Carry your current query into catalogue search.
 * <kbd>Backspace</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
 * <kbd>Cmd</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.

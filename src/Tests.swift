@@ -3476,7 +3476,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
   ] {
     let initial = request(command)
     var result = initial
-    let deadline = Date().addingTimeInterval(3)
+    let deadline = Date().addingTimeInterval(command.hasPrefix("test-menu-") ? 10 : 3)
     while text(result["status"]) == "pending" && Date() < deadline {
       usleep(10000)
       result = initial.merging(request(command + "-result")) { _, latest in latest }

@@ -959,6 +959,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var showCount = 0
   private var screenshotModeTestResult: [String: Any]?
   private var apiActivityTestResult: [String: Any]?
+  private var playbackHeaderTestResult: [String: Any]?
   private var inlineError: String?
   private var statusTimer: Timer?
   private var lifeTimer: Timer?
@@ -966,6 +967,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var alfredPID: pid_t = 0
   private var optimisticUntil = Date.distantPast
   private var playbackRequest = 0
+  private var playbackTarget: PlaybackTarget?
+  private var playbackTargetUntil = Date.distantPast
+  private var playbackConfirmationWork: DispatchWorkItem?
+  private var playbackConfirmationAttempts = 0
   private var currentImageURL = ""
   private var currentArtPath = ""
   private let imageCache = NSCache<NSString, NSImage>()
@@ -1331,7 +1336,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let type = value["type"] as? String ?? ""
     if let offline = value["offline"] as? Bool {
       self.offline = offline
-      if offline { catalogPending = false }
+      if offline {
+        catalogPending = false
+        clearPlaybackTarget()
+      }
       renderStatus()
     }
     if let active = value["api_active"] as? Bool { updateAPIActivity(active) }
@@ -1373,10 +1381,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return
     }
     if type == "playback-context" {
-      guard connection == "connected", value["request"] as? Int == playbackRequest,
+      guard connection == "connected", !offline, value["request"] as? Int == playbackRequest,
         Date() >= optimisticUntil
       else { return }
       let track = value["track"] as? String ?? ""
+      if let target = activePlaybackTarget(),
+        !target.acceptsContextEvent(track: track, context: text(dict(value["context"])["uri"]))
+      {
+        return
+      }
       let context = PlaybackContext(dict(value["context"]))
       observedPlaybackContext = (track, context)
       if !track.isEmpty, track == currentTrackURI { applyPlaybackContext(context, track: track) }
@@ -1391,6 +1404,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       guard connection == "connected", value["request"] as? Int == playbackRequest else { return }
       // Invalidate state reads that began before this command finished.
       playbackRequest += 1
+      spotify.invalidateStatus()
       let command = value["command"] as? String ?? ""
       if value["fallback"] as? Bool == true {
         if !offline || remotePlaybackDevice {
@@ -1411,12 +1425,22 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         updateToggle()
       }
       if !testMode { refreshRepeat() }
+      schedulePlaybackConfirmation()
       return
     }
     if type == "playback" {
       guard connection == "connected", value["request"] as? Int == playbackRequest else { return }
       if value["start_desktop"] as? Bool != true {
         playbackRequest += 1
+        if value["error"] != nil || value["fallback"] as? Bool == true {
+          clearPlaybackTarget()
+        } else if playbackTarget != nil {
+          playbackTarget?.acknowledged = true
+          playbackTargetUntil = Date().addingTimeInterval(4)
+          spotify.invalidateStatus()
+          if !testMode, !remotePlaybackDevice { spotify.poll() }
+          schedulePlaybackConfirmation()
+        }
         if !testMode { refreshRepeat() }
       }
       if let error = value["error"] as? String {
@@ -1639,6 +1663,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
 
   private func clearDisconnectedState() {
+    clearPlaybackTarget()
     remotePlaybackDevice = false
     lastWebPlaybackAt = .distantPast
     spotify.invalidateStatus()
@@ -2273,6 +2298,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         showError("Go online to control the Spotify device already playing.")
         return
       }
+      let interruptedSelection =
+        activePlaybackTarget()?.confirmedTrack == nil && playbackTarget != nil
+      clearPlaybackTarget()
+      if !offline {
+        playbackTarget = PlaybackTarget(
+          uri: uri, context: item.payload["context"] as? String ?? "",
+          previousTrack: currentTrackURI, previousContext: currentPlaybackContext?.uri ?? "",
+          allowsLocal: !interruptedSelection)
+        playbackTargetUntil = Date().addingTimeInterval(6)
+      }
+      spotify.invalidateStatus()
       playbackRequest += 1
       observedPlaybackContext = nil
       if !testMode {
@@ -2284,6 +2320,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       optimisticUntil = Date().addingTimeInterval(1)
       updateToggle()
       if item.kind == "track" {
+        currentImageURL = ""
         currentTrackArtist = item.artist
         currentTrackAlbum = item.album
         setCurrentTrack(uri)
@@ -2315,6 +2352,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let target =
       command == "toggle" && !offline && Date().timeIntervalSince(lastWebPlaybackAt) < 1
       ? (playing ? "pause" : "resume") : command
+    if command == "previous" || command == "next" || playbackTarget?.acknowledged == false {
+      clearPlaybackTarget()
+    }
+    spotify.invalidateStatus()
     playbackRequest += 1
     lastTransportTarget = target
     if command == "toggle" {
@@ -2453,6 +2494,37 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     repeatButton.setAccessibilityLabel("Repeat mode")
     repeatButton.setAccessibilityValue(repeatMode.label)
   }
+  private func clearPlaybackTarget() {
+    playbackConfirmationWork?.cancel()
+    playbackConfirmationWork = nil
+    playbackTarget = nil
+    playbackTargetUntil = .distantPast
+    playbackConfirmationAttempts = 0
+  }
+  private func activePlaybackTarget() -> PlaybackTarget? {
+    if Date() >= playbackTargetUntil { clearPlaybackTarget() }
+    return playbackTarget
+  }
+  private func schedulePlaybackConfirmation() {
+    guard let target = activePlaybackTarget(), target.acknowledged,
+      target.confirmedTrack == nil, !offline
+    else { return }
+    playbackConfirmationWork?.cancel()
+    let request = playbackRequest
+    let delay = min(0.2 * pow(1.6, Double(playbackConfirmationAttempts)), 0.8)
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self, request == self.playbackRequest else { return }
+      self.playbackConfirmationWork = nil
+      guard let target = self.activePlaybackTarget(), target.acknowledged,
+        target.confirmedTrack == nil, !self.offline
+      else { return }
+      self.playbackConfirmationAttempts += 1
+      self.refreshRepeat()
+      if self.playbackConfirmationAttempts < 6 { self.schedulePlaybackConfirmation() }
+    }
+    playbackConfirmationWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
   private func refreshRepeat() {
     lastRepeatPoll = Date()
     if !testMode, connection == "connected" {
@@ -2536,6 +2608,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func updateWebPlayback(_ state: JSONObject, remote: Bool) {
     guard !offline else { return }
+    if var target = activePlaybackTarget() {
+      guard target.acceptsWeb(state) else { return }
+      let uri = text(dict(state["item"])["uri"])
+      target.confirmedTrack = uri
+      target.displayedTrack = uri
+      playbackTarget = target
+      playbackConfirmationWork?.cancel()
+      playbackConfirmationWork = nil
+    }
+    spotify.invalidateStatus()
     remotePlaybackDevice = remote
     lastWebPlaybackAt = Date()
     let track = dict(state["item"])
@@ -2553,9 +2635,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       ], fromWeb: true)
   }
   private func updatePlayback(_ values: [String], fromWeb: Bool = false) {
-    guard connection == "connected", fromWeb || !remotePlaybackDevice,
-      Date() >= optimisticUntil
-    else { return }
+    guard connection == "connected", fromWeb || !remotePlaybackDevice else { return }
+    var confirmedSelection = false
+    if !fromWeb, var target = activePlaybackTarget() {
+      guard values.count >= 6, target.acceptsLocal(values[5]) else { return }
+      target.displayedTrack = values[5]
+      playbackTarget = target
+      confirmedSelection = true
+    }
+    guard Date() >= optimisticUntil || confirmedSelection else { return }
     playing = values.first == "playing"
     updateToggle()
     if values.count >= 7 {
@@ -2835,6 +2923,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-remote-playback" {
       return remotePlaybackChecks()
     }
+    if testMode && value["command"] as? String == "test-playback-header" {
+      playbackHeaderTestResult = nil
+      Task { @MainActor [weak self] in
+        guard let self = self else { return }
+        self.playbackHeaderTestResult = await self.playbackHeaderChecks()
+      }
+      return ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-playback-header-result" {
+      return playbackHeaderTestResult ?? ["status": "pending"]
+    }
     if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
     if testMode && value["command"] as? String == "test-playback-context" {
       return playbackContextChecks()
@@ -2952,6 +3051,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
   }
   func applicationWillTerminate(_ notification: Notification) {
+    clearPlaybackTarget()
     lifeTimer?.invalidate()
     statusTimer?.invalidate()
     NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -3419,9 +3519,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ])
     activateSelection()
     let likedImmediate = nowContext.stringValue == "Liked Songs"
+    receive(["type": "playback", "request": playbackRequest])
+    receive([
+      "type": "playback-state", "request": playbackRequest, "remote": false,
+      "state": ["item": ["uri": first, "name": "Saved Song"], "is_playing": true],
+    ])
     optimisticUntil = .distantPast
     reply(nil, track: first)
     let nullKeepsLiked = nowContext.stringValue == "Liked Songs"
+    // The following source checks model later playback, after selection confirmation.
+    playbackTargetUntil = .distantPast
     setCurrentTrack(second, refresh: false)
     let offlineKeepsSource = nowContext.stringValue == "Liked Songs"
     reply(nil, track: second)
@@ -3444,6 +3551,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let allStartsCollection =
       playing && nowContext.stringValue == "Liked Songs" && routeKind == "songs"
       && selectedItem()?.name == "All" && search.stringValue == "Songs/"
+    receive(["type": "playback", "request": playbackRequest])
+    receive([
+      "type": "playback-state", "request": playbackRequest, "remote": false,
+      "state": ["item": ["uri": first, "name": "Saved Song"], "is_playing": true],
+    ])
     optimisticUntil = .distantPast
     setCurrentTrack(first, refresh: false)
     reply(nil, track: first)
@@ -4979,6 +5091,151 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
 
+  @MainActor
+  private func playbackHeaderChecks() async -> [String: Any] {
+    demo()
+    let oldTrack = "spotify:track:" + String(repeating: "a", count: 22)
+    let newTrack = "spotify:track:" + String(repeating: "b", count: 22)
+    let thirdTrack = "spotify:track:" + String(repeating: "c", count: 22)
+    let oldList = "spotify:playlist:" + String(repeating: "d", count: 22)
+    let newList = "spotify:playlist:" + String(repeating: "e", count: 22)
+    let thirdList = "spotify:playlist:" + String(repeating: "f", count: 22)
+    let oldURL = "https://i.scdn.co/image/old-header"
+    let newURL = "https://i.scdn.co/image/new-header"
+    let oldCover = NSImage(size: NSSize(width: 32, height: 32))
+    let newCover = NSImage(size: NSSize(width: 32, height: 32))
+    imageCache.setObject(oldCover, forKey: "header-old")
+    imageCache.setObject(newCover, forKey: "header-new")
+    artworkPaths[oldURL] = "header-old"
+    artworkPaths[newURL] = "header-new"
+    func state(_ track: String, _ playlist: String, _ title: String, _ image: String) -> JSONObject
+    {
+      [
+        "is_playing": true, "shuffle_state": false,
+        "context": ["uri": playlist],
+        "item": [
+          "uri": track, "name": title, "artists": [["name": "Artist"]],
+          "album": ["name": "Album", "images": [["url": image]]],
+        ],
+      ]
+    }
+    func snapshot(_ state: JSONObject) {
+      receive([
+        "type": "playback-state", "state": state, "remote": false, "request": playbackRequest,
+      ])
+    }
+    func select(_ uri: String, _ name: String, kind: String = "playlist", art: String = "") {
+      routeKind = "home"
+      breadcrumb = ""
+      setSearchText("")
+      source = [
+        MusicItem([
+          "uri": uri, "name": name, "kind": kind, "art": art,
+          "artist": "Artist", "album": "Album", "item": ["uri": uri],
+        ])
+      ]
+      filter(resetSelection: true)
+      openSelection(preservingSelection: false, playDirectly: true)
+    }
+    let oldState = state(oldTrack, oldList, "Old song", oldURL)
+    let newState = state(newTrack, newList, "New song", newURL)
+    let thirdState = state(thirdTrack, thirdList, "Third song", newURL)
+    snapshot(oldState)
+    currentPlaybackContext = PlaybackContext(uri: oldList, name: "Old playlist")
+    updateContextLabel()
+    select(newList, "New playlist")
+    let optimisticSource = nowContext.stringValue == "Playlist · New playlist"
+    snapshot(oldState)
+    let preCompletion = nowContext.stringValue == "Playlist · New playlist"
+    // A fresh desktop snapshot can fill the header before Spotify's HTTP read catches up.
+    updatePlayback(["playing", "New song", "Artist", "Album", newURL, newTrack, "false"])
+    let immediateLocal = nowTitle.stringValue == "New song" && nowArt.image === newCover
+    optimisticUntil = .distantPast
+    updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
+    snapshot(oldState)
+    let pendingStable =
+      nowTitle.stringValue == "New song" && nowArt.image === newCover
+      && nowContext.stringValue == "Playlist · New playlist"
+    receive(["type": "playback", "request": playbackRequest])
+    snapshot(oldState)
+    receive([
+      "type": "playback-context", "request": playbackRequest, "track": newTrack,
+      "context": ["uri": oldList, "name": "Old playlist"],
+    ])
+    let postCompletion =
+      nowTitle.stringValue == "New song"
+      && nowContext.stringValue == "Playlist · New playlist"
+    let retryDeadline = Date().addingTimeInterval(1)
+    while playbackConfirmationAttempts == 0, Date() < retryDeadline {
+      try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    let retriesPromptly = playbackConfirmationAttempts > 0 && playbackConfirmationWork != nil
+    snapshot(newState)
+    let confirmed = playbackTarget?.confirmedTrack == newTrack && playbackConfirmationWork == nil
+    snapshot(oldState)
+    updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
+    receive([
+      "type": "playback-context", "request": playbackRequest, "track": newTrack,
+      "context": ["uri": oldList, "name": "Old playlist"],
+    ])
+    let confirmedStable =
+      nowTitle.stringValue == "New song" && nowArt.image === newCover
+      && nowContext.stringValue == "Playlist · New playlist"
+    select(newList, "New playlist")
+    receive(["type": "playback", "request": playbackRequest])
+    snapshot(newState)
+    let repeatedSettles =
+      playbackTarget?.confirmedTrack == newTrack && playbackConfirmationWork == nil
+    select(oldList, "Old playlist")
+    let superseded = playbackRequest
+    select(thirdList, "Third playlist")
+    updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
+    receive(["type": "playback", "request": superseded])
+    let rapidStable = nowTitle.stringValue == "New song" && playbackTarget?.acknowledged == false
+    receive(["type": "playback", "request": playbackRequest])
+    snapshot(oldState)
+    snapshot(thirdState)
+    let latestWins =
+      nowTitle.stringValue == "Third song" && playbackTarget?.confirmedTrack == thirdTrack
+    select(newTrack, "Clicked song", kind: "track", art: "header-new")
+    receive(["type": "artwork", "url": newURL, "path": "header-old"])
+    let lateArtwork =
+      nowTitle.stringValue == "Clicked song" && nowArt.image === newCover
+      && currentImageURL.isEmpty
+    receive(["type": "playback", "request": playbackRequest, "error": "Fixture failure"])
+    let failureClears = playbackTarget == nil && playbackConfirmationWork == nil
+    select(newList, "New playlist")
+    receive(["type": "playback", "request": playbackRequest])
+    receive(["type": "update", "offline": true])
+    let offlineClears = playbackTarget == nil && playbackConfirmationWork == nil
+    receive(["type": "update", "offline": false])
+    select(newList, "New playlist")
+    receive(["type": "playback", "request": playbackRequest])
+    playbackTargetUntil = .distantPast
+    let bounded = activePlaybackTarget() == nil && playbackConfirmationWork == nil
+    select(newList, "New playlist")
+    receive(["type": "playback", "request": playbackRequest])
+    nextTrack()
+    let skipClears = playbackTarget == nil && playbackConfirmationWork == nil
+    demo()
+    optimisticUntil = .distantPast
+    setSearchText("")
+    return [
+      "status": "ok", "selected_source_is_immediate": optimisticSource,
+      "pre_command_snapshot_keeps_selected_source": preCompletion,
+      "fresh_desktop_snapshot_updates_header_immediately": immediateLocal,
+      "pending_header_and_cover_do_not_revert": pendingStable && postCompletion,
+      "stale_api_state_gets_prompt_confirmation_refresh": retriesPromptly,
+      "matching_state_stops_extra_refreshes": confirmed,
+      "old_api_local_and_context_snapshots_cannot_undo_confirmation": confirmedStable,
+      "reselecting_same_playlist_settles": repeatedSettles,
+      "rapid_selection_ignores_intermediate_song": rapidStable && latestWins,
+      "old_artwork_cannot_replace_clicked_song_cover": lateArtwork,
+      "failures_and_offline_cancel_confirmation": failureClears && offlineClears,
+      "confirmation_is_bounded_and_skip_cancels_it": bounded && skipClears,
+    ]
+  }
+
   private func remotePlaybackChecks() -> [String: Any] {
     demo()
     let phoneTrack = "spotify:track:" + String(repeating: "x", count: 22)
@@ -5225,6 +5482,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func demo() {
+    clearPlaybackTarget()
     connection = "connected"
     remotePlaybackDevice = false
     lastWebPlaybackAt = .distantPast

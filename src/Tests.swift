@@ -688,6 +688,153 @@ private func testPlaybackPolling() throws {
   )
 }
 
+private func testPlaybackTarget() {
+  let previous = "spotify:track:" + String(repeating: "a", count: 22)
+  let selected = "spotify:track:" + String(repeating: "b", count: 22)
+  let relinked = "spotify:track:" + String(repeating: "c", count: 22)
+  let playlist = "spotify:playlist:" + String(repeating: "d", count: 22)
+  let otherPlaylist = "spotify:playlist:" + String(repeating: "e", count: 22)
+  let externalPlaylist = "spotify:playlist:" + String(repeating: "f", count: 22)
+  let accountCollection = "spotify:user:fixture:collection"
+  func state(_ track: String, context: String? = nil, linked: String? = nil) -> JSONObject {
+    var item: JSONObject = ["uri": track]
+    if let linked = linked { item["linked_from"] = ["uri": linked] }
+    var result: JSONObject = ["item": item]
+    result["context"] = context.map { ["uri": $0] } ?? NSNull()
+    return result
+  }
+  func makeTarget(
+    _ uri: String, context: String = "", previousContext: String? = nil, allowsLocal: Bool = true
+  ) -> PlaybackTarget {
+    PlaybackTarget(
+      uri: uri, context: context, previousTrack: previous,
+      previousContext: previousContext ?? otherPlaylist, allowsLocal: allowsLocal)
+  }
+  var target = makeTarget(playlist)
+  check(
+    !target.acceptsWeb(state(selected, context: playlist))
+      && !target.acceptsContextEvent(track: selected, context: playlist),
+    "Playback target regression test ignores snapshots before command acknowledgement")
+  target.acknowledged = true
+  check(
+    target.acceptsContext(playlist) && !target.acceptsContext(otherPlaylist)
+      && !target.acceptsContextEvent(track: selected, context: playlist),
+    "Playback target regression test protects context-only updates until state confirms")
+  check(
+    !target.acceptsWeb(state(previous, context: otherPlaylist))
+      && target.acceptsWeb(state(selected, context: playlist)),
+    "Playback target regression test waits for the selected playlist in the current generation")
+  check(
+    !target.acceptsWeb(state("invalid", context: playlist)) && !target.acceptsWeb([:]),
+    "Playback target regression test ignores incomplete or invalid state")
+  check(
+    target.acceptsLocal(selected) && !target.acceptsLocal(previous),
+    "Playback target regression test accepts a fresh local track without rolling back")
+  target.displayedTrack = selected
+  check(
+    !target.acceptsWeb(state(previous, context: playlist)),
+    "Playback target regression test rejects old track metadata after displaying the new track")
+  target.confirmedTrack = selected
+  check(
+    target.acceptsLocal(selected) && target.acceptsLocal(relinked)
+      && !target.acceptsLocal(previous),
+    "Playback target regression test allows local autoplay while fencing the previous track")
+  check(
+    target.acceptsWeb(state(relinked, context: playlist))
+      && target.acceptsWeb(state(relinked, context: externalPlaylist))
+      && !target.acceptsWeb(state(selected, context: otherPlaylist))
+      && !target.acceptsWeb(state(previous, context: playlist)),
+    "Playback target regression test allows confirmed autoplay and external sources without rollback"
+  )
+  check(
+    target.acceptsWeb(state(previous, context: externalPlaylist))
+      && target.acceptsContextEvent(track: previous, context: externalPlaylist)
+      && !target.acceptsContextEvent(track: previous, context: "")
+      && !target.acceptsContextEvent(track: selected, context: otherPlaylist),
+    "Playback target regression test distinguishes an explicit external source from stale context")
+  var rapid = makeTarget(playlist, allowsLocal: false)
+  rapid.acknowledged = true
+  check(
+    !rapid.acceptsLocal(selected) && rapid.acceptsWeb(state(selected, context: playlist)),
+    "Playback target regression test suppresses ambiguous local snapshots during rapid selections")
+  var same = makeTarget(playlist, previousContext: playlist)
+  same.acknowledged = true
+  check(
+    same.acceptsWeb(state(previous, context: playlist)),
+    "Playback target regression test lets a repeated selection settle without a track change")
+  var track = makeTarget(selected, context: playlist)
+  track.acknowledged = true
+  check(
+    track.acceptsWeb(state(selected, context: playlist))
+      && !track.acceptsWeb(state(selected, context: otherPlaylist)),
+    "Playback target regression test requires the selected track and its requested playlist")
+  check(
+    track.acceptsWeb(state(relinked, context: playlist, linked: selected))
+      && !track.acceptsWeb(state(previous, context: playlist)),
+    "Playback target regression test recognizes Spotify relinking without accepting another track")
+  track.confirmedTrack = relinked
+  track.displayedTrack = relinked
+  check(
+    track.acceptsLocal(selected) && track.acceptsLocal(relinked) && !track.acceptsLocal(previous)
+      && track.acceptsWeb(state(selected, context: externalPlaylist)),
+    "Playback target regression test keeps relinked identities and later external playback")
+  var repeatRelinked = PlaybackTarget(
+    uri: selected, context: playlist, previousTrack: relinked,
+    previousContext: playlist, allowsLocal: true)
+  repeatRelinked.acknowledged = true
+  repeatRelinked.displayedTrack = selected
+  check(
+    repeatRelinked.acceptsWeb(state(relinked, context: playlist, linked: selected)),
+    "Playback target regression test settles a repeated selection of the already playing relinked track"
+  )
+  repeatRelinked.displayedTrack = relinked
+  check(
+    repeatRelinked.acceptsLocal(relinked) && !repeatRelinked.acceptsLocal(previous),
+    "Playback target regression test preserves an accepted displayed relinked identity")
+  var standalone = makeTarget(selected, context: "", allowsLocal: false)
+  standalone.acknowledged = true
+  check(
+    standalone.acceptsWeb(state(selected)) && standalone.acceptsLocal(selected)
+      && standalone.acceptsContext(otherPlaylist),
+    "Playback target regression test confirms a known standalone track on any device")
+  var liked = makeTarget(PlaybackContext.likedSongs.uri)
+  liked.acknowledged = true
+  check(
+    liked.acceptsWeb(state(selected)) && liked.acceptsContext("")
+      && liked.acceptsContext(accountCollection)
+      && liked.acceptsWeb(state(selected, context: accountCollection))
+      && !liked.acceptsWeb(state(selected, context: playlist))
+      && !liked.acceptsWeb(state(previous)),
+    "Playback target regression test accepts Liked Songs aliases but rejects ambiguous prior null state"
+  )
+  var repeatedLiked = makeTarget(PlaybackContext.likedSongs.uri, previousContext: accountCollection)
+  repeatedLiked.acknowledged = true
+  check(
+    repeatedLiked.acceptsWeb(state(previous)),
+    "Playback target regression test settles a repeated Liked Songs selection with null context")
+  liked.confirmedTrack = selected
+  liked.displayedTrack = selected
+  check(
+    liked.acceptsWeb(state(previous, context: externalPlaylist))
+      && liked.acceptsContextEvent(track: previous, context: externalPlaylist),
+    "Playback target regression test permits a real playlist to replace confirmed Liked Songs")
+  var accountLiked = makeTarget(accountCollection, allowsLocal: false)
+  accountLiked.acknowledged = true
+  check(
+    accountLiked.acceptsWeb(state(selected, context: PlaybackContext.likedSongs.uri)),
+    "Playback target regression test normalizes both Liked Songs aliases")
+  var fromLiked = makeTarget(playlist, previousContext: accountCollection)
+  fromLiked.acknowledged = true
+  fromLiked.confirmedTrack = selected
+  fromLiked.displayedTrack = selected
+  check(
+    !fromLiked.acceptsWeb(state(selected, context: PlaybackContext.likedSongs.uri)),
+    "Playback target regression test normalizes the old Liked Songs source while fencing it")
+  print(
+    "Playback target regression tests passed: acknowledgement, context, relinking, autoplay, rapid selections, and stale snapshot rejection."
+  )
+}
+
 private func testWebTransport() throws {
   let root = tempDirectory("spotify-transport-regression-")
   defer { try? FileManager.default.removeItem(at: root) }
@@ -2254,6 +2401,7 @@ func runModelTests() {
   do { try testWebTransport() } catch {
     check(false, "Active-device transport regression test: " + error.localizedDescription)
   }
+  testPlaybackTarget()
   do { try testPlaybackPolling() } catch {
     check(false, "Playback polling regression test: " + error.localizedDescription)
   }
@@ -3012,6 +3160,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",
     "test-single-line", "test-offline-ui", "test-api-activity", "test-remote-playback",
+    "test-playback-header",
     "test-repeat",
     "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode",
     "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode",

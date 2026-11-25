@@ -26,6 +26,72 @@ struct PlaybackContext: Equatable {
   }
 }
 
+// A command acknowledgement precedes Spotify's playback-state update. Keep the
+// selected source stable until a snapshot actually describes that selection.
+struct PlaybackTarget {
+  let uri: String
+  let context: String
+  let previousTrack: String
+  let previousContext: String
+  let allowsLocal: Bool
+  var acknowledged = false
+  var confirmedTrack: String?
+  var displayedTrack: String?
+
+  private var expectedContext: String { validTrack(uri) ? context : uri }
+  private func sameContext(_ first: String, _ second: String) -> Bool {
+    first == second || isLikedSongsURI(first) && isLikedSongsURI(second)
+  }
+  func acceptsContext(_ observed: String) -> Bool {
+    guard !expectedContext.isEmpty else { return true }
+    if isLikedSongsURI(expectedContext) {
+      return observed.isEmpty || isLikedSongsURI(observed)
+    }
+    return observed == expectedContext
+  }
+  func acceptsContextEvent(track: String, context observed: String) -> Bool {
+    guard acknowledged, confirmedTrack != nil, validTrack(track) else { return false }
+    if !previousContext.isEmpty, sameContext(observed, previousContext),
+      !acceptsContext(previousContext)
+    {
+      return false
+    }
+    let external =
+      !observed.isEmpty && !sameContext(observed, previousContext)
+      && !sameContext(observed, expectedContext)
+    if track == previousTrack, let displayed = displayedTrack, displayed != track, !external {
+      return false
+    }
+    return true
+  }
+  func acceptsWeb(_ state: JSONObject) -> Bool {
+    let item = dict(state["item"])
+    let track = text(item["uri"])
+    guard acknowledged, validTrack(track) else { return false }
+    let observedContext = text(dict(state["context"])["uri"])
+    if confirmedTrack != nil { return acceptsContextEvent(track: track, context: observedContext) }
+    if validTrack(uri) {
+      return (track == uri || text(dict(item["linked_from"])["uri"]) == uri)
+        && acceptsContext(observedContext)
+    }
+    if track == previousTrack {
+      if let displayed = displayedTrack, displayed != track { return false }
+      if isLikedSongsURI(uri), observedContext.isEmpty, !isLikedSongsURI(previousContext) {
+        return false
+      }
+    }
+    return acceptsContext(observedContext)
+  }
+  func acceptsLocal(_ track: String) -> Bool {
+    guard validTrack(track) else { return false }
+    if let confirmed = confirmedTrack {
+      return track != previousTrack || confirmed == previousTrack
+    }
+    if validTrack(uri) { return track == uri || track == displayedTrack }
+    return allowsLocal && track != previousTrack
+  }
+}
+
 enum DesktopAccount {
   static func currentUserID() -> String? {
     userID(

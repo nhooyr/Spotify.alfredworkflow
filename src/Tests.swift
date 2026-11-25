@@ -2666,6 +2666,7 @@ private func testThemes() {
 }
 
 func runModelTests() {
+  do { try testVersionLabels() } catch { check(false, "Version label regression test: \(error)") }
   do {
     try testCredentialStorage()
     try testClientIDSettings()
@@ -3091,8 +3092,15 @@ private func spawnClient(_ url: URL, _ arguments: [String] = [], environment: [S
   check(process.terminationStatus == 0, "Test child exited with \(process.terminationStatus)")
   return String(decoding: data, as: UTF8.self)
 }
-private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
-  for input in ["0.5.5", "0.5.5-dev", "v0.5.5-dev", "v0.5.5-dev.1+build.2", "0.5.5+build"] {
+private func testVersionLabels() throws {
+  for (input, exported) in [
+    ("0.5.5", "0.5.5"), ("v0.5.5", "0.5.5"), ("0.5.5-dev", "0.5.5-dev"),
+    ("v0.5.5-dev", "0.5.5-dev"), ("v0.5.5-dev.1+build.2", "0.5.5-dev.1+build.2"),
+    ("0.5.5+build", "0.5.5+build"),
+  ] {
+    check(
+      alfredVersion(input) == exported,
+      "Alfred versions retain release labels without a duplicate v")
     check(
       try appBundleVersion(input) == "0.5.5",
       "Version labels produce numeric native bundle versions")
@@ -3103,7 +3111,11 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
       check(false, "Invalid native bundle versions must be rejected")
     } catch {}
   }
+}
+private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
+  try testVersionLabels()
   let root = tempDirectory("spotify-metadata-")
+
   defer { try? FileManager.default.removeItem(at: root) }
   let stage = root.appendingPathComponent("stage")
   try FileManager.default.createDirectory(
@@ -3165,8 +3177,8 @@ private func testWorkflowMetadataGeneration(_ exported: JSONObject) throws {
       try String(contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8) == readme,
       "Generating embedded help leaves the packaged README unchanged")
     check(
-      text(generated["version"]) == version,
-      "The release version comes from Swift instead of the template")
+      text(generated["version"]) == alfredVersion(version),
+      "Alfred metadata omits the display prefix already supplied by Alfred")
     check(
       text(generated["bundleid"]) == text(template["bundleid"])
         && text(generated["name"]) == text(template["name"]),

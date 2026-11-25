@@ -11,6 +11,7 @@
 - Use Liked Songs throughout the menus, with preferred `liked songs/` paths, existing `songs/` aliases and the same heart cover for matching playlist entries.
 - Keep the now-playing header stable through incomplete metadata and empty Spotify playback-state replies.
 - Add secure timestamps to Developer ID signatures for distribution.
+- Show release versions with a single v prefix in Alfred.
 - Signed release binaries, with optional notarization via `build.sh --notarize`.
 - Prevent macOS’s “damaged app” warning when importing notarized releases into Alfred.
 - Fall back to AppleScript for play/pause when Spotify supplies no playback state.

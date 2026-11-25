@@ -5,7 +5,7 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
   let original = try Data(contentsOf: root.appendingPathComponent("workflow/info.plist"))
   var workflow =
     try PropertyListSerialization.propertyList(from: original, format: nil) as! JSONObject
-  workflow["version"] = version
+  workflow["version"] = alfredVersion(version)
   let readme = try String(contentsOf: stage.appendingPathComponent("README.md"), encoding: .utf8)
   workflow["readme"] = readme.replacingOccurrences(
     of:
@@ -26,9 +26,13 @@ func writeWorkflowMetadata(_ root: URL, stage: URL) throws {
     to: stage.appendingPathComponent("Spotify Mini Player.app/Contents/Info.plist"))
 }
 
+func alfredVersion(_ version: String) -> String {
+  String(version.dropFirst(version.hasPrefix("v") ? 1 : 0))
+}
+
 func appBundleVersion(_ version: String) throws -> String {
   let numeric = String(
-    version.dropFirst(version.hasPrefix("v") ? 1 : 0).prefix { $0 != "-" && $0 != "+" })
+    alfredVersion(version).prefix { $0 != "-" && $0 != "+" })
   guard numeric.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression) != nil else {
     throw SpotifyFailure(
       message: "Invalid version. Use X.Y.Z with an optional v prefix and development suffix.")

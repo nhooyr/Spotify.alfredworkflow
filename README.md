@@ -108,11 +108,8 @@ The player reuses Spotify’s desktop metadata and covers. Missing covers downlo
 in the background while online; unavailable artwork shows a grey question mark.
 Spotify manages downloaded audio; this workflow caches only metadata and artwork.
 
-The bottom-left footer shows:
-
-* A small grey **offline** label when offline.
-* **API activity** while requests are pending; results served from cache stay silent.
-* **Errors** in red until a newer status replaces them.
+The bottom-left footer shows sync progress only during the initial library import.
+After that, it stays quiet unless there is an error, shown in red.
 
 The workflow checks its own cache hourly. Above **1 GB**, it removes the oldest
 unused artwork, protecting covers for your saved/downloaded library and anything

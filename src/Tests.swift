@@ -118,6 +118,15 @@ final class TestURLProtocol: URLProtocol {
   override func stopLoading() {}
 }
 
+private final class CancelledSearchURLProtocol: URLProtocol {
+  override class func canInit(with request: URLRequest) -> Bool {
+    request.url?.path == "/v1/search"
+  }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+  override func startLoading() { client?.urlProtocol(self, didFailWithError: URLError(.cancelled)) }
+  override func stopLoading() {}
+}
+
 private final class WaitingURLProtocol: URLProtocol {
   static let started = DispatchSemaphore(value: 0)
   override class func canInit(with request: URLRequest) -> Bool { true }
@@ -711,6 +720,144 @@ private func testPlaybackPolling() throws {
   )
   print(
     "Playback polling regression test passed: coalesced refresh, preserved generations, remote state, and temporary empty-response recovery."
+  )
+}
+
+private func testInitialLibrarySync() throws {
+  let root = tempDirectory("spotify-initial-sync-regression-")
+  defer { try? FileManager.default.removeItem(at: root) }
+  let environment = [
+    "alfred_workflow_data": root.appendingPathComponent("data").path,
+    "alfred_workflow_cache": root.appendingPathComponent("cache").path,
+    "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path,
+    "SPOTIFY_DESKTOP_USER_CACHE": root.appendingPathComponent("empty").path,
+  ]
+  let paths = testPaths(
+    root: root, clientID: String(repeating: "a", count: 32), environment: environment)
+  try paths.prepare()
+  try paths.authorization.save([
+    "client_id": String(repeating: "a", count: 32), "access_token": "test", "refresh_token": "test",
+    "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes,
+  ])
+  let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+  try store.useAccount("fixture")
+  try store.put("desktop:scanned:v4", true, ttl: 3600)
+  let gate = DispatchSemaphore(value: 0)
+  let lock = NSLock()
+  var started = 0
+  var returned = 0
+  var libraryStatus = 200
+  func counts() -> (Int, Int) {
+    lock.lock()
+    defer { lock.unlock() }
+    return (started, returned)
+  }
+  TestURLProtocol.response = { request in
+    switch request.url?.path {
+    case "/api/token":
+      return (200, try! jsonData(["access_token": "refreshed", "expires_in": 3600]))
+    case "/v1/me": return (200, try! jsonData(["id": "fixture"]))
+    case "/v1/me/following": return (200, try! jsonData(["artists": ["items": []]]))
+    case "/v1/me/tracks":
+      lock.lock()
+      started += 1
+      lock.unlock()
+      check(
+        gate.wait(timeout: .now() + 3) == .success,
+        "Initial sync regression test releases its mocked library request")
+      lock.lock()
+      returned += 1
+      lock.unlock()
+      return (libraryStatus, try! jsonData(["items": []]))
+    case "/v1/me/albums", "/v1/me/playlists": return (200, try! jsonData(["items": []]))
+    default:
+      check(false, "Initial sync regression test uses only mocked library requests")
+      return (500, Data())
+    }
+  }
+  defer { TestURLProtocol.response = nil }
+  func wait(_ condition: () -> Bool) {
+    let deadline = Date().addingTimeInterval(3)
+    while !condition(), Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+    }
+  }
+  func round(_ number: Int, initial: Bool, fail: Bool = false, cancel: Bool = false) throws {
+    libraryStatus = fail ? 500 : 200
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [CancelledSearchURLProtocol.self, TestURLProtocol.self]
+    let session = URLSession(configuration: config)
+    let backend = NativeBackend(
+      root, environment: environment, session: session, credentials: paths.authorization)
+    var updates: [JSONObject] = []
+    backend.receive = { updates.append($0) }
+    defer {
+      if counts().1 < counts().0 { gate.signal() }
+      backend.stop()
+      session.invalidateAndCancel()
+    }
+    try backend.start()
+    wait { counts().0 == number }
+    check(counts().0 == number, "Initial sync regression test reaches its library fetch")
+    backend.send(["command": "show"])
+    wait { updates.contains { text($0["command"]) == "show" } }
+    let snapshot = updates.first { text($0["command"]) == "show" } ?? [:]
+    check(
+      snapshot["initial_sync"] as? Bool == initial,
+      "Initial sync regression test preserves the correct indicator when reopening")
+    if cancel { backend.stop() }
+    gate.signal()
+    wait {
+      counts().1 == number
+        && (cancel
+          ? updates.contains {
+            text($0["type"]) == "initial-sync" && $0["initial_sync"] as? Bool == false
+          }
+          : updates.contains {
+            text($0["command"]) == "refresh" && $0["initial_sync"] as? Bool == false
+          })
+    }
+    let signals = updates.filter { text($0["type"]) == "initial-sync" }.compactMap {
+      $0["initial_sync"] as? Bool
+    }
+    check(
+      signals == (initial ? [true, false] : []),
+      "Initial sync regression test shows activity only for the first library fetch and always clears it"
+    )
+    if fail {
+      check(
+        updates.contains {
+          text($0["command"]) == "refresh" && $0["message_is_error"] as? Bool == true
+        },
+        "Initial sync regression test retains real synchronization errors")
+    } else if !cancel {
+      check(
+        store.get(MusicLibrary.syncKey) != nil,
+        "Initial sync regression test records completed synchronization")
+      let before = updates.count
+      backend.send(["command": "catalog", "args": ["cancelled search"]])
+      wait {
+        updates.dropFirst(before).contains {
+          text($0["command"]) == "browse" && $0["searching"] as? Bool == false
+        }
+      }
+      check(
+        updates.dropFirst(before).contains {
+          text($0["command"]) == "browse" && $0["searching"] as? Bool == false
+        }
+          && !updates.dropFirst(before).contains { text($0["type"]) == "error" },
+        "Cancelled catalogue regression test settles the current query without a false connection error"
+      )
+    }
+  }
+  try round(1, initial: true)
+  try store.put(MusicLibrary.syncKey, true, ttl: -1)
+  try round(2, initial: false)
+  try store.execute("DELETE FROM responses WHERE key=?", [MusicLibrary.syncKey])
+  try round(3, initial: true, fail: true)
+  try round(4, initial: true, cancel: true)
+  print(
+    "Initial sync regression tests passed: first fetch, cached refresh, error/cancellation cleanup, and cancelled search."
   )
 }
 
@@ -2918,6 +3065,9 @@ func runModelTests() {
   do { try testWebTransport() } catch {
     check(false, "Active-device transport regression test: " + error.localizedDescription)
   }
+  do { try testInitialLibrarySync() } catch {
+    check(false, "Initial library sync regression test: " + error.localizedDescription)
+  }
   testPlaybackTarget()
   testPlaybackIntent()
   do { try testExplicitTransportRecovery() } catch {
@@ -3150,16 +3300,11 @@ func runModelTests() {
     let emptySearch = try library.browse(["kind": "catalog", "query": ""], network: true)
     check(
       emptySearch.isEmpty && catalogRequests == 0, "Empty catalogue mode sends no search request")
-    var activity: [Bool] = []
-    api.activity = { activity.append($0) }
     let results = try library.browse(["kind": "catalog", "query": "full catalogue"], network: true)
     _ = try library.browse(["kind": "catalog", "query": "full catalogue"], network: true)
     check(
       results.count == 1 && catalogRequests == 1,
       "Live catalogue queries reuse cached Spotify results")
-    check(
-      activity == [true, false],
-      "Only the actual API request reports activity; cached results stay silent")
     let cancelled = RequestCancellation()
     cancelled.cancel()
     do {
@@ -3173,8 +3318,6 @@ func runModelTests() {
     let waitingConfig = URLSessionConfiguration.ephemeral
     waitingConfig.protocolClasses = [WaitingURLProtocol.self]
     let waitingAPI = SpotifyAPI(paths, session: URLSession(configuration: waitingConfig))
-    var waitingActivity: [Bool] = []
-    waitingAPI.activity = { waitingActivity.append($0) }
     let inFlight = RequestCancellation()
     let finishedSearch = DispatchSemaphore(value: 0)
     var cancelledInFlight = false
@@ -3185,14 +3328,27 @@ func runModelTests() {
       finishedSearch.signal()
     }
     check(WaitingURLProtocol.started.wait(timeout: .now() + 2) == .success, "Live search starts")
-    check(waitingActivity == [true], "Activity stays active while awaiting an API response")
     inFlight.cancel()
     check(
       finishedSearch.wait(timeout: .now() + 2) == .success && cancelledInFlight,
       "Superseded in-flight search cancels immediately")
-    check(waitingActivity == [true, false], "Cancelled API requests always clear their activity")
-    check(activity == [true, false], "Requests cancelled before sending do not report activity")
-    api.activity = nil
+    let endedSession = DispatchSemaphore(value: 0)
+    var sessionCancelled = false
+    DispatchQueue.global().async {
+      do { _ = try waitingAPI.request("/search") } catch {
+        sessionCancelled = (error as? URLError)?.code == .cancelled
+      }
+      endedSession.signal()
+    }
+    check(
+      WaitingURLProtocol.started.wait(timeout: .now() + 2) == .success,
+      "Session cancellation regression test starts a request without an explicit cancellation token"
+    )
+    waitingAPI.session.invalidateAndCancel()
+    check(
+      endedSession.wait(timeout: .now() + 2) == .success && sessionCancelled,
+      "Session cancellation regression test never misreports cancellation as a Spotify connection error"
+    )
     try NativeBackend.clearConnection(paths)
     check(!api.connected && store.items().count == 5, "Reauth preserves music metadata")
     check(paths.clientID().isEmpty, "Reauth clears Client ID")
@@ -3694,7 +3850,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-navigation",
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",
-    "test-single-line", "test-offline-ui", "test-api-activity", "test-remote-playback",
+    "test-single-line", "test-offline-ui", "test-status-ui", "test-remote-playback",
     "test-playback-header",
     "test-repeat",
     "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode",

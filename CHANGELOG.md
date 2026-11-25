@@ -2,6 +2,7 @@
 
 ## v0.7.1 (Unreleased)
 
+- Show syncing only during the initial library import and clear stale playback errors when retrying.
 - Coalesce rapid play/pause clicks and recover the observed playback state after errors or unconfirmed commands.
 - Keep play/pause controls steady while Spotify catches up, use explicit AppleScript pause/resume commands, and show the reason for playback errors.
 

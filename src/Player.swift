@@ -928,12 +928,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var currentPlaybackContext: PlaybackContext?
   private var selectedSourceTrack = ""
   private var observedPlaybackContext: (track: String, context: PlaybackContext?)?
-  private let status = NSTextField(labelWithString: "Loading your Spotify library…")
-  private let activityStatus = NSTextField(labelWithString: "")
+  private let status = NSTextField(labelWithString: "")
   private var offline = false
-  private var apiActive = false
-  private var apiActivityVisible = false
-  private var apiActivityWork: DispatchWorkItem?
+  private var initialSyncing = false
   private let toggle = IconButton()
   private let like = IconButton()
   private let shuffle = IconButton()
@@ -980,12 +977,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var restoreOpeningSelection = false
   private var routeKind = "home"
   private var catalogSearchWork: DispatchWorkItem?
-  private var catalogPending = false {
-    didSet { if oldValue != catalogPending { updateSearchStatus() } }
-  }
-  private var searchStatusWork: DispatchWorkItem?
-  private var searchStatusVisible = false
-  private var searchStatusShownAt = Date.distantPast
+  private var catalogPending = false
   private var statusMessage = ""
   private var statusIsError = false
   private var pendingHomeQuery: String?
@@ -1010,7 +1002,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var menuViewportTestResult: [String: Any]?
   private var menuScrollingTestResult: [String: Any]?
   private var screenshotModeTestResult: [String: Any]?
-  private var apiActivityTestResult: [String: Any]?
   private var playbackHeaderTestResult: [String: Any]?
   private var inlineError: String?
   private var statusTimer: Timer?
@@ -1280,12 +1271,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     status.textColor = .secondaryLabelColor
     status.lineBreakMode = .byTruncatingTail
     root.addSubview(status)
-    activityStatus.frame = NSRect(x: 12, y: 10, width: 134, height: 16)
-    activityStatus.font = .systemFont(ofSize: 10)
-    activityStatus.alignment = .left
-    activityStatus.isHidden = true
-    activityStatus.setAccessibilityLabel("Spotify activity")
-    root.addSubview(activityStatus)
     applyTheme(PlayerTheme())
     refreshTheme()
     // Force layout and raster caches now; showing this panel never rebuilds it.
@@ -1324,8 +1309,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     previewTitle.font = theme.font(theme.resultFont, size: 13)
     previewDetail.font = theme.font(theme.secondaryFont, size: 11)
     status.font = theme.font(theme.secondaryFont, size: 10)
-    activityStatus.font = theme.font(theme.secondaryFont, size: 10)
-    activityStatus.textColor = theme.secondary
     search.font = theme.font(theme.searchFont, size: 28)
     search.textColor = theme.searchText
     search.hintColor = theme.secondary.withAlphaComponent(theme.secondary.alphaComponent * 0.7)
@@ -1406,8 +1389,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       renderStatus()
     }
-    if let active = value["api_active"] as? Bool { updateAPIActivity(active) }
-    if type == "api-activity" { return }
+    if let syncing = value["initial_sync"] as? Bool {
+      initialSyncing = syncing
+      renderStatus()
+    }
+    if type == "initial-sync" { return }
     let nextConnection = value["connection"] as? String ?? connection
     if nextConnection == connection {
       if let request = value["navigation"] as? Int, request != navigationRequest { return }
@@ -1661,7 +1647,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         setSearchText("")
       }
       catalogPending = false
-      updateSearchStatus()
       source = ((value["rows"] as? [[String: Any]])?.map(MusicItem.init) ?? source)
         .filter { $0.payload["action"] as? String == "connect" }
       home = source
@@ -1683,7 +1668,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       } else {
         catalogSearchWork?.cancel()
         catalogPending = false
-        updateSearchStatus()
       }
       source =
         routeKind == "catalog" && (catalogPending || offline)
@@ -1747,6 +1731,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
 
   private func clearDisconnectedState() {
+    initialSyncing = false
     clearPlaybackTarget()
     desktopPlaybackAvailable = false
     remotePlaybackDevice = false
@@ -2991,97 +2976,23 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
     }
   }
-  private func updateAPIActivity(_ active: Bool) {
-    guard active != apiActive else { return }
-    apiActive = active
-    apiActivityWork?.cancel()
-    apiActivityWork = nil
-    if active && !apiActivityVisible {
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self, self.apiActive else { return }
-        self.apiActivityVisible = true
-        self.renderStatus()
-      }
-      apiActivityWork = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-    } else if !active && apiActivityVisible {
-      // Keep one indicator across short gaps between paginated API requests.
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self, !self.apiActive else { return }
-        self.apiActivityVisible = false
-        self.renderStatus()
-      }
-      apiActivityWork = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-    renderStatus()
-  }
   private func renderStatus() {
-    let message =
-      inlineError
-      ?? (routeKind == "catalog" && searchStatusVisible ? "Searching Spotify…" : statusMessage)
-    let searching = inlineError == nil && routeKind == "catalog" && searchStatusVisible
-    let error = !searching && (inlineError != nil || statusIsError || connection == "failed")
-    let busy = !offline && apiActivityVisible && (!error || apiActive)
-    let activity: String
-    if offline {
-      activity = "offline"
-    } else if busy {
-      if connection != "connected", !error, !message.isEmpty {
-        activity = message
-      } else {
-        activity =
-          routeKind == "catalog" && catalogPending ? "Searching Spotify…" : "Syncing with Spotify…"
-      }
+    let error = inlineError != nil || statusIsError || connection == "failed"
+    let message: String
+    if error {
+      message = inlineError ?? statusMessage
+    } else if connection != "connected" {
+      message = statusMessage
     } else {
-      activity = ""
+      message = initialSyncing && !offline ? "Syncing with Spotify…" : ""
     }
-    activityStatus.stringValue = activity
-    activityStatus.toolTip = activity
-    activityStatus.isHidden = activity.isEmpty
-    // Theme-font glyphs can extend beyond AppKit's rounded intrinsic width.
-    let width = activity.isEmpty ? 0 : min(200, ceil(activityStatus.intrinsicContentSize.width) + 4)
-    activityStatus.frame = NSRect(x: 12, y: 10, width: width, height: 16)
-    let left: CGFloat = activity.isEmpty ? 12 : activityStatus.frame.maxX + 10
-    status.frame = NSRect(x: left, y: 10, width: max(0, preview.frame.maxX - left), height: 16)
-    let text = busy && !error ? "" : message
-    if status.stringValue != text { status.stringValue = text }
-    status.toolTip = text
+    status.frame = NSRect(x: 12, y: 10, width: max(0, preview.frame.maxX - 12), height: 16)
+    if status.stringValue != message { status.stringValue = message }
+    status.toolTip = message
     status.textColor = error ? .systemRed : playerTheme.secondary
-  }
-  private func revealSearchStatus() {
-    guard routeKind == "catalog", catalogPending else { return }
-    searchStatusVisible = true
-    searchStatusShownAt = Date()
-    renderStatus()
-  }
-  private func updateSearchStatus() {
-    searchStatusWork?.cancel()
-    searchStatusWork = nil
-    if routeKind != "catalog" {
-      searchStatusVisible = false
-    } else if catalogPending {
-      if !searchStatusVisible {
-        let work = DispatchWorkItem { [weak self] in self?.revealSearchStatus() }
-        searchStatusWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
-      }
-    } else if searchStatusVisible {
-      let remaining = max(0, 0.35 - Date().timeIntervalSince(searchStatusShownAt))
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self, !self.catalogPending else { return }
-        self.searchStatusVisible = false
-        self.renderStatus()
-      }
-      searchStatusWork = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
-    }
-    renderStatus()
   }
   private func showError(_ message: String) {
     inlineError = message
-    statusMessage = message
-    statusIsError = true
     renderStatus()
   }
   private func show() {
@@ -3228,17 +3139,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-single-line" { return singleLineChecks() }
     if testMode && value["command"] as? String == "test-offline-ui" { return offlineUIChecks() }
-    if testMode && value["command"] as? String == "test-api-activity" {
-      apiActivityTestResult = nil
-      Task { @MainActor [weak self] in
-        guard let self = self else { return }
-        self.apiActivityTestResult = await self.apiActivityChecks()
-      }
-      return ["status": "pending"]
-    }
-    if testMode && value["command"] as? String == "test-api-activity-result" {
-      return apiActivityTestResult ?? ["status": "pending"]
-    }
+    if testMode && value["command"] as? String == "test-status-ui" { return statusUIChecks() }
     if testMode && value["command"] as? String == "test-remote-playback" {
       return remotePlaybackChecks()
     }
@@ -4898,7 +4799,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
     _ = key(commandReturn)
     let preservesInitial = routeKind == "catalog" && search.stringValue == "/initial query"
-    let entryHasNoFlash = !searchStatusVisible && status.stringValue != "Searching Spotify…"
+    let entryQuiet = status.stringValue.isEmpty
     search.stringValue = "/changed"
     controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
     receive([
@@ -4911,9 +4812,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "searching": true, "prefix": "/", "rows": [],
     ])
     let loading = catalogPending
-    revealSearchStatus()
     receive(["type": "update", "command": "preview", "variables": [:]])
-    let steadyDuringPreview = status.stringValue == "Searching Spotify…"
+    let previewQuiet = status.stringValue.isEmpty
     receive([
       "type": "update", "command": "browse", "route_kind": "catalog", "query": "changed",
       "searching": false, "prefix": "/",
@@ -4921,10 +4821,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ])
     let resultsKept =
       !catalogPending && filtered.first?.uri == "new-result" && search.stringValue == "/changed"
-    let minimumDisplay = status.stringValue == "Searching Spotify…"
+    let completionQuiet = status.stringValue.isEmpty
     search.stringValue = "/next"
     controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-    let steadyBetweenQueries = status.stringValue == "Searching Spotify…"
+    let nextQueryQuiet = status.stringValue.isEmpty
     search.stringValue = ""
     controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
     let exits = routeKind == "home"
@@ -4952,8 +4852,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     showError("Latest catalogue status")
     search.stringValue = "/retrying"
     controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-    catalogSearchWork?.perform()
     let typingKeepsStatus = status.stringValue == "Latest catalogue status"
+    catalogSearchWork?.perform()
+    let retryClearsStatus = status.stringValue.isEmpty
     demo()
     search.stringValue = ""
     filter()
@@ -4966,8 +4867,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "search_caret_follows_theme": (search.currentEditor() as? NSTextView)?.insertionPointColor
         == playerTheme.searchText, "empty_search_prompt": emptySearchPrompt,
       "no_matches_grey": noMatchesGrey,
-      "search_status_avoids_flicker": entryHasNoFlash && steadyDuringPreview && minimumDisplay
-        && steadyBetweenQueries,
+      "catalogue_search_keeps_footer_quiet": entryQuiet && previewQuiet && completionQuiet
+        && nextQueryQuiet,
+      "catalogue_retry_clears_previous_operational_error": retryClearsStatus,
       "typing_keeps_latest_catalogue_status": typingKeepsStatus,
     ]
   }
@@ -5463,119 +5365,87 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func offlineUIChecks() -> [String: Any] {
-    let originalTheme = playerTheme
-    defer { applyTheme(originalTheme) }
     demo()
+    defer { demo() }
     receive(["type": "update", "offline": true])
-    var glyphsFit = true
-    for font in ["", "Avenir"] {
-      var theme = originalTheme
-      theme.secondaryFont = font
-      applyTheme(theme)
-      let frame = activityStatus.frame
-      func bitmap(_ width: CGFloat) -> NSBitmapImageRep {
-        activityStatus.setFrameSize(NSSize(width: width, height: frame.height))
-        let image = NSBitmapImageRep(
-          bitmapDataPlanes: nil, pixelsWide: Int(ceil(width * 2)),
-          pixelsHigh: Int(ceil(frame.height * 2)), bitsPerSample: 8, samplesPerPixel: 4,
-          hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0,
-          bitsPerPixel: 0)!
-        image.size = activityStatus.bounds.size
-        memset(image.bitmapData!, 255, image.bytesPerRow * image.pixelsHigh)
-        activityStatus.cacheDisplay(in: activityStatus.bounds, to: image)
-        return image
-      }
-      let actual = bitmap(frame.width)
-      let reference = bitmap(frame.width + 12)
-      for y in 0..<reference.pixelsHigh {
-        for x in 0..<reference.pixelsWide {
-          for channel in 0..<4 {
-            let expected = reference.bitmapData![y * reference.bytesPerRow + x * 4 + channel]
-            let drawn =
-              x < actual.pixelsWide
-              ? actual.bitmapData![y * actual.bytesPerRow + x * 4 + channel] : 255
-            if abs(Int(expected) - Int(drawn)) > 1 { glyphsFit = false }
-          }
-        }
-      }
-      activityStatus.frame = frame
-    }
-    applyTheme(originalTheme)
-    let visible =
-      !activityStatus.isHidden && activityStatus.stringValue == "offline"
-      && activityStatus.textColor == playerTheme.secondary
-      && activityStatus.alignment == .left && activityStatus.frame.minX == 12
-      && status.frame.minX > activityStatus.frame.maxX
+    let offlineQuiet = offline && status.stringValue.isEmpty
     enterCatalog("downloaded")
-    let noLoading =
-      !catalogPending && !searchStatusVisible && status.stringValue != "Searching Spotify…"
+    let localSearch = offline && !catalogPending && routeKind == "catalog"
+    let searchQuiet = status.stringValue.isEmpty
     receive(["type": "update", "offline": false])
-    let hidden = activityStatus.isHidden
-    demo()
+    let onlineQuiet = !offline && status.stringValue.isEmpty
     return [
-      "status": "ok", "offline_label_small_and_left_aligned": visible,
-      "offline_label_not_clipped_with_system_or_avenir": glyphsFit,
-      "offline_search_has_no_network_loading_status": noLoading,
-      "online_hides_offline_label": hidden,
+      "status": "ok", "offline_mode_keeps_footer_quiet": offlineQuiet,
+      "offline_search_keeps_downloaded_music_semantics": localSearch,
+      "offline_search_keeps_footer_quiet": searchQuiet,
+      "online_mode_keeps_footer_quiet": onlineQuiet,
     ]
   }
-  @MainActor
-  private func apiActivityChecks() async -> [String: Any] {
+  private func statusUIChecks() -> [String: Any] {
     demo()
+    defer { demo() }
     setSearchText("")
-    let cachedSilent = activityStatus.isHidden
-    receive(["type": "api-activity", "api_active": true])
-    let shortRequestsQuiet = activityStatus.isHidden
-    let revealDeadline = Date().addingTimeInterval(1)
-    while activityStatus.isHidden, Date() < revealDeadline {
-      try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-    let library =
-      !activityStatus.isHidden && activityStatus.stringValue == "Syncing with Spotify…"
-      && activityStatus.frame.minX == 12 && activityStatus.textColor == playerTheme.secondary
-    // Let the former minimum display lifetime expire during a long first request.
-    try? await Task.sleep(nanoseconds: 400_000_000)
-    receive(["type": "api-activity", "api_active": false])
-    let betweenPages = !activityStatus.isHidden && apiActivityWork != nil
-    let pendingHide = apiActivityWork
-    receive(["type": "api-activity", "api_active": true])
-    pendingHide?.perform()
-    let resumed = !activityStatus.isHidden && apiActivityWork == nil
-    let navigation = source.indices.allSatisfy { index in
-      table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-      previewSelection()
-      return !activityStatus.isHidden && activityStatus.stringValue == "Syncing with Spotify…"
-    }
+    let idleQuiet = status.stringValue.isEmpty && status.toolTip == ""
+    receive([
+      "type": "update", "message": "Library refreshed", "message_is_error": false,
+    ])
+    let successQuiet = status.stringValue.isEmpty
     enterCatalog("query")
-    let search = activityStatus.stringValue == "Searching Spotify…"
-    showError("Spotify request failed")
-    let errorVisible =
-      status.stringValue == "Spotify request failed" && status.textColor == .systemRed
-      && status.frame.minX > activityStatus.frame.maxX
+    let searchQuiet = catalogPending && status.stringValue.isEmpty
     receive(["type": "update", "offline": true])
-    let offlineWins = activityStatus.stringValue == "offline" && activityStatus.frame.minX == 12
+    let offlineQuiet = offline && !catalogPending && status.stringValue.isEmpty
     receive(["type": "update", "offline": false])
-    receive(["type": "api-activity", "api_active": false])
-    apiActivityWork?.perform()
-    let finished =
-      activityStatus.isHidden && status.stringValue == "Spotify request failed"
-      && status.textColor == .systemRed
-    demo()
-    receive(["type": "api-activity", "api_active": true])
-    let cancelled = apiActivityWork
-    receive(["type": "api-activity", "api_active": false])
-    cancelled?.perform()
-    let fastRequestNoFlash = activityStatus.isHidden
-    demo()
+    receive(["type": "initial-sync", "initial_sync": true])
+    let initialSyncVisible =
+      status.stringValue == "Syncing with Spotify…" && status.textColor == playerTheme.secondary
+      && status.frame.minX == 12
+    receive(["type": "initial-sync", "initial_sync": false])
+    let syncFinishedQuiet = status.stringValue.isEmpty
+    let requestError = "Spotify request failed"
+    showError(requestError)
+    receive(["type": "initial-sync", "initial_sync": true])
+    let errorWinsSyncStart =
+      status.stringValue == requestError && status.textColor == .systemRed
+    receive(["type": "initial-sync", "initial_sync": false])
+    let errorWinsSyncEnd =
+      status.stringValue == requestError && status.textColor == .systemRed
+    receive(["type": "update", "command": "preview", "variables": [:]])
+    let previewKeepsError = status.stringValue == requestError
+    search.stringValue = "/retrying"
+    controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    let typingKeepsError = status.stringValue == requestError && inlineError == requestError
+    requestTransport("pause")
+    let retryRequest = playbackRequest
+    let retryClearsError = inlineError == nil && status.stringValue.isEmpty
+    receive([
+      "type": "transport", "command": "pause", "request": retryRequest, "playing": false,
+    ])
+    let successfulRetryQuiet = status.stringValue.isEmpty && inlineError == nil
+    showError(requestError)
+    receive(["type": "update", "message": "", "message_is_error": false])
+    let latestSuccessClearsError = status.stringValue.isEmpty && inlineError == nil
+    connection = "credentials"
+    statusMessage = "Enter your Spotify Client ID, then press Return."
+    statusIsError = false
+    renderStatus()
+    let credentialGuidance =
+      status.stringValue == statusMessage && status.textColor == playerTheme.secondary
+    connection = "connecting"
+    statusMessage = "Finish connecting in your browser"
+    renderStatus()
+    let browserGuidance =
+      status.stringValue == statusMessage && status.textColor == playerTheme.secondary
     return [
-      "status": "ok", "cached_results_have_no_activity": cachedSilent,
-      "short_requests_avoid_flicker": shortRequestsQuiet && fastRequestNoFlash,
-      "library_activity_on_bottom_left": library, "catalogue_search_shows_api_activity": search,
-      "paginated_requests_keep_one_indicator": betweenPages && resumed,
-      "home_navigation_keeps_activity_stable": navigation,
-      "errors_remain_visible_beside_activity": errorVisible,
-      "offline_takes_priority_on_left": offlineWins,
-      "completion_hides_activity_and_retains_error": finished,
+      "status": "ok", "connected_idle_footer_is_quiet": idleQuiet,
+      "connected_success_message_is_quiet": successQuiet,
+      "catalogue_search_footer_is_quiet": searchQuiet,
+      "offline_footer_is_quiet": offlineQuiet,
+      "initial_library_sync_has_one_grey_status": initialSyncVisible && syncFinishedQuiet,
+      "errors_override_initial_sync_start_and_end": errorWinsSyncStart && errorWinsSyncEnd,
+      "preview_and_typing_preserve_latest_error": previewKeepsError && typingKeepsError,
+      "successful_retry_clears_operational_error": retryClearsError && successfulRetryQuiet,
+      "new_success_status_clears_previous_error": latestSuccessClearsError,
+      "sign_in_guidance_remains_visible": credentialGuidance && browserGuidance,
     ]
   }
   private func spaceChecks() -> [String: Any] {
@@ -6514,16 +6384,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     inlineError = nil
     statusMessage = ""
     statusIsError = false
-    apiActivityWork?.cancel()
-    apiActivityWork = nil
-    apiActive = false
-    apiActivityVisible = false
+    initialSyncing = false
     offline = false
-    activityStatus.isHidden = true
     routeKind = "home"
     breadcrumb = ""
     catalogPending = false
-    updateSearchStatus()
     catalogSearchWork?.cancel()
     source = homeItems.map { item in
       MusicItem([

@@ -360,7 +360,6 @@ final class SpotifyAPI {
   private static let tokenLock = NSRecursiveLock()
   let paths: WorkflowPaths
   let session: URLSession
-  var activity: ((Bool) -> Void)?
   init(_ paths: WorkflowPaths, session: URLSession? = nil) {
     self.paths = paths
     let config = URLSessionConfiguration.ephemeral
@@ -416,15 +415,14 @@ final class SpotifyAPI {
       ready.signal()
     }
     cancellation?.attach(task)
-    activity?(true)
-    defer { activity?(false) }
     task.resume()
     guard ready.wait(timeout: .now() + 22) == .success else {
       task.cancel()
       throw SpotifyFailure(message: "Spotify did not respond. Try again.", isNetworkError: true)
     }
     if cancellation?.isCancelled == true { throw URLError(.cancelled) }
-    if result.2 != nil {
+    if let error = result.2 {
+      if (error as? URLError)?.code == .cancelled { throw error }
       throw SpotifyFailure(
         message: "Could not reach Spotify. Check your connection and try again.",
         isNetworkError: true)

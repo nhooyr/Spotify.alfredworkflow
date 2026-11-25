@@ -37,7 +37,7 @@ final class NativeBackend {
   private var revision = 0
   private var navigationRequest = 0
   private var catalogRequest: RequestCancellation?
-  private var apiRequests = 0
+  private var initialSyncing = false
   private var syncing = false
   private var libraryCancellation: RequestCancellation?
   private var refreshAfterSync = false
@@ -74,7 +74,6 @@ final class NativeBackend {
         self.api = SpotifyAPI(self.paths, session: self.session)
         self.cache = DesktopCache(self.paths, self.store)
         self.library = MusicLibrary(self.store, self.api, online: WebPlayback.networkAvailable)
-        self.api.activity = { [weak self] active in self?.apiActivityChanged(active) }
         self.playback = WebPlayback(self.api, store: self.store)
         _ = try self.paths.authorization.load()
         try self.paths.loadClientID()
@@ -114,6 +113,7 @@ final class NativeBackend {
   }
   func stop() {
     running = false
+    queue.async { [weak self] in self?.setInitialSyncing(false) }
     playbackCancellation?.cancel()
     transportLock.lock()
     let transports = transportCancellations
@@ -149,15 +149,10 @@ final class NativeBackend {
   private func outputError(_ error: Error) {
     output(["type": "error", "message": error.localizedDescription])
   }
-  private func apiActivityChanged(_ started: Bool) {
-    queue.async { [weak self] in
-      guard let self = self, self.running else { return }
-      let wasActive = self.apiRequests > 0
-      self.apiRequests = max(0, self.apiRequests + (started ? 1 : -1))
-      if wasActive != (self.apiRequests > 0) {
-        self.output(["type": "api-activity", "api_active": self.apiRequests > 0])
-      }
-    }
+  private func setInitialSyncing(_ active: Bool) {
+    guard initialSyncing != active else { return }
+    initialSyncing = active
+    output(["type": "initial-sync", "initial_sync": active])
   }
   private func reloadArt() {
     artwork = Set(
@@ -216,7 +211,7 @@ final class NativeBackend {
     let rows = connection == "connected" ? (try? library.browse(route)) ?? [] : connectionItems()
     var value: JSONObject = [
       "type": "update", "command": command, "connection": connection, "message": message,
-      "message_is_error": messageIsError, "api_active": apiRequests > 0,
+      "message_is_error": messageIsError, "initial_sync": initialSyncing,
       "route_kind": text(route["kind"]), "prefix": prefix, "rows": rows.map(nativeRow),
       "variables": [:], "navigation": navigationRequest,
     ]
@@ -371,6 +366,7 @@ final class NativeBackend {
     let doSync =
       WebPlayback.networkAvailable() && api.connected
       && (force || store.get(MusicLibrary.syncKey) == nil)
+    setInitialSyncing(doSync && store.get(MusicLibrary.syncKey, stale: true) == nil)
     work.async { [weak self] in
       guard let self = self else { return }
       var error: Error?
@@ -406,6 +402,7 @@ final class NativeBackend {
       self.queue.async {
         self.syncing = false
         self.libraryCancellation = nil
+        self.setInitialSyncing(false)
         if !cancellation.isCancelled {
           if changed { self.sendCatalog() }
           if self.connection == "connected", changed || error != nil {
@@ -461,7 +458,18 @@ final class NativeBackend {
         }
       } catch {
         self.queue.async {
-          if generation == self.revision {
+          guard self.running, generation == self.revision, self.connection == "connected" else {
+            return
+          }
+          if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
+            let rows = (try? self.library.browse(current)) ?? []
+            self.output([
+              "type": "update", "command": "browse", "connection": self.connection,
+              "route_kind": text(current["kind"]), "prefix": self.prefix,
+              "query": text(current["query"]), "searching": false,
+              "rows": rows.map(self.nativeRow), "navigation": self.navigationRequest,
+            ])
+          } else {
             self.output([
               "type": "error", "message": error.localizedDescription,
               "route_kind": text(current["kind"]), "query": text(current["query"]),

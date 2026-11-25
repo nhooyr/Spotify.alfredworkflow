@@ -1634,6 +1634,9 @@ private func testPlaintextPaths() throws {
       check(
         String(input.dropFirst(resolved.consumed.count)) == "filter",
         "Typed category filters stay separate from the folder path")
+      check(
+        LibraryPath.prefix(for: resolved.routes) == spelling + "/",
+        "Path casing regression test preserves typed category casing and singular aliases")
       let rows = try library.browse(resolved.routes.last!)
       check(!rows.isEmpty, "Typed category paths use the actual saved library")
     }
@@ -1648,6 +1651,28 @@ private func testPlaintextPaths() throws {
   check(
     String(nested.dropFirst(resolved.consumed.count)) == "Song",
     "Nested paths leave a filter for the final view")
+  let mixed = try library.resolvePath("aRtIsT/Ac/dC/SiDé / a/FiLtEr")
+  check(
+    LibraryPath.prefix(for: mixed.routes) == "aRtIsT/Ac/dC/SiDé / a/"
+      && String("aRtIsT/Ac/dC/SiDé / a/FiLtEr".dropFirst(mixed.consumed.count)) == "FiLtEr"
+      && text(mixed.routes[1]["name"]) == "AC/DC"
+      && text(mixed.routes[2]["name"]) == "Side / A",
+    "Path casing regression test preserves mixed casing, accents and filters without changing names"
+  )
+  check(
+    LibraryPath.prefix(for: [["kind": "artists", "name": "Artists"], artist, album])
+      == "artists/ac/dc/side / a/"
+      && LibraryPath.prefix(for: [["kind": "songs"]]) == "songs/",
+    "Path casing regression test inserts lowercase categories and nested music names")
+  check(
+    LibraryPath.prefix(for: Array(mixed.routes.dropLast()) + [album])
+      == "aRtIsT/Ac/dC/side / a/",
+    "Path casing regression test preserves a typed parent while inserting a lowercase child")
+  check(
+    LibraryPath.prefix(for: [["kind": "catalog", "query": "Mixed CASE"]]) == "/"
+      && LibraryPath.prefix(for: [["kind": "catalog", "query": "Mixed CASE"], artist])
+        == "/Mixed CASE/ac/dc/",
+    "Path casing regression test leaves catalogue queries untouched")
   let direct = try library.resolvePath("Side / A/")
   check(
     direct.routes.count == 1 && text(direct.routes.last?["uri"]) == albumURI,
@@ -1670,8 +1695,76 @@ private func testPlaintextPaths() throws {
   check(
     OfflineURLProtocol.requests == requests,
     "Typed paths resolve from cached metadata without HTTP requests")
+  // Exercise the backend stack too: show/back must retain the typed components,
+  // while opening another child adds only that child's lowercase name.
+  try store.put("desktop:downloaded-uris", [artistURI, albumURI, playlistURI, trackURI])
+  try paths.authorization.save([
+    "client_id": String(repeating: "a", count: 32), "access_token": "fixture",
+    "refresh_token": "fixture", "expires_at": Date().timeIntervalSince1970 + 30,
+    "scope": SpotifyAPI.scopes,
+  ])
+  try store.put(MusicLibrary.syncKey, true, ttl: 3600)
+  try store.put("desktop:scanned:v4", true, ttl: 3600)
+  let backendSession = URLSession(configuration: config)
+  let backend = NativeBackend(
+    root,
+    environment: [
+      "alfred_workflow_data": paths.data.path, "alfred_workflow_cache": paths.cache.path,
+      "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path,
+      "SPOTIFY_DESKTOP_USER_CACHE": root.appendingPathComponent("empty").path,
+    ], session: backendSession, credentials: paths.authorization)
+  var updates: [JSONObject] = []
+  backend.receive = { updates.append($0) }
+  defer {
+    backend.stop()
+    backendSession.invalidateAndCancel()
+  }
+  func wait(_ condition: () -> Bool) {
+    let deadline = Date().addingTimeInterval(3)
+    while !condition(), Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+    }
+  }
+  try backend.start()
+  wait { updates.contains { text($0["connection"]) == "connected" } }
+  check(
+    updates.contains { text($0["connection"]) == "connected" },
+    "Path casing regression test starts an isolated connected backend")
+  func command(_ name: String, _ args: [String] = []) -> JSONObject {
+    let start = updates.count
+    backend.send(["command": name, "args": args])
+    wait { updates.dropFirst(start).contains { text($0["command"]) == name } }
+    let result = updates.dropFirst(start).first { text($0["command"]) == name }
+    check(result != nil, "Path casing regression test receives the " + name + " result")
+    return result ?? [:]
+  }
+  func activate(_ item: JSONObject) -> JSONObject {
+    command("activate", [String(decoding: try! jsonData(item), as: UTF8.self)])
+  }
+  let artistsMenu = homeItems.first { text(dict($0["target"])["kind"]) == "artists" }!
+  check(
+    text(activate(artistsMenu)["prefix"]) == "artists/"
+      && text(activate(artist)["prefix"]) == "artists/ac/dc/"
+      && text(activate(album)["prefix"]) == "artists/ac/dc/side / a/",
+    "Backend path casing regression test inserts lowercase category and nested query components")
+  let typedPrefix = "aRtIsT/Ac/dC/SiDé / a/"
+  let typed = command("path", [typedPrefix + "FiLtEr"])
+  check(
+    text(typed["prefix"]) == typedPrefix && text(typed["path_prefix"]) == typedPrefix
+      && text(command("show")["prefix"]) == typedPrefix,
+    "Backend path casing regression test retains typed casing on path resolution and reopen")
+  check(
+    text(command("back", [typedPrefix + "FiLtEr"])["search_text"]) == typedPrefix
+      && text(command("back", [typedPrefix])["search_text"]) == "aRtIsT/Ac/dC/"
+      && text(activate(album)["search_text"]) == "aRtIsT/Ac/dC/side / a/",
+    "Backend path casing regression test preserves parent casing during filter removal and navigation"
+  )
+  check(
+    text(command("path", ["sOnG/"])["prefix"]) == "sOnG/"
+      && text(command("show")["prefix"]) == "sOnG/",
+    "Backend path casing regression test keeps typed singular category aliases unchanged")
   print(
-    "Plaintext paths passed: all categories, aliases, nested folders, slash names, filters, and offline resolution."
+    "Plaintext paths passed: categories, aliases, nested folders, casing, slash names, filters, and offline resolution."
   )
 }
 

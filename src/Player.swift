@@ -1606,11 +1606,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       breadcrumb = value["prefix"] as? String ?? ""
       if value["command"] as? String == "path", let raw = value["path_prefix"] as? String {
         pendingPlaintextPath = nil
-        let current = search.stringValue
-        if current.hasPrefix(raw) {
-          let resolved = breadcrumb + String(current.dropFirst(raw.count))
-          if resolved != current { setSearchText(resolved) }
-        }
+        breadcrumb = raw
         lastPlaintextPath = plaintextPathKey(search.stringValue)
       }
       if breadcrumb.isEmpty { home = source }
@@ -3313,9 +3309,20 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       type(name.lowercased() + "/")
       reply(kind, name + "/", raw: name.lowercased() + "/", rows: albumRows)
       categories =
-        categories && routeKind == kind && search.stringValue == name + "/" && filtered.count == 2
+        categories && routeKind == kind && search.stringValue == name.lowercased() + "/"
+        && breadcrumb == name.lowercased() + "/" && filtered.count == 2
         && table.selectedRow == 0
     }
+    type("aLbUmS/Si")
+    reply("albums", "albums/", raw: "aLbUmS/", rows: albumRows)
+    let mixedCase =
+      search.stringValue == "aLbUmS/Si" && breadcrumb == "aLbUmS/"
+      && selectedItem()?.name == "Single"
+    type("sOnG/Si")
+    reply("songs", "songs/", raw: "sOnG/", rows: albumRows)
+    let aliasCase =
+      search.stringValue == "sOnG/Si" && breadcrumb == "sOnG/"
+      && selectedItem()?.name == "Single"
     type("Artists/AC/DC/Side / A/So")
     reply(
       "album", "Artists/AC/DC/Side / A/", raw: "Artists/AC/DC/Side / A/",
@@ -3349,6 +3356,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "typing_in_filter_stays_local": noExtraRequests,
       "path_reply_preserves_continued_typing": continuedTyping && caret,
       "all_categories_work_as_plaintext": categories,
+      "typed_category_casing_is_preserved": categories && mixedCase,
+      "typed_singular_alias_casing_is_preserved": aliasCase,
       "deleting_and_retyping_path_recovers": lateHomeIgnored && retyped,
       "nested_paths_filter_their_contents": nested,
       "deleting_pending_path_cancels_navigation": deletedPending,

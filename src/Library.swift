@@ -25,6 +25,16 @@ let homeItems = [
 struct LibraryPath {
   let routes: [JSONObject]
   let consumed: String
+
+  static func prefix(for routes: [JSONObject]) -> String {
+    if text(routes.last?["kind"]) == "catalog" { return "/" }
+    return routes.map { route in
+      if text(route["kind"]) == "catalog" { return "/" + text(route["query"]) }
+      if let component = route["path_component"] as? String { return component }
+      let name = text(route["name"])
+      return (name.isEmpty ? text(route["kind"]) : name).lowercased()
+    }.joined(separator: "/") + (routes.isEmpty ? "" : "/")
+  }
 }
 
 final class MusicLibrary {
@@ -136,7 +146,7 @@ final class MusicLibrary {
     if let (raw, route) = match(roots) {
       consumed += raw
       remaining.removeFirst(raw.count)
-      routes.append(route)
+      routes.append(route.merging(["path_component": String(raw.dropLast())]) { _, new in new })
     }
     while remaining.contains("/") {
       let choices: [JSONObject]
@@ -151,7 +161,7 @@ final class MusicLibrary {
       guard let (raw, route) = match(folders.map { (text($0["name"]), $0) }) else { break }
       consumed += raw
       remaining.removeFirst(raw.count)
-      routes.append(route)
+      routes.append(route.merging(["path_component": String(raw.dropLast())]) { _, new in new })
     }
     return LibraryPath(routes: routes, consumed: consumed)
   }

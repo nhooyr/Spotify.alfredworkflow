@@ -141,14 +141,7 @@ final class NativeBackend {
   }
   private var validCredentials: Bool { validClientID(paths.clientID()) }
   private var route: JSONObject { stack.last ?? ["kind": "home"] }
-  private var prefix: String {
-    if text(route["kind"]) == "catalog" { return "/" }
-    return stack.map {
-      if text($0["kind"]) == "catalog" { return "/" + text($0["query"]) }
-      let name = text($0["name"])
-      return name.isEmpty ? text($0["kind"]).capitalized : name
-    }.joined(separator: "/") + (stack.isEmpty ? "" : "/")
-  }
+  private var prefix: String { LibraryPath.prefix(for: stack) }
   private func output(_ value: JSONObject) {
     let value = value.merging(["offline": !WebPlayback.networkAvailable()]) { _, latest in latest }
     DispatchQueue.main.async { [weak self] in self?.receive?(value) }

@@ -626,16 +626,18 @@ private func testPlaybackPolling() throws {
     requests += 1
     let index = requests
     lock.unlock()
-    if index == 1 {
+    if index == 1 || index == 3 {
       check(
         gate.wait(timeout: .now() + 3) == .success,
-        "Playback polling regression test releases its first request")
+        "Playback polling regression test releases its gated request " + String(index))
     }
+    if index == 3 { return (204, Data()) }
     return (
       200,
       try! jsonData([
         "device": ["id": "phone", "name": "Phone", "type": "Smartphone"],
         "is_playing": index == 1, "repeat_state": "off",
+        "item": ["uri": "spotify:track:" + String(repeating: "t", count: 22)],
       ])
     )
   }
@@ -644,10 +646,12 @@ private func testPlaybackPolling() throws {
   var connected = false
   var barrier = false
   var states: [JSONObject] = []
+  var repeats: [JSONObject] = []
   backend.receive = { value in
     if text(value["connection"]) == "connected" { connected = true }
     if text(value["command"]) == "show" { barrier = true }
     if text(value["type"]) == "playback-state" { states.append(value) }
+    if text(value["type"]) == "repeat", value["poll"] as? Bool == true { repeats.append(value) }
   }
   defer {
     gate.signal()
@@ -683,8 +687,30 @@ private func testPlaybackPolling() throws {
       && dict(states[1]["state"])["is_playing"] as? Bool == false,
     "Playback polling regression test coalesces to the latest request without relabeling a stale snapshot"
   )
+  backend.send(["command": "repeat-state", "args": ["4", "13"]])
+  wait { requestCount() == 3 }
+  check(
+    requestCount() == 3, "Playback polling regression test holds a temporary no-playback response")
+  barrier = false
+  backend.send(["command": "repeat-state", "args": ["5", "14"]])
+  backend.send(["command": "show"])
+  wait { barrier }
+  check(
+    barrier, "Playback polling regression test queues recovery before the empty response finishes")
+  gate.signal()
+  wait {
+    states.contains { number($0["request"]) == 14 }
+      && repeats.contains { number($0["request"]) == 5 }
+  }
+  check(
+    requestCount() == 4 && states.map { number($0["request"]) } == [10, 12, 14]
+      && states.allSatisfy { !dict($0["state"]).isEmpty && $0["remote"] as? Bool == true }
+      && repeats.map { number($0["request"]) } == [1, 3, 5]
+      && text(repeats.last?["mode"]) == "off",
+    "Playback polling regression test keeps the header on HTTP 204 and resumes coalesced state and repeat updates"
+  )
   print(
-    "Playback polling regression test passed: coalesced refresh, preserved request generations, and remote state."
+    "Playback polling regression test passed: coalesced refresh, preserved generations, remote state, and temporary empty-response recovery."
   )
 }
 

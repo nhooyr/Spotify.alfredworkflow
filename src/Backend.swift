@@ -590,7 +590,7 @@ final class NativeBackend {
           ])
         }
       } else {
-        if let state = try? self.api.playbackState() {
+        if let state = try? self.api.playbackState(), !state.isEmpty {
           if let mode = RepeatMode(rawValue: text(state["repeat_state"])) {
             self.output(["type": "repeat", "mode": mode.rawValue, "request": request, "poll": true])
           }

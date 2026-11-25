@@ -2695,25 +2695,34 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       updateShuffle()
     }
     guard values.count >= 6 else {
-      setCurrentTrack("")
-      setNowArt("")
+      // A metadata-property error returns only the playback state. It does not
+      // mean the current track or its cached cover disappeared.
+      if values.isEmpty || values.first == "stopped" {
+        setCurrentTrack("")
+        setNowArt("")
+      }
       return
     }
+    let sameTrack = !values[5].isEmpty && values[5] == currentTrackURI
+    let imageURL = sameTrack && values[4].isEmpty ? currentImageURL : values[4]
+    let keepArtwork = sameTrack && values[4].isEmpty && !currentArtPath.isEmpty
     currentTrackArtist = values[2]
     currentTrackAlbum = values[3]
     setCurrentTrack(values[5])
     nowTitle.stringValue = values[1]
     updateContextLabel()
-    if currentImageURL != values[4] { currentArtPath = "" }
-    currentImageURL = values[4]
+    if currentImageURL != imageURL { currentArtPath = "" }
+    currentImageURL = imageURL
     if let item = catalog.first(where: { $0.uri == values[5] }), !item.art.isEmpty {
       setNowArt(item.art)
-    } else if values[4].isEmpty {
-      setNowArt("")
-    } else if let path = artworkPaths[values[4]] {
-      setNowArt(path)
-    } else if imagesRequested.insert(values[4]).inserted {
-      send("image", args: [values[4]])
+    } else if !keepArtwork {
+      if imageURL.isEmpty {
+        setNowArt("")
+      } else if let path = artworkPaths[imageURL] {
+        setNowArt(path)
+      } else if imagesRequested.insert(imageURL).inserted {
+        send("image", args: [imageURL])
+      }
     }
   }
   private func updateAPIActivity(_ active: Bool) {
@@ -4726,7 +4735,29 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func missingArtworkChecks() -> [String: Any] {
     optimisticUntil = .distantPast
     let cover = NSImage(size: NSSize(width: 20, height: 20))
-    nowArt.image = cover
+    let warmURI = "spotify:track:" + String(repeating: "n", count: 22)
+    let warmURL = "https://example.invalid/warm-cover"
+    let warmPath = "fixture-warm-cover"
+    imageCache.setObject(cover, forKey: warmPath as NSString)
+    artworkPaths[warmURL] = warmPath
+    catalog = []
+    updatePlayback(["paused", "Warm song", "Artist", "Album", warmURL, warmURI])
+    updatePlayback(["paused"])
+    let incompleteKeepsCover =
+      currentTrackURI == warmURI && currentImageURL == warmURL && currentArtPath == warmPath
+      && nowArt.image === cover
+    updatePlayback(["paused", "Warm song", "Artist", "Album", "", warmURI])
+    let omittedURLKeepsCover =
+      currentImageURL == warmURL && currentArtPath == warmPath && nowArt.image === cover
+    currentImageURL = ""
+    updatePlayback(["paused", "Warm song", "Artist", "Album", "", warmURI])
+    let localCoverRetained = currentArtPath == warmPath && nowArt.image === cover
+    updatePlayback(["stopped"])
+    let stoppedClears = currentTrackURI.isEmpty && nowArt.image !== cover
+    updatePlayback(["paused", "Warm song", "Artist", "Album", warmURL, warmURI])
+    updatePlayback([])
+    let absentClears = currentTrackURI.isEmpty && nowArt.image !== cover
+    updatePlayback(["paused", "Warm song", "Artist", "Album", warmURL, warmURI])
     let uri = "spotify:track:" + String(repeating: "m", count: 22)
     updatePlayback(["paused", "No cover", "Artist", "Album", "", uri])
     let missingHeader = nowArt.image === symbol("questionmark", height: 64)
@@ -4776,6 +4807,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     setNowArt(path.path)
     return [
       "status": "pending", "missing_header_art_uses_placeholder": missingHeader,
+      "incomplete_reopen_snapshot_keeps_header_cover": incompleteKeepsCover,
+      "same_track_missing_url_keeps_header_cover": omittedURLKeepsCover,
+      "same_track_local_cover_survives_missing_url": localCoverRetained,
+      "stopped_playback_clears_header_cover": stoppedClears,
+      "absent_playback_clears_header_cover": absentClears,
       "failed_download_uses_placeholder": missingDownload,
       "missing_preview_art_uses_placeholder": missingPreview,
       "known_cover_url_reused": reused, "newly_cached_cover_updates_selection": newlyCached,

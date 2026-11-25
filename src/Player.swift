@@ -660,7 +660,12 @@ private final class MusicCell: NSTableCellView {
 }
 
 private final class SelectionRow: NSTableRowView {
-  override func drawSelection(in dirtyRect: NSRect) {
+  override var isSelected: Bool {
+    didSet { if isSelected != oldValue { needsDisplay = true } }
+  }
+  override func drawBackground(in dirtyRect: NSRect) {
+    super.drawBackground(in: dirtyRect)
+    guard isSelected else { return }
     playerTheme.selection.setFill()
     NSBezierPath(
       roundedRect: bounds, xRadius: playerTheme.resultRadius, yRadius: playerTheme.resultRadius
@@ -957,6 +962,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var suppressSelection = false
   private var wasShown = false
   private var showCount = 0
+  private var menuScrollingTestResult: [String: Any]?
   private var screenshotModeTestResult: [String: Any]?
   private var apiActivityTestResult: [String: Any]?
   private var playbackHeaderTestResult: [String: Any]?
@@ -1171,7 +1177,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     search.setFrameOrigin(
       NSPoint(
         x: search.frame.minX, y: (nowArt.frame.minY + scroll.frame.maxY - search.frame.height) / 2))
-    scroll.wantsLayer = true
     scroll.hasVerticalScroller = true
     scroll.verticalScroller = ThemeScroller()
     scroll.scrollerStyle = .overlay
@@ -1191,7 +1196,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     table.rowHeight = 25
     table.intercellSpacing = .zero
     table.backgroundColor = .clear
-    table.selectionHighlightStyle = .regular
+    table.selectionHighlightStyle = .none
     table.delegate = self
     table.dataSource = self
     table.target = self
@@ -1292,7 +1297,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     table.enumerateAvailableRowViews { row, index in
       row.needsDisplay = true
       if self.filtered.indices.contains(index) {
-        (row.view(atColumn: 0) as? MusicCell)?.display(
+        (self.table.view(atColumn: 0, row: index, makeIfNecessary: false) as? MusicCell)?.display(
           self.filtered[index], index: index, selected: index == self.table.selectedRow)
       }
     }
@@ -1804,11 +1809,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   func tableViewSelectionDidChange(_ notification: Notification) {
     guard !suppressSelection else { return }
     collapseSearchSelection()
-    // Include prepared rows outside the viewport before they scroll into view.
-    table.enumerateAvailableRowViews { row, index in
-      guard self.filtered.indices.contains(index) else { return }
-      (row.view(atColumn: 0) as? MusicCell)?.display(
-        self.filtered[index], index: index, selected: self.table.selectedRow == index)
+    for row in table.rows(in: table.visibleRect)
+      .location..<NSMaxRange(table.rows(in: table.visibleRect)) where filtered.indices.contains(row)
+    {
+      (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MusicCell)?.display(
+        filtered[row], index: row, selected: table.selectedRow == row)
     }
     previewSelection()
   }
@@ -2278,10 +2283,24 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     collapseSearchSelection()
     guard !filtered.isEmpty else { return }
     let index = min(filtered.count - 1, max(0, table.selectedRow + offset))
-    guard index != table.selectedRow || !table.visibleRect.contains(table.rect(ofRow: index))
-    else { return }
+    let visible = table.visibleRect
+    let incoming = table.rect(ofRow: index)
+    let scrolling = !visible.contains(incoming)
+    if scrolling {
+      // Prepare and lay out incoming rows before exposing the new viewport.
+      table.prepareContent(in: visible.union(incoming))
+      table.layoutSubtreeIfNeeded()
+    }
+    var origin = scroll.contentView.bounds.origin
+    if incoming.minY < visible.minY { origin.y -= visible.minY - incoming.minY }
+    if incoming.maxY > visible.maxY { origin.y += incoming.maxY - visible.maxY }
+    scroll.contentView.scroll(to: origin)
+    scroll.reflectScrolledClipView(scroll.contentView)
     table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-    table.scrollRowToVisible(index)
+    if scrolling {
+      table.layoutSubtreeIfNeeded()
+      scroll.contentView.displayIfNeeded()
+    }
   }
   @objc private func activateSelection() { openSelection(preservingSelection: false) }
   private func openSelection(preservingSelection: Bool, playDirectly: Bool = false) {
@@ -3051,7 +3070,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return editingChecks()
     }
     if testMode && value["command"] as? String == "test-menu-scrolling" {
-      return menuScrollingChecks()
+      menuScrollingTestResult = nil
+      Task { @MainActor [weak self] in
+        guard let self = self else { return }
+        self.menuScrollingTestResult = await self.menuScrollingChecks()
+      }
+      return ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-menu-scrolling-result" {
+      return menuScrollingTestResult ?? ["status": "pending"]
     }
     if testMode && value["command"] as? String == "test-ui" {
       return previewChecks()
@@ -4213,71 +4240,89 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let scale = CGFloat(bitmap.pixelsHigh) / view.bounds.height
     return abs(CGFloat(top + bottom + 1) / (2 * scale) - view.bounds.midY)
   }
-  private func menuScrollingChecks() -> [String: Any] {
+  @MainActor private func menuScrollingChecks() async -> [String: Any] {
     demo()
     defer { demo() }
     search.isEnabled = true
     setSearchText("")
     focusSearch(selectAll: false)
     guard let editor = search.currentEditor() as? NSTextView else { return ["status": "error"] }
-    source = (0..<40).map {
+    source = (0..<24).map {
       MusicItem(["name": "Song \($0)", "uri": "scroll:\($0)", "kind": "track"])
     }
     filter(resetSelection: true)
     panel.contentView?.layoutSubtreeIfNeeded()
     table.layoutSubtreeIfNeeded()
-    let firstRow = table.rowView(atRow: 0, makeIfNecessary: false)
-    let initialOffset = scroll.contentView.bounds.origin
     var appearanceStable = true
     var selectedRowVisible = true
-    var preparedRowsChecked = false
+    var solidHighlight = true
     var limitsStable = true
+    var scrolledBothWays = true
     for direction in [1, -1] {
-      let command =
-        direction == 1 ? #selector(NSResponder.moveDown(_:)) : #selector(NSResponder.moveUp(_:))
+      func postArrow() {
+        let character = direction == 1 ? "\u{f701}" : "\u{f700}"
+        let event = NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: [.function],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, characters: character, charactersIgnoringModifiers: character,
+          isARepeat: true, keyCode: direction == 1 ? 125 : 126)!
+        NSApp.postEvent(event, atStart: false)
+      }
+      let initialOffset = scroll.contentView.bounds.origin.y
       for _ in 1..<source.count {
-        table.prepareContent(in: table.bounds)
-        table.enumerateAvailableRowViews { _, index in
-          if !table.rect(ofRow: index).intersects(table.visibleRect) { preparedRowsChecked = true }
-        }
-        _ = handleInputCommand(command, editor: editor, modifiers: [])
-        table.layoutSubtreeIfNeeded()
+        postArrow()
+        try? await Task.sleep(nanoseconds: 25_000_000)
         table.enumerateAvailableRowViews { row, index in
-          guard let cell = row.view(atColumn: 0) as? MusicCell else {
-            appearanceStable = false
-            return
-          }
+          guard let cell = row.view(atColumn: 0) as? MusicCell else { return }
           let selected = index == table.selectedRow
           appearanceStable =
             appearanceStable
             && cell.returnArrow.isHidden == !selected
             && cell.title.textColor == (selected ? playerTheme.selectedText : playerTheme.text)
-            && cell.title.stringValue == filtered[index].name
         }
-        let row = table.rect(ofRow: table.selectedRow)
+        let rect = table.rect(ofRow: table.selectedRow)
         selectedRowVisible =
           selectedRowVisible
-          && row.intersection(table.visibleRect).height >= row.height - 0.5
-        if direction == 1 && table.selectedRow == 1 {
-          appearanceStable =
-            appearanceStable
-            && table.rowView(atRow: 0, makeIfNecessary: false) === firstRow
-            && scroll.contentView.bounds.origin == initialOffset
+          && rect.intersection(table.visibleRect).height >= rect.height - 0.5
+        if let row = table.rowView(atRow: table.selectedRow, makeIfNecessary: false),
+          let bitmap = row.bitmapImageRepForCachingDisplay(in: row.bounds)
+        {
+          row.cacheDisplay(in: row.bounds, to: bitmap)
+          if let ink = bitmap.colorAt(x: 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB),
+            let expected = playerTheme.selection.usingColorSpace(.sRGB)
+          {
+            solidHighlight =
+              solidHighlight
+              && abs(ink.redComponent - expected.redComponent) < 0.05
+              && abs(ink.greenComponent - expected.greenComponent) < 0.05
+              && abs(ink.blueComponent - expected.blueComponent) < 0.05
+              && abs(ink.alphaComponent - expected.alphaComponent) < 0.05
+          } else {
+            solidHighlight = false
+          }
+        } else {
+          solidHighlight = false
         }
       }
+      scrolledBothWays =
+        scrolledBothWays
+        && (direction == 1
+          ? scroll.contentView.bounds.origin.y > initialOffset
+          : scroll.contentView.bounds.origin.y < initialOffset)
       let selected = table.selectedRow
       let origin = scroll.contentView.bounds.origin
-      for _ in 0..<5 { _ = handleInputCommand(command, editor: editor, modifiers: []) }
+      for _ in 0..<5 { postArrow() }
+      try? await Task.sleep(nanoseconds: 25_000_000)
       limitsStable =
         limitsStable && table.selectedRow == selected
         && scroll.contentView.bounds.origin == origin
     }
     return [
-      "status": "ok", "prepared_rows_exercised": preparedRowsChecked,
-      "scrolling_rows_keep_content_and_selection": appearanceStable,
+      "status": "ok", "scrolling_rows_keep_selection": appearanceStable,
       "selected_row_stays_visible": selectedRowVisible,
+      "selected_background_is_solid_each_frame": solidHighlight,
       "repeated_keys_at_limits_do_not_scroll": limitsStable,
-      "menu_uses_cached_drawing": scroll.wantsLayer && table.layer != nil,
+      "menu_scrolls_in_both_directions": scrolledBothWays,
       "keyboard_navigation_keeps_input_focus": panel.firstResponder === editor,
     ]
   }

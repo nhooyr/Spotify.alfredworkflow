@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep playback on Spotify’s active output device; use AppleScript only without internet access.
+
 ## v0.6.2
 
 - Keep Alfred command results and workflow blocks in README order.

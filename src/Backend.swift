@@ -8,7 +8,8 @@ final class NativeBackend {
   private let likeWork = DispatchQueue(label: "spotify.likes", qos: .userInitiated)
   private let repeatWork = DispatchQueue(label: "spotify.repeat", qos: .userInitiated)
   private let playbackWork = DispatchQueue(label: "spotify.web-playback", qos: .userInteractive)
-  private var repeatPolling = false
+  private var repeatPolling: (request: Int, playbackRequest: Int)?
+  private var pendingRepeatPoll: (request: Int, playbackRequest: Int)?
   private var playbackContextSnapshot: (state: JSONObject, request: Int)?
   private var resolvingContexts: Set<String> = []
   private let artworkWork = DispatchQueue(label: "spotify.artwork", qos: .utility)
@@ -24,6 +25,8 @@ final class NativeBackend {
   private var api: SpotifyAPI!
   private var playback: WebPlayback!
   private var playbackCancellation: RequestCancellation?
+  private let transportLock = NSLock()
+  private var transportCancellations: [RequestCancellation] = []
   private var cache: DesktopCache!
   private var library: MusicLibrary!
   private var auth: AuthorizationFlow?
@@ -112,6 +115,11 @@ final class NativeBackend {
   func stop() {
     running = false
     playbackCancellation?.cancel()
+    transportLock.lock()
+    let transports = transportCancellations
+    transportCancellations.removeAll()
+    transportLock.unlock()
+    for cancellation in transports { cancellation.cancel() }
     libraryCancellation?.cancel()
     auth?.cancel()
     cacheMaintenance?.cancel()
@@ -566,8 +574,14 @@ final class NativeBackend {
       return
     }
     if mode == nil {
-      guard api.canReadPlayback, !repeatPolling else { return }
-      repeatPolling = true
+      guard api.canReadPlayback else { return }
+      if let current = repeatPolling {
+        if current.request != request || current.playbackRequest != playbackRequest {
+          pendingRepeatPoll = (request, playbackRequest)
+        }
+        return
+      }
+      repeatPolling = (request, playbackRequest)
     }
     repeatWork.async { [weak self] in
       guard let self = self else { return }
@@ -586,14 +600,30 @@ final class NativeBackend {
           if let mode = RepeatMode(rawValue: text(state["repeat_state"])) {
             self.output(["type": "repeat", "mode": mode.rawValue, "request": request, "poll": true])
           }
-          self.queue.async { self.publishPlaybackContext(state, request: playbackRequest) }
+          self.queue.async {
+            self.output([
+              "type": "playback-state", "state": state, "request": playbackRequest,
+              "remote": !dict(state["device"]).isEmpty
+                && !self.playback.isDesktopDevice(dict(state["device"])),
+            ])
+            self.publishPlaybackContext(state, request: playbackRequest)
+          }
         }
-        self.queue.async { self.repeatPolling = false }
+        self.queue.async {
+          self.repeatPolling = nil
+          if let pending = self.pendingRepeatPoll {
+            self.pendingRepeatPoll = nil
+            if self.running {
+              self.repeatCommand(
+                nil, request: pending.request, playbackRequest: pending.playbackRequest)
+            }
+          }
+        }
       }
     }
   }
   private func publishPlaybackContext(_ state: JSONObject, request: Int, resolve: Bool = true) {
-    guard connection == "connected", playback.isDesktopDevice(dict(state["device"])) else { return }
+    guard connection == "connected" else { return }
     let track = text(dict(state["item"])["uri"])
     guard validTrack(track) else { return }
     playbackContextSnapshot = (state, request)
@@ -674,6 +704,42 @@ final class NativeBackend {
             "type": "update", "connection": "cleared", "message": self.message,
             "close_player": true, "rows": self.connectionItems().map(self.nativeRow),
           ])
+        case "transport":
+          let request = args.count > 1 ? Int(args[1]) ?? 0 : 0
+          self.playbackCancellation?.cancel()
+          let cancellation = RequestCancellation()
+          self.transportLock.lock()
+          self.transportCancellations.append(cancellation)
+          self.transportLock.unlock()
+          self.playbackWork.async {
+            defer {
+              self.transportLock.lock()
+              self.transportCancellations.removeAll { $0 === cancellation }
+              self.transportLock.unlock()
+            }
+            guard self.running, !cancellation.isCancelled else { return }
+            do {
+              var result = try self.playback.transport(argument, cancellation: cancellation)
+              result["type"] = "transport"
+              result["command"] = argument
+              result["request"] = request
+              if let state = result["state"] as? JSONObject, !dict(state["device"]).isEmpty {
+                result["remote"] = !self.playback.isDesktopDevice(dict(state["device"]))
+              }
+              self.output(result)
+            } catch {
+              guard !cancellation.isCancelled else { return }
+              var result: JSONObject = [
+                "type": "transport", "command": argument, "request": request,
+              ]
+              if !WebPlayback.networkAvailable() {
+                result["fallback"] = true
+              } else {
+                result["error"] = error.localizedDescription
+              }
+              self.output(result)
+            }
+          }
         case "play":
           let context = args.count > 1 ? args[1] : ""
           let launched = args.count > 2 && args[2] == "started"
@@ -688,7 +754,7 @@ final class NativeBackend {
               self.output(["type": "playback", "request": request])
             } catch {
               guard !cancellation.isCancelled else { return }
-              if WebPlayback.shouldUseAppleScript(error) {
+              if !WebPlayback.networkAvailable() {
                 do {
                   let uri = try self.playback.fallbackURI(argument)
                   self.output([
@@ -700,6 +766,11 @@ final class NativeBackend {
                     "type": "playback", "request": request, "error": error.localizedDescription,
                   ])
                 }
+              } else if (error as? SpotifyFailure)?.requiresDesktopStart == true && !launched {
+                self.output([
+                  "type": "playback", "request": request, "uri": argument, "context": context,
+                  "start_desktop": true,
+                ])
               } else {
                 self.output([
                   "type": "playback", "request": request, "error": error.localizedDescription,

@@ -94,9 +94,9 @@ The second header line always shows the current song’s artist and album.
 The third line shows its playback source when known: playlist, album, artist,
 or Liked Songs. This source can stay the same when Spotify continues with autoplay.
 
-Playback uses the Web API online and starts Spotify automatically when needed.
-Offline or when the desktop device is unavailable through the API, AppleScript
-handles playback and may bring Spotify forward.
+Playback uses the Web API online and keeps Spotify’s active output device, including
+your phone or speaker. It starts Spotify on the Mac when no device is active.
+AppleScript is used only without internet access and may bring Spotify forward.
 
 ### Offline and caching
 

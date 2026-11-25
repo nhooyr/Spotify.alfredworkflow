@@ -328,6 +328,8 @@ private func testWebPlayback() throws {
   var emptyDevices = 0
   var profileRequests = 0
   var deviceID = "desktop"
+  var noActiveDevice = false
+  var deviceAppearedDuringBootstrap = false
   var response = 204
   var bodies: [JSONObject] = []
   var targets: [String] = []
@@ -347,11 +349,19 @@ private func testWebPlayback() throws {
         200,
         try! jsonData([
           "devices": [
-            ["id": "phone", "name": "Phone", "type": "Smartphone", "is_active": true],
+            [
+              "id": "phone", "name": "Phone", "type": "Smartphone",
+              "is_active": !noActiveDevice || deviceAppearedDuringBootstrap,
+            ],
             ["id": "remote", "name": "Another Mac", "type": "Computer"],
             ["id": deviceID, "name": "Test Mac", "type": "Computer"],
           ]
         ])
+      )
+    case "/v1/me/player":
+      return (
+        200,
+        try! jsonData(noActiveDevice ? [:] : ["device": ["id": "phone", "type": "Smartphone"]])
       )
     case "/v1/me/player/play":
       check(
@@ -359,8 +369,9 @@ private func testWebPlayback() throws {
           && request.value(forHTTPHeaderField: "Content-Type") == "application/json",
         "Playback sends a JSON PUT")
       bodies.append(dict(try! JSONSerialization.jsonObject(with: requestBody(request))))
-      targets.append(
-        request.url!.queryItemsForTesting.first { $0.name == "device_id" }?.value ?? "")
+      let target = request.url!.queryItemsForTesting.first { $0.name == "device_id" }?.value ?? ""
+      targets.append(target)
+      if noActiveDevice && target.isEmpty { return (404, Data()) }
       return (response, response == 200 ? Data("command-id".utf8) : Data())
     default: return (500, Data())
     }
@@ -392,8 +403,8 @@ private func testWebPlayback() throws {
     )
   }
   check(
-    deviceRequests == 1 && targets.allSatisfy { $0 == "desktop" },
-    "Playback caches this Mac's device instead of targeting an active phone")
+    deviceRequests == 0 && targets.allSatisfy { $0.isEmpty },
+    "Playback-device regression test: selections retain the active phone without desktop lookup")
   let collection = "spotify:user:fixture:collection"
   check(
     WebPlayback.collectionURI(userID: "fixture/name with space")
@@ -420,7 +431,7 @@ private func testWebPlayback() throws {
     check(false, "Offline collection uses the local fallback")
   } catch {
     check(
-      WebPlayback.shouldUseAppleScript(error) && bodies.count == beforeOffline
+      (error as? SpotifyFailure)?.isNetworkError == true && bodies.count == beforeOffline
         && profileRequests == 1, "Offline collection does not wait for the network")
   }
   let cachedCollection = try offlineCollection.fallbackURI(PlaybackContext.likedSongs.uri)
@@ -458,27 +469,72 @@ private func testWebPlayback() throws {
     "Playback accepts command-ID responses and starts at the beginning")
   emptyDevices = 2
   deviceID = "restarted-desktop"
+  noActiveDevice = true
   try playback.play(track, recentlyLaunched: true)
   check(
     waits.count == 2 && targets.last == "restarted-desktop",
-    "A newly launched Spotify gets time to register its desktop device")
+    "A newly launched Spotify gets time to register only after no active device is confirmed")
+  noActiveDevice = false
   response = 403
   do {
     try playback.play(track)
     check(false, "Playback must retain API errors")
   } catch {
     check(
-      !WebPlayback.shouldUseAppleScript(error),
+      (error as? SpotifyFailure)?.status == 403,
       "Permission failures do not silently activate Spotify")
   }
   response = 404
+  let beforeRemoteFailure = deviceRequests
   do {
     try playback.play(track)
-    check(false, "Unavailable desktop device should fall back")
+    check(false, "An active remote device's failure must remain visible")
   } catch {
     check(
-      WebPlayback.shouldUseAppleScript(error),
-      "Unavailable desktop device allows the local fallback")
+      (error as? SpotifyFailure)?.status == 404 && deviceRequests == beforeRemoteFailure,
+      "Playback-device regression test: remote 404 never bootstraps or falls back to the Mac")
+  }
+  response = 500
+  do {
+    try playback.play(track)
+    check(false, "An active remote device's service error must remain visible")
+  } catch {
+    check(
+      (error as? SpotifyFailure)?.status == 500 && deviceRequests == beforeRemoteFailure,
+      "Playback-device regression test: online service failures cannot seize the output device")
+  }
+  noActiveDevice = true
+  response = 404
+  deviceAppearedDuringBootstrap = true
+  let beforeBootstrapRace = targets.count
+  do {
+    try playback.play(track)
+    check(false, "A newly active phone must not be replaced during desktop startup")
+  } catch {
+    check(
+      (error as? SpotifyFailure)?.requiresDesktopStart == false
+        && targets.count == beforeBootstrapRace + 1
+        && targets.last == "",
+      "Playback-device regression test preserves a phone that appears during desktop bootstrap")
+  }
+  deviceAppearedDuringBootstrap = false
+  do {
+    try playback.play(track)
+    check(false, "Unavailable online desktop playback must retain its API error")
+  } catch {
+    check(
+      (error as? SpotifyFailure)?.status == 404,
+      "Playback-device regression test: unavailable online playback never permits AppleScript")
+  }
+  emptyDevices = 2
+  do {
+    try playback.play(track)
+    check(false, "A missing desktop player must request a background launch")
+  } catch {
+    check(
+      (error as? SpotifyFailure)?.requiresDesktopStart == true,
+      "Playback-device regression test starts the desktop through the API only after no active device is confirmed"
+    )
   }
   let requests = deviceRequests
   let offline = WebPlayback(api, computerName: "Test Mac", online: { false })
@@ -487,7 +543,7 @@ private func testWebPlayback() throws {
     check(false, "Offline playback must use the local fallback")
   } catch {
     check(
-      WebPlayback.shouldUseAppleScript(error) && deviceRequests == requests,
+      (error as? SpotifyFailure)?.isNetworkError == true && deviceRequests == requests,
       "Offline playback immediately falls back without a network request")
   }
   let cancellation = RequestCancellation()
@@ -497,7 +553,7 @@ private func testWebPlayback() throws {
     check(false, "A superseded selection must not play")
   } catch {
     check(
-      (error as? URLError)?.code == .cancelled && !WebPlayback.shouldUseAppleScript(error),
+      (error as? URLError)?.code == .cancelled,
       "A superseded selection cannot trigger the local fallback")
   }
   let offlineConfig = URLSessionConfiguration.ephemeral
@@ -507,18 +563,20 @@ private func testWebPlayback() throws {
     online: { true })
   do {
     try failedNetwork.play(track)
-    check(false, "Network outage must use the local fallback")
+    check(false, "Unknown online playback-device failures must remain visible")
   } catch {
-    check(WebPlayback.shouldUseAppleScript(error), "Transport failures allow the local fallback")
+    check(
+      (error as? SpotifyFailure)?.isNetworkError == true,
+      "Playback-device regression test: an unknown remote output is not replaced on a network failure"
+    )
   }
-  check(
-    !WebPlayback.shouldUseAppleScript(SpotifyFailure(message: "Rate limited", status: 429)),
-    "Rate limits remain visible API failures")
   do {
     try playback.play("invalid")
     check(false, "Invalid playback URI must be rejected")
   } catch {
-    check(!WebPlayback.shouldUseAppleScript(error), "Invalid selections do not reach AppleScript")
+    check(
+      (error as? SpotifyFailure)?.isNetworkError == false,
+      "Invalid selections do not reach AppleScript")
   }
   try NativeBackend.clearConnection(paths)
   check(
@@ -526,6 +584,245 @@ private func testWebPlayback() throws {
     "Reauth clears the previous account's collection ID")
   print(
     "Web playback targeting, full Liked Songs collection, startup, cancellation, and offline fallback passed."
+  )
+}
+
+private func testPlaybackPolling() throws {
+  let root = tempDirectory("spotify-polling-regression-")
+  defer { try? FileManager.default.removeItem(at: root) }
+  let environment = [
+    "alfred_workflow_data": root.appendingPathComponent("data").path,
+    "alfred_workflow_cache": root.appendingPathComponent("cache").path,
+    "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path,
+    "SPOTIFY_DESKTOP_USER_CACHE": root.appendingPathComponent("empty").path,
+  ]
+  let paths = testPaths(
+    root: root, clientID: String(repeating: "a", count: 32), environment: environment)
+  try paths.prepare()
+  try paths.authorization.save([
+    "client_id": String(repeating: "a", count: 32), "access_token": "test", "refresh_token": "test",
+    "expires_at": Date().timeIntervalSince1970 + 3600, "scope": SpotifyAPI.scopes,
+  ])
+  let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+  try store.useAccount("fixture")
+  try store.put(MusicLibrary.syncKey, true, ttl: 3600)
+  try store.put("desktop:scanned:v4", true, ttl: 3600)
+  let config = URLSessionConfiguration.ephemeral
+  config.protocolClasses = [TestURLProtocol.self]
+  let session = URLSession(configuration: config)
+  let gate = DispatchSemaphore(value: 0)
+  let lock = NSLock()
+  var requests = 0
+  func requestCount() -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return requests
+  }
+  TestURLProtocol.response = { request in
+    check(
+      request.url?.path == "/v1/me/player",
+      "Playback polling regression test uses only mocked state requests")
+    lock.lock()
+    requests += 1
+    let index = requests
+    lock.unlock()
+    if index == 1 {
+      check(
+        gate.wait(timeout: .now() + 3) == .success,
+        "Playback polling regression test releases its first request")
+    }
+    return (
+      200,
+      try! jsonData([
+        "device": ["id": "phone", "name": "Phone", "type": "Smartphone"],
+        "is_playing": index == 1, "repeat_state": "off",
+      ])
+    )
+  }
+  let backend = NativeBackend(
+    root, environment: environment, session: session, credentials: paths.authorization)
+  var connected = false
+  var barrier = false
+  var states: [JSONObject] = []
+  backend.receive = { value in
+    if text(value["connection"]) == "connected" { connected = true }
+    if text(value["command"]) == "show" { barrier = true }
+    if text(value["type"]) == "playback-state" { states.append(value) }
+  }
+  defer {
+    gate.signal()
+    backend.stop()
+    session.invalidateAndCancel()
+    TestURLProtocol.response = nil
+  }
+  func wait(_ condition: () -> Bool) {
+    let deadline = Date().addingTimeInterval(3)
+    while !condition(), Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+    }
+  }
+  try backend.start()
+  wait { connected }
+  check(connected, "Playback polling regression test starts its isolated connected backend")
+  backend.send(["command": "repeat-state", "args": ["1", "10"]])
+  wait { requestCount() == 1 }
+  check(requestCount() == 1, "Playback polling regression test holds the first state request")
+  backend.send(["command": "repeat-state", "args": ["1", "10"]])
+  backend.send(["command": "repeat-state", "args": ["2", "11"]])
+  backend.send(["command": "repeat-state", "args": ["3", "12"]])
+  backend.send(["command": "show"])
+  wait { barrier }
+  check(
+    barrier, "Playback polling regression test queues newer requests before completing the old one")
+  gate.signal()
+  wait { states.count == 2 }
+  check(
+    requestCount() == 2 && states.map { number($0["request"]) } == [10, 12]
+      && states.allSatisfy { $0["remote"] as? Bool == true }
+      && dict(states[0]["state"])["is_playing"] as? Bool == true
+      && dict(states[1]["state"])["is_playing"] as? Bool == false,
+    "Playback polling regression test coalesces to the latest request without relabeling a stale snapshot"
+  )
+  print(
+    "Playback polling regression test passed: coalesced refresh, preserved request generations, and remote state."
+  )
+}
+
+private func testWebTransport() throws {
+  let root = tempDirectory("spotify-transport-regression-")
+  defer { try? FileManager.default.removeItem(at: root) }
+  let paths = testPaths(
+    root: root, clientID: String(repeating: "a", count: 32),
+    environment: [
+      "alfred_workflow_data": root.appendingPathComponent("data").path,
+      "alfred_workflow_cache": root.appendingPathComponent("cache").path,
+    ])
+  try paths.prepare()
+  let config = URLSessionConfiguration.ephemeral
+  config.protocolClasses = [TestURLProtocol.self]
+  let api = SpotifyAPI(paths, session: URLSession(configuration: config))
+  try api.paths.authorization.save([
+    "client_id": String(repeating: "a", count: 32), "access_token": "test",
+    "refresh_token": "test", "expires_at": Date().timeIntervalSince1970 + 3600,
+    "scope": SpotifyAPI.scopes,
+  ])
+  var playing = true
+  var shuffleStates: [String] = []
+  var noCurrentDevice = false
+  var response = 204
+  var calls: [(String, String)] = []
+  TestURLProtocol.response = { request in
+    let path = request.url!.path
+    calls.append((request.httpMethod ?? "", path))
+    check(
+      request.url!.queryItemsForTesting.allSatisfy { $0.name != "device_id" }
+        && !path.hasSuffix("/devices"),
+      "Playback-device regression test never targets or transfers to the desktop")
+    if path == "/v1/me/player" {
+      return (
+        200,
+        try! jsonData(
+          noCurrentDevice
+            ? [:]
+            : [
+              "device": ["id": "phone", "name": "Phone", "type": "Smartphone"],
+              "is_playing": playing,
+            ])
+      )
+    }
+    check(
+      [
+        "/v1/me/player/play", "/v1/me/player/pause", "/v1/me/player/next", "/v1/me/player/previous",
+        "/v1/me/player/shuffle",
+      ]
+      .contains(path),
+      "Playback-device regression test uses only active-device playback endpoints")
+    if response == 204 {
+      if path.hasSuffix("/shuffle") {
+        shuffleStates.append(
+          request.url!.queryItemsForTesting.first { $0.name == "state" }?.value ?? "")
+      }
+      if path.hasSuffix("/pause") { playing = false }
+      if path.hasSuffix("/play") { playing = true }
+    }
+    return (response, Data())
+  }
+  defer { TestURLProtocol.response = nil }
+  let playback = WebPlayback(api, online: { true })
+  let paused = try playback.transport("toggle")
+  check(
+    paused["playing"] as? Bool == false && dict(paused["state"])["is_playing"] as? Bool == false
+      && text(dict(dict(paused["state"])["device"])["id"]) == "phone"
+      && calls.map { $0.1 } == ["/v1/me/player", "/v1/me/player/pause"],
+    "Playback-device regression test pauses the active phone and returns its authoritative state")
+  let resumed = try playback.transport("toggle")
+  check(
+    resumed["playing"] as? Bool == true && playing,
+    "Playback-device regression test resumes the same active phone")
+  for (command, method, endpoint) in [
+    ("pause", "PUT", "pause"), ("resume", "PUT", "play"),
+    ("next", "POST", "next"), ("previous", "POST", "previous"),
+  ] {
+    let before = calls.count
+    _ = try playback.transport(command)
+    check(
+      calls.count == before + 1 && calls.last?.0 == method
+        && calls.last?.1 == "/v1/me/player/" + endpoint,
+      "Playback-device regression test sends a known control in one request: " + command)
+  }
+  for command in ["shuffle-on", "shuffle-on", "shuffle-off", "shuffle-off"] {
+    let before = calls.count
+    _ = try playback.transport(command)
+    check(
+      calls.count == before + 1 && calls.last?.0 == "PUT"
+        && calls.last?.1 == "/v1/me/player/shuffle",
+      "Shuffle regression test updates the active phone in one API request")
+  }
+  check(
+    shuffleStates == ["true", "true", "false", "false"],
+    "Shuffle regression test uses idempotent explicit on and off states")
+  noCurrentDevice = true
+  do {
+    _ = try playback.transport("toggle")
+    check(false, "Missing playback state must not select a different device")
+  } catch {
+    check(
+      (error as? SpotifyFailure)?.status == 404,
+      "Playback-device regression test rejects local fallback for an unknown online device")
+  }
+  noCurrentDevice = false
+  for status in [403, 500, 429] {
+    response = status
+    do {
+      _ = try playback.transport("shuffle-on")
+      check(false, "A rejected remote control must remain an error")
+    } catch {
+      check(
+        (error as? SpotifyFailure)?.status == status,
+        "Playback-device regression test preserves the output on API status " + String(status))
+    }
+  }
+  let beforeOffline = calls.count
+  do {
+    _ = try WebPlayback(api, online: { false }).transport("toggle")
+    check(false, "Offline controls use the existing local path")
+  } catch {
+    check(
+      (error as? SpotifyFailure)?.isNetworkError == true && calls.count == beforeOffline,
+      "Playback-device regression test retains immediate offline fallback without network access")
+  }
+  let cancellation = RequestCancellation()
+  cancellation.cancel()
+  do {
+    _ = try playback.transport("next", cancellation: cancellation)
+    check(false, "Cancelled transport must not reach the API")
+  } catch {
+    check(
+      (error as? URLError)?.code == .cancelled && calls.count == beforeOffline,
+      "Playback-device regression test cancels without sending or falling back")
+  }
+  print(
+    "Active-device transport regression tests passed: phone controls, one-request commands, failure isolation, and offline behavior."
   )
 }
 
@@ -1954,6 +2251,12 @@ func runModelTests() {
   do { try testWebPlayback() } catch {
     check(false, "Web playback tests: " + error.localizedDescription)
   }
+  do { try testWebTransport() } catch {
+    check(false, "Active-device transport regression test: " + error.localizedDescription)
+  }
+  do { try testPlaybackPolling() } catch {
+    check(false, "Playback polling regression test: " + error.localizedDescription)
+  }
 
   do { try testArtworkRequests() } catch {
     check(false, "Artwork requests: " + error.localizedDescription)
@@ -2705,7 +3008,8 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-ui", "test-editing", "test-local-bindings", "test-navigation",
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",
-    "test-single-line", "test-offline-ui", "test-api-activity", "test-repeat",
+    "test-single-line", "test-offline-ui", "test-api-activity", "test-remote-playback",
+    "test-repeat",
     "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode",
     "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode",
     "test-catalog-resume",

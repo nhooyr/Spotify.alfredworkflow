@@ -790,7 +790,6 @@ final class SpotifyCommands {
     }
     ensureRunning { _ in self.perform(command, uri: uri, context: context) }
   }
-  func setShuffle(_ enabled: Bool) { play(enabled ? "shuffle-on" : "shuffle-off") }
   func currentTrack(_ completion: @escaping (String?) -> Void) {
     queue.async {
       let result = self.call("snapshot", arguments: [])
@@ -917,6 +916,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var playbackButtons: [NSButton] = []
   private var connection = "loading"
   private var playing = false
+  private var remotePlaybackDevice = false
+  private var lastWebPlaybackAt = Date.distantPast
+  private var lastTransportTarget = ""
   private var suppressSelection = false
   private var wasShown = false
   private var showCount = 0
@@ -989,9 +991,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard let self = self, self.panel.isVisible else { return }
         self.refreshTheme()
         if self.connection == "connected" {
-          self.spotify.poll()
+          if !self.remotePlaybackDevice { self.spotify.poll() }
           if Date().timeIntervalSince(self.lastLikedCheck) >= 60 { self.refreshCurrentLike() }
-          if Date().timeIntervalSince(self.lastRepeatPoll) >= 5 { self.refreshRepeat() }
+          if Date().timeIntervalSince(self.lastRepeatPoll) >= 5 {
+            self.refreshRepeat()
+          }
         }
       }
     }
@@ -1342,8 +1346,43 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       if !track.isEmpty, track == currentTrackURI { applyPlaybackContext(context, track: track) }
       return
     }
+    if type == "playback-state" {
+      guard connection == "connected", value["request"] as? Int == playbackRequest else { return }
+      updateWebPlayback(dict(value["state"]), remote: value["remote"] as? Bool == true)
+      return
+    }
+    if type == "transport" {
+      guard connection == "connected", value["request"] as? Int == playbackRequest else { return }
+      // Invalidate state reads that began before this command finished.
+      playbackRequest += 1
+      let command = value["command"] as? String ?? ""
+      if value["fallback"] as? Bool == true {
+        if !offline || remotePlaybackDevice {
+          showError("Go online to control the Spotify device already playing.")
+        } else if !testMode {
+          spotify.play(["pause", "resume"].contains(command) ? "toggle" : command)
+        }
+      } else if let error = value["error"] as? String {
+        optimisticUntil = .distantPast
+        lastRepeatPoll = .distantPast
+        showError(error)
+      } else if let state = value["state"] as? JSONObject {
+        updateWebPlayback(state, remote: value["remote"] as? Bool == true)
+      } else if let playing = value["playing"] as? Bool {
+        self.playing = playing
+        optimisticUntil = .distantPast
+        lastWebPlaybackAt = Date()
+        updateToggle()
+      }
+      if !testMode { refreshRepeat() }
+      return
+    }
     if type == "playback" {
       guard connection == "connected", value["request"] as? Int == playbackRequest else { return }
+      if value["start_desktop"] as? Bool != true {
+        playbackRequest += 1
+        if !testMode { refreshRepeat() }
+      }
       if let error = value["error"] as? String {
         optimisticUntil = .distantPast
         currentPlaybackContext = nil
@@ -1352,9 +1391,27 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         showError(error)
         if !testMode { spotify.poll() }
       }
-      if value["fallback"] as? Bool == true, !testMode {
-        spotify.play(
-          "play", uri: value["uri"] as? String ?? "", context: value["context"] as? String ?? "")
+      if value["start_desktop"] as? Bool == true {
+        if !testMode {
+          let request = playbackRequest
+          spotify.ensureRunning { [weak self] _ in
+            guard let self = self, self.connection == "connected", request == self.playbackRequest
+            else { return }
+            self.send(
+              "play",
+              args: [
+                value["uri"] as? String ?? "", value["context"] as? String ?? "", "started",
+                String(request),
+              ])
+          }
+        }
+      } else if value["fallback"] as? Bool == true {
+        if !offline || remotePlaybackDevice {
+          showError("Go online to control the Spotify device already playing.")
+        } else if !testMode {
+          spotify.play(
+            "play", uri: value["uri"] as? String ?? "", context: value["context"] as? String ?? "")
+        }
       }
       return
     }
@@ -1546,6 +1603,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
 
   private func clearDisconnectedState() {
+    remotePlaybackDevice = false
+    lastWebPlaybackAt = .distantPast
     spotify.invalidateStatus()
     playbackRequest += 1
     repeatRequest += 1
@@ -2174,16 +2233,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return
       }
       let uri = directURI ?? item.payload["play_uri"] as? String ?? item.uri
+      if offline && remotePlaybackDevice {
+        showError("Go online to control the Spotify device already playing.")
+        return
+      }
       playbackRequest += 1
       observedPlaybackContext = nil
       if !testMode {
         let request = playbackRequest
         let context = item.payload["context"] as? String ?? ""
-        spotify.ensureRunning { [weak self] started in
-          guard let self = self, self.connection == "connected", request == self.playbackRequest
-          else { return }
-          self.send("play", args: [uri, context, started ? "started" : "running", String(request)])
-        }
+        send("play", args: [uri, context, "running", String(request)])
       }
       playing = true
       optimisticUntil = Date().addingTimeInterval(1)
@@ -2211,19 +2270,27 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       send("activate", args: [text])
     }
   }
-  @objc private func togglePlayback() {
+  private func requestTransport(_ command: String) {
     guard connection == "connected" else { return }
-    playing.toggle()
-    optimisticUntil = Date().addingTimeInterval(1)
-    updateToggle()
-    if !testMode { spotify.play("toggle") }
+    if offline && remotePlaybackDevice {
+      showError("Go online to control the Spotify device already playing.")
+      return
+    }
+    let target =
+      command == "toggle" && !offline && Date().timeIntervalSince(lastWebPlaybackAt) < 1
+      ? (playing ? "pause" : "resume") : command
+    playbackRequest += 1
+    lastTransportTarget = target
+    if command == "toggle" {
+      playing.toggle()
+      optimisticUntil = Date().addingTimeInterval(1)
+      updateToggle()
+    }
+    send("transport", args: [target, String(playbackRequest)])
   }
-  @objc private func previousTrack() {
-    if connection == "connected" && !testMode { spotify.play("previous") }
-  }
-  @objc private func nextTrack() {
-    if connection == "connected" && !testMode { spotify.play("next") }
-  }
+  @objc private func togglePlayback() { requestTransport("toggle") }
+  @objc private func previousTrack() { requestTransport("previous") }
+  @objc private func nextTrack() { requestTransport("next") }
   @objc private func toggleLiked() {
     guard like.isEnabled else { return }
     requestLiked(likedTracks[currentTrackURI] != true)
@@ -2314,10 +2381,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     setShuffle(!shuffling)
   }
   private func setShuffle(_ enabled: Bool) {
+    guard connection == "connected" else { return }
+    if offline && remotePlaybackDevice {
+      showError("Go online to control the Spotify device already playing.")
+      return
+    }
     shuffling = enabled
     updateShuffle()
     optimisticUntil = Date().addingTimeInterval(0.5)
-    if !testMode { spotify.setShuffle(enabled) }
+    requestTransport(enabled ? "shuffle-on" : "shuffle-off")
   }
   private func updateShuffle() {
     shuffle.contentTintColor = shuffling ? .black : playerTheme.secondary
@@ -2356,12 +2428,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if ["toggle", "previous", "next"].contains(command) {
       lastTransportCommand = command
       transportCommands += 1
-      if command == "toggle", panel.isVisible {
-        playing.toggle()
-        optimisticUntil = Date().addingTimeInterval(1)
-        updateToggle()
-      }
-      if !testMode { spotify.play(command) }
+      requestTransport(command)
       return
     }
     if command == "refresh" {
@@ -2431,8 +2498,28 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     toggle.setFrameOrigin(
       NSPoint(x: (leftEdge + rightEdge - toggle.frame.width) / 2, y: toggle.frame.minY))
   }
-  private func updatePlayback(_ values: [String]) {
-    guard connection == "connected", Date() >= optimisticUntil else { return }
+  private func updateWebPlayback(_ state: JSONObject, remote: Bool) {
+    guard !offline else { return }
+    remotePlaybackDevice = remote
+    lastWebPlaybackAt = Date()
+    let track = dict(state["item"])
+    let album = dict(track["album"])
+    let artists = (track["artists"] as? [JSONObject] ?? []).map { text($0["name"]) }.joined(
+      separator: ", ")
+    let image = (album["images"] as? [JSONObject])?.first.map { text($0["url"]) } ?? ""
+    let uri = text(track["uri"])
+    optimisticUntil = .distantPast
+    updatePlayback(
+      [
+        state["is_playing"] as? Bool == true ? "playing" : "paused", text(track["name"]), artists,
+        text(album["name"]), image, validTrack(uri) ? uri : "",
+        state["shuffle_state"] as? Bool == true ? "true" : "false",
+      ], fromWeb: true)
+  }
+  private func updatePlayback(_ values: [String], fromWeb: Bool = false) {
+    guard connection == "connected", fromWeb || !remotePlaybackDevice,
+      Date() >= optimisticUntil
+    else { return }
     playing = values.first == "playing"
     updateToggle()
     if values.count >= 7 {
@@ -2587,7 +2674,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     send("show")
     if connection == "connected" {
-      spotify.poll()
+      if !remotePlaybackDevice { spotify.poll() }
       refreshCurrentLike()
       refreshRepeat()
     }
@@ -2708,6 +2795,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-api-activity-result" {
       return apiActivityTestResult ?? ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-remote-playback" {
+      return remotePlaybackChecks()
     }
     if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
     if testMode && value["command"] as? String == "test-playback-context" {
@@ -4832,6 +4922,67 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
 
+  private func remotePlaybackChecks() -> [String: Any] {
+    demo()
+    let phoneTrack = "spotify:track:" + String(repeating: "x", count: 22)
+    let state: JSONObject = [
+      "device": ["id": "phone", "name": "Phone", "type": "Smartphone"],
+      "is_playing": true, "shuffle_state": true,
+      "item": [
+        "uri": phoneTrack, "name": "Phone song", "artists": [["name": "Phone artist"]],
+        "album": ["name": "Phone album", "images": []],
+      ],
+    ]
+    receive(["type": "playback-state", "state": state, "remote": true, "request": playbackRequest])
+    let header =
+      remotePlaybackDevice && playing && currentTrackURI == phoneTrack
+      && nowTitle.stringValue == "Phone song" && currentTrackArtist == "Phone artist"
+      && currentTrackAlbum == "Phone album" && shuffling
+    updatePlayback([
+      "paused", "Mac song", "Mac artist", "Mac album", "",
+      "spotify:track:" + String(repeating: "y", count: 22), "false",
+    ])
+    let keepsRemote =
+      playing && currentTrackURI == phoneTrack && nowTitle.stringValue == "Phone song"
+    togglePlayback()
+    let pause = lastTransportTarget == "pause" && sentTestCommands.last == "transport" && !playing
+    let preCompletion = playbackRequest
+    receive(["type": "transport", "command": "pause", "playing": false, "request": preCompletion])
+    receive(["type": "playback-state", "state": state, "remote": true, "request": preCompletion])
+    let confirmed = !playing && playbackRequest > preCompletion
+    togglePlayback()
+    let resume = lastTransportTarget == "resume" && playing
+    let stale = playbackRequest - 1
+    receive(["type": "transport", "playing": false, "request": stale])
+    let staleIgnored = playing
+    lastWebPlaybackAt = .distantPast
+    togglePlayback()
+    let authoritative = lastTransportTarget == "toggle"
+    previousTrack()
+    let previous = lastTransportTarget == "previous"
+    nextTrack()
+    let next = lastTransportTarget == "next"
+    receive(["type": "transport", "command": "next", "fallback": true, "request": playbackRequest])
+    let onlineErrorsDoNotMoveDevice = remotePlaybackDevice && inlineError != nil
+    receive(["type": "update", "offline": true])
+    let commands = sentTestCommands.count
+    togglePlayback()
+    let offlineRemote =
+      sentTestCommands.count == commands && remotePlaybackDevice && inlineError != nil
+    demo()
+    return [
+      "status": "ok", "remote_header_tracks_active_spotify_device": header,
+      "local_snapshot_does_not_overwrite_phone": keepsRemote,
+      "fresh_state_uses_single_request_pause_resume": pause && resume && confirmed,
+      "stale_state_uses_authoritative_toggle": authoritative,
+      "transport_targets_current_device_for_previous_next": previous && next,
+      "stale_transport_confirmation_ignored": staleIgnored,
+      "pre_completion_snapshot_cannot_undo_pause": confirmed,
+      "online_errors_never_fall_back_to_desktop": onlineErrorsDoNotMoveDevice,
+      "offline_remote_device_is_not_moved_to_mac": offlineRemote,
+    ]
+  }
+
   private func repeatChecks() -> [String: Any] {
     connection = "connected"
     repeatMode = .off
@@ -5018,6 +5169,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func demo() {
     connection = "connected"
+    remotePlaybackDevice = false
+    lastWebPlaybackAt = .distantPast
     pendingPlaintextPath = nil
     lastPlaintextPath = nil
     pendingHomeQuery = nil

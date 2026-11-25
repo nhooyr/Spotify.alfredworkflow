@@ -118,10 +118,6 @@ final class WebPlayback {
         computerName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
   }
   static func networkAvailable() -> Bool { NetworkAvailability.shared.isOnline() }
-  static func shouldUseAppleScript(_ error: Error) -> Bool {
-    guard let error = error as? SpotifyFailure else { return false }
-    return error.isNetworkError || error.status == 404 || (500..<600).contains(error.status)
-  }
   static func payload(_ uri: String, context: String) throws -> JSONObject {
     guard validPlaybackURI(uri), context.isEmpty || validURI(context) else {
       throw SpotifyFailure(message: "This selection cannot be played in Spotify.")
@@ -170,6 +166,11 @@ final class WebPlayback {
     let devices =
       dict(try api.request("/me/player/devices", timeout: 2, cancellation: cancellation))["devices"]
       as? [JSONObject] ?? []
+    if let active = devices.first(where: { $0["is_active"] as? Bool == true }),
+      !isDesktopDevice(active)
+    {
+      throw SpotifyFailure(message: "Spotify playback moved to another device. Try again.")
+    }
     let candidates = devices.filter {
       text($0["type"]) == "Computer" && $0["is_restricted"] as? Bool != true
         && text($0["name"]).compare(
@@ -180,7 +181,8 @@ final class WebPlayback {
       let device = candidates.first(where: { $0["is_active"] as? Bool == true }) ?? candidates.first
     else {
       throw SpotifyFailure(
-        message: "Spotify’s desktop player is not available through the Web API.", status: 404)
+        message: "Spotify’s desktop player is not available through the Web API.", status: 404,
+        requiresDesktopStart: true)
     }
     let id = text(device["id"])
     deviceID = id
@@ -191,8 +193,58 @@ final class WebPlayback {
       number(((try? api.paths.authorization.load()) ?? [:])["expires_at"]) > Date()
         .timeIntervalSince1970 + 60
     else { return }
-    _ = try? desktopDevice(cancellation)
     _ = try? likedSongsURI(cancellation)
+  }
+  func transport(_ command: String, cancellation: RequestCancellation? = nil) throws -> JSONObject {
+    if cancellation?.isCancelled == true { throw URLError(.cancelled) }
+    guard online() else {
+      throw SpotifyFailure(message: "Spotify is offline.", isNetworkError: true)
+    }
+    guard api.hasScope("user-modify-playback-state") else {
+      throw SpotifyFailure(
+        message: "Run \(api.paths.command("reauth")) to allow controlling Spotify playback.")
+    }
+    var command = command
+    var state: JSONObject = [:]
+    if command == "toggle" {
+      guard api.canReadPlayback else {
+        throw SpotifyFailure(
+          message: "Run \(api.paths.command("reauth")) to allow reading Spotify playback state.")
+      }
+      state = dict(try api.request("/me/player", timeout: 2, cancellation: cancellation))
+      guard let playing = state["is_playing"] as? Bool else {
+        throw SpotifyFailure(
+          message: "Start playing music in Spotify, then try again.", status: 404)
+      }
+      command = playing ? "pause" : "resume"
+    }
+    let path: String
+    let method: String
+    let playing: Bool?
+    var params: [String: String] = [:]
+    switch command {
+    case "pause": (path, method, playing) = ("pause", "PUT", false)
+    case "resume": (path, method, playing) = ("play", "PUT", true)
+    case "next": (path, method, playing) = ("next", "POST", nil)
+    case "previous": (path, method, playing) = ("previous", "POST", nil)
+    case "shuffle-on", "shuffle-off":
+      (path, method, playing) = ("shuffle", "PUT", nil)
+      params["state"] = command == "shuffle-on" ? "true" : "false"
+    default: throw SpotifyFailure(message: "Unknown Spotify playback command.")
+    }
+    // An omitted device_id keeps control on Spotify's current output device.
+    _ = try api.request(
+      "/me/player/" + path, params: params, method: method, timeout: 2, expectJSON: false,
+      cancellation: cancellation)
+    var result: JSONObject = [:]
+    if let playing = playing {
+      result["playing"] = playing
+      if !state.isEmpty {
+        state["is_playing"] = playing
+        result["state"] = state
+      }
+    }
+    return result
   }
   func play(
     _ uri: String, context: String = "", recentlyLaunched: Bool = false,
@@ -213,7 +265,17 @@ final class WebPlayback {
     if uri == PlaybackContext.likedSongs.uri {
       body = try Self.payload(likedSongsURI(cancellation), context: context)
     }
-    if recentlyLaunched { deviceID = nil }
+    do {
+      _ = try api.request(
+        "/me/player/play", method: "PUT", body: body, timeout: 2, expectJSON: false,
+        cancellation: cancellation)
+      return
+    } catch let error as SpotifyFailure where error.status == 404 {
+      let state = dict(try api.request("/me/player", timeout: 2, cancellation: cancellation))
+      guard state.isEmpty || state["device"] is NSNull else { throw error }
+    }
+    // Bootstrap the desktop only after Spotify confirms there is no current device.
+    deviceID = nil
     let attempts = recentlyLaunched ? 6 : 2
     let deadline = Date().addingTimeInterval(recentlyLaunched ? 4 : 2.5)
     for attempt in 0..<attempts {

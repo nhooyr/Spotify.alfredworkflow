@@ -30,6 +30,7 @@ struct SpotifyFailure: LocalizedError {
   let message: String
   var status: Int = 0
   var isNetworkError = false
+  var requiresDesktopStart = false
   var errorDescription: String? { message }
 }
 func jsonData(_ object: Any) throws -> Data {

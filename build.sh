@@ -3,34 +3,47 @@ set -eu
 
 usage() {
 	cat <<'EOF'
-Usage: build.sh [-h | --help] [--test] [--] [OUTPUT]
+Usage: build.sh [-h | --help] [--test | --notarize] [--] [OUTPUT]
 
 Build the universal Spotify.alfredworkflow using Xcode Command Line Tools
 and an Apple Development or Developer ID Application signing identity.
 OUTPUT defaults to dist/Spotify.alfredworkflow in the project directory.
 Parent directories are created automatically.
 Use --test for an ad hoc signed test export without a certificate or Finder reveal.
+Use --notarize to submit, staple and verify a Developer ID-signed export using
+credentials saved under the alfred-spotify Keychain profile. Interrupted waits resume
+on the next identical build; accepted exports are reused.
 
 Native binaries are cached in ~/Library/Caches/ca.aqsnow.alfred.spotify/build.
 EOF
 }
 
 test_build=false
-if [ "${1-}" = --test ]; then
-	test_build=true
+notarize=false
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--test) test_build=true ;;
+	--notarize) notarize=true ;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+	-*)
+		usage >&2
+		exit 2
+		;;
+	*) break ;;
+	esac
 	shift
-fi
-case ${1-} in
--h | --help)
-	usage
-	exit 0
-	;;
---) shift ;;
--*)
-	usage >&2
+done
+if [ "$test_build" = true ] && [ "$notarize" = true ]; then
+	printf '%s\n' '--test and --notarize cannot be combined.' >&2
 	exit 2
-	;;
-esac
+fi
 if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ -z "$1" ]; }; then
 	usage >&2
 	exit 2
@@ -71,6 +84,12 @@ if [ "$test_build" = false ]; then
 	fi
 	case "$identities" in
 	*'"Developer ID Application:'*) signing_timestamp=--timestamp ;;
+	*)
+		if [ "$notarize" = true ]; then
+			printf 'Notarization requires a Developer ID Application signing identity.\n' >&2
+			exit 1
+		fi
+		;;
 	esac
 fi
 identifier=$(find src -type f -exec shasum -a 256 {} + | LC_ALL=C sort | shasum -a 256)
@@ -128,9 +147,73 @@ sign() {
 		return 1
 	fi
 }
-sign --identifier ca.aqsnow.alfred.spotify.launcher "$stage/show"
-sign --entitlements src/Entitlements.plist "$app"
-ditto -c -k --norsrc "$stage" "$output"
+sign_payload() {
+	sign --identifier ca.aqsnow.alfred.spotify.launcher "$stage/show"
+	sign --entitlements src/Entitlements.plist "$app"
+}
+verify_signatures() {
+	codesign --verify --strict "$stage/show"
+	codesign --verify --deep --strict "$app"
+}
+if [ "$notarize" = true ]; then
+	notarization_key=$({
+		printf '%s\n' "$signing_identity"
+		(cd "$stage" && find . -type f -exec shasum -a 256 {} + | LC_ALL=C sort)
+	} | shasum -a 256)
+	notarization=$cache_root/notarization/${notarization_key%% *}
+	mkdir -p "$notarization"
+	if [ -f "$notarization/notarized.zip" ]; then
+		printf 'using cached notarized export\n' >&2
+		ditto -x -k "$notarization/notarized.zip" "$stage"
+	else
+		if [ -f "$notarization/signed.zip" ]; then
+			ditto -x -k "$notarization/signed.zip" "$stage"
+		else
+			sign_payload
+			verify_signatures
+			ditto -c -k "$stage" "$work/signed.zip"
+			mv "$work/signed.zip" "$notarization/signed.zip"
+		fi
+		if [ ! -f "$notarization/submission.plist" ]; then
+			printf 'submitting to Apple for notarization\n' >&2
+			xcrun notarytool submit "$notarization/signed.zip" \
+				--keychain-profile alfred-spotify --no-wait --output-format plist >"$work/submission.plist"
+			plutil -extract id raw -o - "$work/submission.plist" >/dev/null
+			mv "$work/submission.plist" "$notarization/submission.plist"
+		fi
+		submission=$(plutil -extract id raw -o - "$notarization/submission.plist")
+		if [ ! -f "$notarization/result.plist" ]; then
+			printf 'waiting for notarization %s\n' "$submission" >&2
+			if ! xcrun notarytool wait "$submission" --keychain-profile alfred-spotify \
+				--output-format plist >"$work/result.plist"; then
+				case "$(plutil -extract status raw -o - "$work/result.plist" 2>/dev/null)" in
+				Invalid | Rejected) ;;
+				*) exit 1 ;;
+				esac
+			fi
+			plutil -extract status raw -o - "$work/result.plist" >/dev/null
+			mv "$work/result.plist" "$notarization/result.plist"
+		fi
+		notarization_status=$(plutil -extract status raw -o - "$notarization/result.plist")
+		if [ "$notarization_status" != Accepted ]; then
+			printf 'Notarization %s: %s\n' "$submission" "$notarization_status" >&2
+			xcrun notarytool log "$submission" --keychain-profile alfred-spotify >&2
+			exit 1
+		fi
+		xcrun stapler staple "$app"
+	fi
+	verify_signatures
+	xcrun stapler validate "$app"
+	spctl --assess --type execute --verbose=2 "$app"
+	if [ ! -f "$notarization/notarized.zip" ]; then
+		ditto -c -k "$stage" "$work/notarized.zip"
+		mv "$work/notarized.zip" "$notarization/notarized.zip"
+	fi
+	cp "$notarization/notarized.zip" "$output"
+else
+	sign_payload
+	ditto -c -k --norsrc "$stage" "$output"
+fi
 
 printf '%s\n' "$output_display"
 if [ "$test_build" = false ]; then open -R "$output"; fi

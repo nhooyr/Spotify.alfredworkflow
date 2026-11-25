@@ -10,6 +10,7 @@
 - Use Liked Songs throughout the menus, with preferred `liked songs/` paths, existing `songs/` aliases and the same heart cover for matching playlist entries.
 - Keep the now-playing header stable through incomplete metadata and empty Spotify playback-state replies.
 - Add secure timestamps to Developer ID signatures for distribution.
+- Signed release binaries, with optional notarization via `build.sh --notarize`.
 
 ## v0.6.2
 

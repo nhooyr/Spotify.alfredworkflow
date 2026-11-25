@@ -31,6 +31,8 @@ if [ "$#" -eq 1 ]; then
 fi
 cd "$(dirname "$0")/.."
 
+./ci/test-build.sh
+
 if [ "${GITHUB_ACTIONS-}" ]; then
 	brew install --cask spotify
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Spotify.app

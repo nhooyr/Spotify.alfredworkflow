@@ -228,8 +228,7 @@ final class DesktopCache {
     var seen = Set<String>()
     var copied = 0
     var protected: Set<String>?
-    for item in store.items("track", saved: true) + store.items() {
-      let url = text(item["image"])
+    for url in store.artworkURLs() {
       guard Self.imageURL(url), seen.insert(url).inserted else { continue }
       let output = paths.cache.appendingPathComponent("artwork/" + sha256(Data(url.utf8)) + ".img")
       if store.get("evicted-art:" + output.lastPathComponent, stale: true) != nil {

@@ -9,6 +9,7 @@ let socketDirectory =
 private let socketPath = socketDirectory + "/player.sock"
 private let applicationID = "com.runningwithcrayons.Alfred"
 private var playerTheme = PlayerTheme()
+private var playerThemeGeneration = 0
 
 private var editingMenu: NSMenu?
 
@@ -281,6 +282,7 @@ private struct MusicItem {
   let albumTrackCount: Int
   let words: [Substring]
   let ascii: Bool
+  let wordInitials: UInt64
   var priority: Int {
     switch kind {
     case "playlist": return 0
@@ -338,6 +340,13 @@ private struct MusicItem {
     let normalized = Self.normalize(value["match"] as? String ?? name)
     words = normalized.split(whereSeparator: { $0.isWhitespace })
     ascii = normalized.utf8.allSatisfy { $0 < 128 }
+    wordInitials = ascii ? Self.initials(in: words) : 0
+  }
+  static func initials(in words: [Substring]) -> UInt64 {
+    words.reduce(0) { mask, word in
+      guard let first = word.utf8.first else { return mask }
+      return mask | (UInt64(1) << (first & 63))
+    }
   }
   private static let locale = Locale(identifier: "en_US_POSIX")
   static func normalize(_ text: String) -> String {
@@ -345,8 +354,12 @@ private struct MusicItem {
       ? text.lowercased()
       : text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
   }
-  func matches(_ terms: [Substring], ascii queryIsASCII: Bool) -> Bool {
+  func matches(_ terms: [Substring], ascii queryIsASCII: Bool, initials queryInitials: UInt64)
+    -> Bool
+  {
     if ascii && queryIsASCII {
+      // Colliding initials still require the full prefix check; this can only reject rows.
+      guard wordInitials & queryInitials == queryInitials else { return false }
       return terms.allSatisfy { term in words.contains { $0.utf8.starts(with: term.utf8) } }
     }
     return terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
@@ -369,7 +382,10 @@ private struct MusicFilter {
       && zip(previousTerms, terms).allSatisfy { $1.hasPrefix($0) }
     let candidates = narrows ? results : items
     let ascii = terms.allSatisfy { $0.utf8.allSatisfy { $0 < 128 } }
-    results = terms.isEmpty ? items : candidates.filter { $0.matches(terms, ascii: ascii) }
+    let initials = ascii ? MusicItem.initials(in: terms) : 0
+    results =
+      terms.isEmpty
+      ? items : candidates.filter { $0.matches(terms, ascii: ascii, initials: initials) }
     previousTerms = terms
     usesCatalog = catalog
     valid = true
@@ -568,6 +584,15 @@ private final class IconButton: NSButton {
 }
 
 private final class MusicCell: NSTableCellView {
+  private struct DisplayState: Equatable {
+    let name: String
+    let symbol: String
+    let kind: String
+    let index: Int
+    let selected: Bool
+    let theme: Int
+  }
+  private var displayed: DisplayState?
   let artwork = NSImageView()
   let title = NSTextField(labelWithString: "")
   let shortcut = NSTextField(labelWithString: "")
@@ -597,15 +622,25 @@ private final class MusicCell: NSTableCellView {
   private func center(_ label: NSTextField, x: CGFloat, width: CGFloat, glyphCentered: Bool = false)
   {
     label.setFrameSize(NSSize(width: width, height: ceil(label.intrinsicContentSize.height)))
-    let glyph = CTLineGetBoundsWithOptions(
-      CTLineCreateWithAttributedString(label.attributedStringValue), .useGlyphPathBounds)
-    let middle =
-      glyphCentered && !label.stringValue.isEmpty ? glyph.midY : (label.font?.capHeight ?? 0) / 2
+    let middle: CGFloat
+    if glyphCentered && !label.stringValue.isEmpty {
+      middle =
+        CTLineGetBoundsWithOptions(
+          CTLineCreateWithAttributedString(label.attributedStringValue), .useGlyphPathBounds
+        ).midY
+    } else {
+      middle = (label.font?.capHeight ?? 0) / 2
+    }
     let y = bounds.midY - middle - label.baselineOffsetFromBottom
     let scale = window?.backingScaleFactor ?? 2
     label.setFrameOrigin(NSPoint(x: x, y: (y * scale).rounded() / scale))
   }
   func display(_ item: MusicItem, index: Int, selected: Bool) {
+    let state = DisplayState(
+      name: item.name, symbol: item.symbol, kind: item.kind, index: index,
+      selected: selected, theme: playerThemeGeneration)
+    guard displayed != state else { return }
+    displayed = state
     title.stringValue = item.name
     shortcut.stringValue = !selected && index < 9 ? "⌘" : ""
     returnArrow.isHidden = !selected
@@ -1213,6 +1248,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func applyTheme(_ theme: PlayerTheme) {
     playerTheme = theme
+    playerThemeGeneration += 1
     (panel.contentView as? ThemeBackground)?.apply(theme)
     nowTitle.font = theme.font(theme.resultFont, size: 22, weight: .medium)
     nowDetail.font = theme.font(theme.secondaryFont, size: 15)
@@ -3944,6 +3980,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     cell.layout()
     let returnAligned = abs(commandX - cell.returnArrow.frame.midX) < 0.01
     let arrowInkError = inkCenterError(cell.returnArrow)
+    cell.layoutSubtreeIfNeeded()
+    cell.display(MusicItem(["name": "Example"]), index: 1, selected: true)
+    let unchangedRow = !cell.needsLayout
+    cell.display(
+      MusicItem(["name": "Renamed", "symbol": "person.fill", "kind": "artist"]), index: 2,
+      selected: false)
+    let reusedRow =
+      cell.needsLayout && cell.title.stringValue == "Renamed"
+      && cell.shortcutNumber.stringValue == "3" && cell.returnArrow.isHidden
+      && cell.artwork.image?.accessibilityDescription == "artist"
     demo()
     panel.contentView?.layoutSubtreeIfNeeded()
     scroll.layoutSubtreeIfNeeded()
@@ -4013,6 +4059,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "compact_row_insets": compactInsets, "return_aligns_with_command": returnAligned,
       "search_priority": sorted, "signin_returns_once": signInReturnsOnce,
       "shortcut_digits_fit": digitsFit,
+      "unchanged_row_skips_layout": unchangedRow, "reused_row_refreshes_content": reusedRow,
       "return_image_centered": arrowInkError <= 0.25, "return_ink_center_error_pt": arrowInkError,
       "transport_centered_on_cover": playbackButtons.allSatisfy {
         abs($0.frame.midY - nowArt.frame.midY) < 0.01
@@ -4266,6 +4313,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let names = [
       "ASCII Artist SONG 123", "Café Été", "Cafe\u{301} E\u{301}te\u{301}", "Straße", "İstanbul",
       "夜に駆ける", "Луна", "أغنية", "ＫＫ", "👩🏽‍💻 Night", "Ångström", "I ı İ i", "A\tB\nC",
+      "!Alpha @Beta 42", "가방", "가방",
     ]
     let unicodeItems = names.enumerated().map {
       MusicItem(["uri": "unicode:\($0.offset)", "name": $0.element])
@@ -4279,6 +4327,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let queries =
       names.flatMap { name in (0...min(5, name.count)).map { String(name.prefix($0)) } } + [
         "cafe ete", "strass", "artist song", "夜", "night 👩🏽‍💻", "", "not found",
+        "!a @b", "a", "!", "42", "가", "가",
       ]
     let unicodeMatches = queries.allSatisfy { query in
       let terms = reference(query).split(whereSeparator: { $0.isWhitespace })
@@ -4875,6 +4924,13 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       && row.returnArrow.contentTintColor == theme.selectedShortcut
     row.display(MusicItem(["name": "Playlist", "kind": "playlist"]), index: 1, selected: false)
     let normal = row.title.textColor == theme.text && row.shortcut.textColor == theme.shortcut
+    var changedTheme = theme
+    changedTheme.text = .magenta
+    applyTheme(changedTheme)
+    row.display(MusicItem(["name": "Playlist", "kind": "playlist"]), index: 1, selected: false)
+    let rowThemeUpdated = row.title.textColor == changedTheme.text
+    applyTheme(theme)
+    row.display(MusicItem(["name": "Playlist", "kind": "playlist"]), index: 1, selected: false)
     shuffling = true
     updateShuffle()
     let pixels = buttonPixels(shuffle)
@@ -4904,6 +4960,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let otherPreviewsThemed = preview.contentTintColor == theme.secondary
     return [
       "status": "ok", "theme_applied_to_rows": selection && normal,
+      "row_cache_updates_after_theme_change": rowThemeUpdated && row.title.textColor == theme.text,
       "theme_applied_to_header": nowTitle.textColor == theme.text
         && nowDetail.textColor == theme.secondary,
       "empty_track_title_follows_secondary_color": emptyTitleThemed,

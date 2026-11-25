@@ -2265,6 +2265,9 @@ func runModelTests() {
     fputs("FAILED: offline cache: \(error)\n", stderr)
     exit(1)
   }
+  do { try runLibraryPerformanceRegressionTests() } catch {
+    check(false, "Library performance regression test: " + error.localizedDescription)
+  }
   testThemes()
   let root = tempDirectory("spotify-model-tests-")
   defer { try? FileManager.default.removeItem(at: root) }

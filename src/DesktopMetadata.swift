@@ -259,12 +259,8 @@ enum DesktopMetadata {
     let lists = wanted.compactMap { uri in
       records[playlistKey(uri)].flatMap { playlist($0.value, uri: uri) }
     }
-    let uris = Set(lists.flatMap { $0.uris }).union(store.items("track").map { text($0["uri"]) })
-      .union(downloads?.tracks ?? [])
-    let missing = uris.filter { uri in
-      guard let item = store.item(uri) else { return true }
-      return text(item["image"]).isEmpty
-    }
+    let referenced = Set(lists.flatMap { $0.uris }).union(downloads?.tracks ?? [])
+    let missing = store.tracksNeedingArtwork(referenced)
     let metadata = DesktopDatabase.read(directory, prefixes: missing.map(trackKey))
     var changed = 0
     try store.transaction {

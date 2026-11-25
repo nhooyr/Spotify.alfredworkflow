@@ -253,7 +253,7 @@ final class MusicLibrary {
       let key = "contents:" + uri
       var tracks = item["tracks"] as? [JSONObject] ?? []
       if kind == "album" && tracks.isEmpty {
-        tracks = store.items("track").filter { text(dict($0["album"])["uri"]) == uri }.sorted {
+        tracks = store.tracks(inAlbum: uri).sorted {
           (number($0["disc_number"]), number($0["track_number"])) < (
             number($1["disc_number"]), number($1["track_number"])
           )

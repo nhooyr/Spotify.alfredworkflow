@@ -147,6 +147,9 @@ final class MusicStore {
       "CREATE TABLE IF NOT EXISTS items(uri TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,payload TEXT NOT NULL,richness INTEGER NOT NULL DEFAULT 0)"
     )
     try execute("CREATE INDEX IF NOT EXISTS items_kind ON items(kind)")
+    try execute(
+      "CREATE INDEX IF NOT EXISTS items_track_album ON items(json_extract(payload,'$.album.uri')) WHERE kind='track'"
+    )
     try execute("CREATE TABLE IF NOT EXISTS saved(uri TEXT PRIMARY KEY)")
     try execute(
       "CREATE TABLE IF NOT EXISTS responses(key TEXT PRIMARY KEY,payload TEXT NOT NULL,expires REAL NOT NULL)"
@@ -231,7 +234,33 @@ final class MusicStore {
     let sql =
       "SELECT payload FROM items" + (saved ? " JOIN saved USING(uri)" : "")
       + (kind == nil ? "" : " WHERE kind=?") + " ORDER BY items.rowid"
-    return ((try? rows(sql, kind.map { [$0] } ?? [])) ?? []).compactMap { row in
+    return decodedItems(sql, kind.map { [$0] } ?? [])
+  }
+  func tracks(inAlbum uri: String) -> [JSONObject] {
+    decodedItems(
+      "SELECT payload FROM items WHERE kind='track' AND json_extract(payload,'$.album.uri')=? ORDER BY rowid",
+      [uri])
+  }
+  func tracksNeedingArtwork(_ referenced: Set<String>) -> Set<String> {
+    mutex.lock()
+    defer { mutex.unlock() }
+    let missing = Set(
+      ((try? rows(
+        "SELECT uri FROM items WHERE kind='track' AND (json_type(payload,'$.image') IS NOT 'text' OR json_extract(payload,'$.image')='')"
+      )) ?? []).map { text($0["uri"]) })
+    guard !referenced.isEmpty else { return missing }
+    let cached = Set(
+      ((try? rows("SELECT uri FROM items WHERE kind='track'")) ?? [])
+        .map { text($0["uri"]) })
+    return missing.union(referenced.subtracting(cached))
+  }
+  func artworkURLs() -> [String] {
+    ((try? rows(
+      "SELECT json_extract(items.payload,'$.image') AS image FROM items LEFT JOIN saved USING(uri) ORDER BY CASE WHEN items.kind='track' AND saved.uri IS NOT NULL THEN 0 ELSE 1 END, items.rowid"
+    )) ?? []).map { text($0["image"]) }
+  }
+  private func decodedItems(_ sql: String, _ args: [Any]) -> [JSONObject] {
+    ((try? rows(sql, args)) ?? []).compactMap { row in
       text(row["payload"]).data(using: .utf8).flatMap {
         (try? JSONSerialization.jsonObject(with: $0)) as? JSONObject
       }

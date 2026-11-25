@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Keep playback on Spotify’s active output device; use AppleScript only without internet access.
+- Speed up album browsing, local search, menu navigation and artwork cache updates.
 
 ## v0.6.2
 

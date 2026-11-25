@@ -816,7 +816,7 @@ final class NativeBackend {
             ? dict(item["target"]).merging(["name": text(item["name"])]) { _, new in new }
             : self.store.item(text(item["uri"])) ?? item
           guard self.connection == "connected" else { break }
-          self.stack.append(route)
+          self.stack.append(self.library.canonicalRoute(route))
           self.revision += 1
           self.publishRows(command: command, resetText: true)
           self.browseNetwork()

@@ -1609,6 +1609,12 @@ private func testPlaintextPaths() throws {
   let albumURI = "spotify:album:" + String(repeating: "a", count: 22)
   let playlistURI = "spotify:playlist:" + String(repeating: "p", count: 22)
   let trackURI = "spotify:track:" + String(repeating: "t", count: 22)
+  let shadowURI = "spotify:playlist:" + String(repeating: "q", count: 22)
+  let shadowPlaylist: JSONObject = ["uri": shadowURI, "kind": "playlist", "name": "Liked Songs"]
+  let publicURI = "spotify:playlist:" + String(repeating: "u", count: 22)
+  let publicPlaylist: JSONObject = [
+    "uri": publicURI, "kind": "playlist", "name": "Liked Songs Public",
+  ]
   let album: JSONObject = [
     "uri": albumURI, "kind": "album", "name": "Side / A",
     "artists": [["uri": artistURI, "name": "AC/DC"]],
@@ -1616,7 +1622,7 @@ private func testPlaintextPaths() throws {
   let artist: JSONObject = ["uri": artistURI, "kind": "artist", "name": "AC/DC", "albums": [album]]
   let playlist: JSONObject = ["uri": playlistURI, "kind": "playlist", "name": "Road / Trip"]
   let track: JSONObject = ["uri": trackURI, "kind": "track", "name": "Song", "album": album]
-  for item in [artist, album, playlist, track] {
+  for item in [artist, album, playlist, track, shadowPlaylist, publicPlaylist] {
     try store.putItem(item)
     try store.save(text(item["uri"]), liked: true)
   }
@@ -1641,6 +1647,47 @@ private func testPlaintextPaths() throws {
       check(!rows.isEmpty, "Typed category paths use the actual saved library")
     }
   }
+  for spelling in ["Liked Songs", "liked songs", "LiKeD SoNgS"] {
+    let resolved = try library.resolvePath(spelling + "/all")
+    check(
+      resolved.routes.count == 1 && text(resolved.routes[0]["kind"]) == "songs"
+        && text(resolved.routes[0]["name"]) == "Liked Songs"
+        && LibraryPath.prefix(for: resolved.routes) == spelling + "/"
+        && String((spelling + "/all").dropFirst(resolved.consumed.count)) == "all",
+      "Liked Songs root regression test accepts the canonical root while preserving its typed case")
+  }
+  let canonicalRoot = try library.resolvePath("liked songs/")
+  let realPlaylist = try library.resolvePath("playlists/liked songs/")
+  let publicPath = try library.resolvePath("playlists/liked songs public/")
+  check(
+    text(canonicalRoot.routes.last?["kind"]) == "songs"
+      && text(realPlaylist.routes.last?["kind"]) == "songs"
+      && text(realPlaylist.routes.last?["uri"]).isEmpty
+      && text(realPlaylist.routes.last?["path_component"]) == "liked songs"
+      && text(publicPath.routes.last?["kind"]) == "playlist"
+      && text(publicPath.routes.last?["uri"]) == publicURI,
+    "Liked Songs root regression test aliases exact-name playlists without changing longer names")
+  check(
+    isLikedSongsPlaylist(shadowPlaylist)
+      && isLikedSongsPlaylist(shadowPlaylist.merging(["name": "LiKeD SoNgS"]) { _, new in new })
+      && isLikedSongsPlaylist(["kind": "playlist", "uri": PlaybackContext.likedSongs.uri])
+      && !isLikedSongsPlaylist(publicPlaylist)
+      && !isLikedSongsPlaylist(["kind": "album", "name": "Liked Songs"]),
+    "Liked Songs playlist regression test requires the playlist kind and exact name or collection URI"
+  )
+  let aliasedRows = try library.browse(shadowPlaylist, network: true)
+  check(
+    text(aliasedRows.first?["play_uri"]) == PlaybackContext.likedSongs.uri
+      && aliasedRows.dropFirst().map { text($0["uri"]) } == [trackURI],
+    "Liked Songs playlist regression test browses saved songs without requesting playlist tracks")
+  let canonicalRows = try library.browse(canonicalRoot.routes.last!)
+  let legacyRoot = try library.resolvePath("songs/")
+  let legacyRows = try library.browse(legacyRoot.routes.last!)
+  check(
+    text(canonicalRows.first?["name"]) == "Liked Songs"
+      && text(canonicalRows.first?["match"]) == "All"
+      && text(legacyRows.first?["match"]) == "Liked Songs All",
+    "Liked Songs root regression test keeps collection aliases specific to their root spelling")
   let nested = "Artists/AC/DC/Side / A/Song"
   let resolved = try library.resolvePath(nested)
   check(
@@ -1662,7 +1709,7 @@ private func testPlaintextPaths() throws {
   check(
     LibraryPath.prefix(for: [["kind": "artists", "name": "Artists"], artist, album])
       == "artists/ac/dc/side / a/"
-      && LibraryPath.prefix(for: [["kind": "songs"]]) == "songs/",
+      && LibraryPath.prefix(for: [["kind": "songs"]]) == "liked songs/",
     "Path casing regression test inserts lowercase categories and nested music names")
   check(
     LibraryPath.prefix(for: Array(mixed.routes.dropLast()) + [album])
@@ -1697,7 +1744,23 @@ private func testPlaintextPaths() throws {
     "Typed paths resolve from cached metadata without HTTP requests")
   // Exercise the backend stack too: show/back must retain the typed components,
   // while opening another child adds only that child's lowercase name.
-  try store.put("desktop:downloaded-uris", [artistURI, albumURI, playlistURI, trackURI])
+  try store.put("desktop:downloaded-uris", [artistURI, albumURI, playlistURI, trackURI, publicURI])
+  let offlineLibrary = MusicLibrary(store, library.api, online: { false })
+  let offlinePlaylists = try offlineLibrary.browse(["kind": "playlists"])
+  check(
+    offlineLibrary.catalog().contains(where: isLikedSongsPlaylist)
+      && offlinePlaylists.contains(where: isLikedSongsPlaylist),
+    "Offline Liked Songs regression test includes aliases with downloaded saved songs")
+  try store.save(trackURI, liked: false)
+  let unlikedCatalog = offlineLibrary.catalog()
+  let unlikedPlaylists = try offlineLibrary.browse(["kind": "playlists"])
+  check(
+    !unlikedCatalog.contains(where: isLikedSongsPlaylist)
+      && !unlikedPlaylists.contains(where: isLikedSongsPlaylist)
+      && unlikedCatalog.contains { text($0["uri"]) == trackURI },
+    "Offline Liked Songs regression test excludes aliases when only unliked downloaded songs remain"
+  )
+  try store.save(trackURI, liked: true)
   try paths.authorization.save([
     "client_id": String(repeating: "a", count: 32), "access_token": "fixture",
     "refresh_token": "fixture", "expires_at": Date().timeIntervalSince1970 + 30,
@@ -1741,6 +1804,44 @@ private func testPlaintextPaths() throws {
   func activate(_ item: JSONObject) -> JSONObject {
     command("activate", [String(decoding: try! jsonData(item), as: UTF8.self)])
   }
+  let likedMenu = homeItems.first { text(dict($0["target"])["kind"]) == "songs" }!
+  check(
+    text(likedMenu["name"]) == "Liked Songs"
+      && text(activate(likedMenu)["search_text"]) == "liked songs/",
+    "Liked Songs root regression test uses the new menu name and canonical inserted query")
+  let collision = command("path", ["liked songs/"])
+  check(
+    text(collision["route_kind"]) == "songs"
+      && text(command("path", ["playlists/liked songs/"])["route_kind"]) == "songs"
+      && text(command("path", ["playlists/liked songs public/"])["route_kind"]) == "playlist",
+    "Liked Songs root regression test treats exact-name playlists as the collection offline too")
+  _ = command("home")
+  let playlistsMenu = homeItems.first { text(dict($0["target"])["kind"]) == "playlists" }!
+  _ = activate(playlistsMenu)
+  let openedAlias = activate(shadowPlaylist)
+  let openedCollection = (openedAlias["rows"] as? [JSONObject])?.first ?? [:]
+  check(
+    text(openedAlias["route_kind"]) == "songs"
+      && text(openedAlias["search_text"]) == "liked songs/"
+      && text(dict(openedCollection["item"])["play_uri"]) == PlaybackContext.likedSongs.uri,
+    "Liked Songs navigation regression test opens playlist aliases with the canonical collection query"
+  )
+  let aliasParent = command("back", ["liked songs/"])
+  let parentRows = aliasParent["rows"] as? [JSONObject] ?? []
+  check(
+    text(aliasParent["route_kind"]) == "playlists"
+      && text(aliasParent["search_text"]) == "playlists/"
+      && parentRows.contains { text(dict($0["item"])["uri"]) == shadowURI }
+      && parentRows.contains { text(dict($0["item"])["uri"]) == publicURI },
+    "Liked Songs navigation regression test restores the playlist parent and original selectable rows"
+  )
+  let typedAlias = command("path", ["playlists/liked songs/"])
+  check(
+    text(typedAlias["route_kind"]) == "songs"
+      && text(typedAlias["prefix"]) == "playlists/liked songs/"
+      && text(typedAlias["path_prefix"]) == "playlists/liked songs/",
+    "Liked Songs navigation regression test preserves explicitly typed playlist parents")
+  _ = command("home")
   let artistsMenu = homeItems.first { text(dict($0["target"])["kind"]) == "artists" }!
   check(
     text(activate(artistsMenu)["prefix"]) == "artists/"
@@ -1763,14 +1864,14 @@ private func testPlaintextPaths() throws {
     text(command("path", ["sOnG/"])["prefix"]) == "sOnG/"
       && text(command("show")["prefix"]) == "sOnG/",
     "Backend path casing regression test keeps typed singular category aliases unchanged")
-  for query in ["songs/all", "songs/liked songs"] {
+  for query in ["songs/all", "songs/liked songs", "liked songs/all"] {
     let result = command("path", [query])
     let rows = result["rows"] as? [JSONObject] ?? []
     let collection = rows.first ?? [:]
     let words = text(collection["match"]).lowercased().split(whereSeparator: { $0.isWhitespace })
     let filter = String(query.dropFirst(text(result["path_prefix"]).count))
     check(
-      text(result["path_prefix"]) == "songs/"
+      text(result["path_prefix"]) == (query.hasPrefix("liked songs/") ? "liked songs/" : "songs/")
         && text(collection["name"]) == "Liked Songs"
         && text(dict(collection["item"])["play_uri"]) == PlaybackContext.likedSongs.uri
         && filter.split(whereSeparator: { $0.isWhitespace }).allSatisfy { term in
@@ -1783,6 +1884,15 @@ private func testPlaintextPaths() throws {
         !text($0["match"]).lowercased().split(whereSeparator: { $0.isWhitespace }).contains("all")
       }, "Liked Songs regression test limits the all alias to the collection action")
   }
+  let duplicate = command("path", ["liked songs/liked songs"])
+  let duplicateCollection = (duplicate["rows"] as? [JSONObject])?.first ?? [:]
+  let duplicateWords = text(duplicateCollection["match"]).lowercased().split(whereSeparator: {
+    $0.isWhitespace
+  })
+  check(
+    text(duplicate["path_prefix"]) == "liked songs/"
+      && !["liked", "songs"].allSatisfy { term in duplicateWords.contains { $0.hasPrefix(term) } },
+    "Liked Songs root regression test does not offer a duplicated liked songs/liked songs alias")
   print(
     "Plaintext paths passed: categories, aliases, nested folders, casing, slash names, filters, and offline resolution."
   )
@@ -2790,7 +2900,9 @@ func runModelTests() {
     check(paths.clientID().isEmpty, "Reauth clears Client ID")
     try paths.saveClientID(String(repeating: "a", count: 32))
     check(
-      homeItems.map { text($0["name"]) } == ["Playlists", "Albums", "Artists", "Songs", "Search"],
+      homeItems.map { text($0["name"]) } == [
+        "Playlists", "Albums", "Artists", "Liked Songs", "Search",
+      ],
       "Menu priority")
     let finished = DispatchSemaphore(value: 0)
     var connected = false

@@ -51,7 +51,7 @@ If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredwor
 
 ## Usage
 
-Browse **Playlists**, **Albums**, **Artists** and **Songs** or type to search library music.
+Browse **Playlists**, **Albums**, **Artists** and **Liked Songs** or type to search library music.
 
 ### Browsing and search
 
@@ -68,8 +68,8 @@ text after any folder path to filter its contents.
 | `artists/` | Browse artists you follow. |
 | `artists/<artist>/` | Browse an artist’s albums or play all their tracks. |
 | `artists/<artist>/<album>/` | Browse an artist’s album. |
-| `songs/` | Browse Liked Songs. |
-| `songs/liked songs` or `songs/all` | Press <kbd>Enter</kbd> on **Liked Songs** at the top to play the collection. |
+| `liked songs`, `liked songs/` or `songs/` | Browse Liked Songs. |
+| `liked songs/all`, `songs/all` or `songs/liked songs` | Press <kbd>Enter</kbd> on **Liked Songs** at the top to play the collection. |
 | `<playlist>/`, `<album>/` or `<artist>/` | Open a library folder directly, as from library search. |
 | `<artist>/<album>/` | Open a library artist’s album directly. |
 | `/` | Open Spotify catalogue search, ready for a query. |

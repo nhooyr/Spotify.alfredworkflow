@@ -1749,8 +1749,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func filter(preferredURI: String? = nil, resetSelection: Bool = false) {
     guard pendingPlaintextPath == nil else { return }
     let selection = preferredURI ?? (resetSelection ? nil : selectedItem()?.uri)
-    let text = connection == "connected" ? search.stringValue : ""
-    let query = text.hasPrefix(breadcrumb) ? String(text.dropFirst(breadcrumb.count)) : text
+    let input = connection == "connected" ? search.stringValue : ""
+    let query = input.hasPrefix(breadcrumb) ? String(input.dropFirst(breadcrumb.count)) : input
     let terms =
       routeKind == "catalog"
       ? [] : MusicItem.normalize(query).split(whereSeparator: { $0.isWhitespace })
@@ -1758,6 +1758,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       routeKind != "catalog" && breadcrumb.isEmpty && !terms.isEmpty && connection == "connected"
     let available = usesCatalog ? catalog : source
     filtered = searchFilter.matching(available, terms: terms, catalog: usesCatalog)
+    if usesCatalog, terms == ["liked", "songs"] {
+      if let index = filtered.firstIndex(where: { isLikedSongsPlaylist($0.payload) }) {
+        filtered.insert(filtered.remove(at: index), at: 0)
+      } else if let liked = home.first(where: {
+        text($0.payload["action"]) == "browse"
+          && text(dict($0.payload["target"])["kind"]) == "songs"
+      }) {
+        filtered.insert(liked, at: 0)
+      }
+    }
     suppressSelection = true
     table.reloadData()
     if !filtered.isEmpty {
@@ -2292,7 +2302,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return
     }
     let directURI: String?
-    if playDirectly, ["album", "artist", "playlist"].contains(item.kind), validURI(item.uri) {
+    if playDirectly, isLikedSongsPlaylist(item.payload) {
+      directURI = PlaybackContext.likedSongs.uri
+    } else if playDirectly, ["album", "artist", "playlist"].contains(item.kind), validURI(item.uri)
+    {
       directURI = item.uri
     } else if playDirectly, action == "browse",
       text(dict(item.payload["target"])["kind"]) == "songs"
@@ -2307,7 +2320,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         showError("This track cannot be played through Spotify’s catalog.")
         return
       }
-      let uri = directURI ?? item.payload["play_uri"] as? String ?? item.uri
+      let uri =
+        isLikedSongsPlaylist(item.payload)
+        ? PlaybackContext.likedSongs.uri
+        : directURI ?? item.payload["play_uri"] as? String ?? item.uri
       if offline && remotePlaybackDevice {
         showError("Go online to control the Spotify device already playing.")
         return
@@ -3260,6 +3276,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func plaintextPathChecks() -> [String: Any] {
+    let originalCatalog = catalog
+    defer { catalog = originalCatalog }
     demo()
     search.isEnabled = true
     navigationSelections = [:]
@@ -3304,7 +3322,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     var categories = true
     table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
     for (name, kind) in [
-      ("Playlists", "playlists"), ("Artists", "artists"), ("Songs", "songs"), ("Albums", "albums"),
+      ("Playlists", "playlists"), ("Artists", "artists"), ("Songs", "songs"),
+      ("Liked Songs", "songs"), ("Albums", "albums"),
     ] {
       type(name.lowercased() + "/")
       reply(kind, name + "/", raw: name.lowercased() + "/", rows: albumRows)
@@ -3373,6 +3392,32 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       && currentPlaybackContext?.uri == PlaybackContext.likedSongs.uri
     type("songs/liked songs")
     let nameMatches = filtered.count == 1 && selectedItem()?.name == "Liked Songs"
+    var canonicalSongRows = songRows
+    canonicalSongRows[0]["match"] = "All"
+    type("liked songs/all")
+    reply("songs", "liked songs/", raw: "liked songs/", rows: canonicalSongRows)
+    let canonicalAll = filtered.count == 1 && selectedItem()?.name == "Liked Songs"
+    type("liked songs/liked songs")
+    let noDuplicatedName = filtered.isEmpty
+    demo()
+    let publicPlaylist = MusicItem([
+      "uri": "playlist:public", "kind": "playlist", "name": "Liked Songs Public",
+      "item": ["uri": "playlist:public", "kind": "playlist", "name": "Liked Songs Public"],
+    ])
+    catalog = [publicPlaylist]
+    type("liked songs")
+    let bareRoot =
+      text(dict(selectedItem()?.payload["target"])["kind"]) == "songs"
+      && search.stringValue == "liked songs"
+    type("liked songs public")
+    let longerName = filtered.count == 1 && selectedItem()?.uri == publicPlaylist.uri
+    let aliasPlaylist = MusicItem([
+      "uri": "playlist:alias", "kind": "playlist", "name": "Liked Songs",
+      "item": ["uri": "playlist:alias", "kind": "playlist", "name": "Liked Songs"],
+    ])
+    catalog = [publicPlaylist, aliasPlaylist]
+    type("liked songs")
+    let bareAlias = selectedItem()?.uri == aliasPlaylist.uri && filtered.count == 2
     demo()
     setSearchText("")
     return [
@@ -3384,6 +3429,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "typed_singular_alias_casing_is_preserved": aliasCase,
       "songs_all_alias_plays_liked_songs": aliasMatches && aliasPlaysCollection,
       "songs_liked_songs_matches_collection": nameMatches,
+      "canonical_liked_songs_all_matches_collection": canonicalAll,
+      "canonical_liked_songs_does_not_duplicate_name": noDuplicatedName,
+      "bare_liked_songs_offers_collection_without_rewriting_input": bareRoot,
+      "bare_liked_songs_alias_is_first_without_duplicate": bareAlias,
+      "typing_a_longer_playlist_name_still_works": longerName,
       "deleting_and_retyping_path_recovers": lateHomeIgnored && retyped,
       "nested_paths_filter_their_contents": nested,
       "deleting_pending_path_cancels_navigation": deletedPending,
@@ -4583,6 +4633,12 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       && previewTitle.stringValue == "Play Playlist"
     let songs = homeItems.first { text(dict($0["target"])["kind"]) == "songs" }!
     let rootCover = bundledArtwork(songs, root: workflowRoot()) == likedCover
+    let aliasCover =
+      bundledArtwork(["kind": "playlist", "name": "Liked Songs"], root: workflowRoot())
+      == likedCover
+    let publicKeepsCover =
+      bundledArtwork(["kind": "playlist", "name": "Liked Songs Public"], root: workflowRoot())
+      == nil
     let songKeepsAlbum =
       bundledArtwork(
         ["kind": "track", "playback_context": PlaybackContext.likedSongs.object],
@@ -4592,6 +4648,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "status": "pending", "album_play_action_shows_cover": album,
       "playlist_play_action_shows_cover": playlist,
       "songs_menu_uses_liked_cover": rootCover,
+      "liked_songs_playlist_alias_shares_heart_cover": aliasCover,
+      "longer_playlist_names_keep_their_own_cover": publicKeepsCover,
       "individual_liked_songs_keep_their_album_art": songKeepsAlbum,
     ]
   }
@@ -4768,12 +4826,35 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
           && (kind == "track" ? currentTrackURI == uri : currentPlaybackContext?.uri == uri)
       }
     }
+    let aliasURI = "spotify:playlist:" + String(repeating: "b", count: 22)
+    for action in ["", "open"] {
+      routeKind = "catalog"
+      breadcrumb = "/"
+      setSearchText("/liked songs")
+      source = [
+        MusicItem([
+          "uri": aliasURI, "name": "Liked Songs", "kind": "playlist",
+          "item": ["uri": aliasURI, "name": "Liked Songs", "kind": "playlist", "action": action],
+        ])
+      ]
+      filter(resetSelection: true)
+      let before = playbackRequest
+      if action.isEmpty {
+        placeSearchCaretAtEnd()
+        panel.sendEvent(event)
+      } else {
+        activateSelection()
+      }
+      result["liked_songs_playlist_" + (action.isEmpty ? "direct" : "open") + "_uses_collection"] =
+        playbackRequest == before + 1 && currentPlaybackContext == PlaybackContext.likedSongs
+        && playbackTarget?.uri == PlaybackContext.likedSongs.uri
+    }
     routeKind = "home"
     breadcrumb = ""
     setSearchText("")
     source = [
       MusicItem([
-        "uri": "action:Songs", "name": "Songs", "kind": "action",
+        "uri": "action:Songs", "name": "Liked Songs", "kind": "action",
         "item": ["action": "browse", "target": ["kind": "songs"]],
       ])
     ]
@@ -5613,13 +5694,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     catalogPending = false
     updateSearchStatus()
     catalogSearchWork?.cancel()
-    source = ["Playlists", "Albums", "Artists", "Songs", "Search"].enumerated().map { index, name in
+    source = homeItems.map { item in
       MusicItem([
-        "name": name, "kind": "action", "uri": "action:\(name)",
-        "symbol": [
-          "music.note.list", "square.stack", "person.fill", "music.note", "magnifyingglass",
-        ][index], "match": name,
-        "item": ["action": index == 4 ? "catalog" : "browse"],
+        "name": text(item["name"]), "kind": "action", "uri": text(item["uri"]),
+        "symbol": text(item["symbol"]), "art": bundledArtwork(item, root: workflowRoot()) ?? "",
+        "item": item,
       ])
     }
     home = source

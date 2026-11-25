@@ -12,12 +12,17 @@ func actionItem(_ name: String, _ action: String, _ extra: JSONObject = [:]) -> 
     extra
   ) { _, new in new }
 }
+func isLikedSongsPlaylist(_ item: JSONObject) -> Bool {
+  text(item["kind"]) == "playlist"
+    && (isLikedSongsURI(text(item["uri"]))
+      || text(item["name"]).caseInsensitiveCompare("Liked Songs") == .orderedSame)
+}
 let homeItems = [
   actionItem(
     "Playlists", "browse", ["target": ["kind": "playlists"], "symbol": "music.note.list"]),
   actionItem("Albums", "browse", ["target": ["kind": "albums"], "symbol": "square.stack"]),
   actionItem("Artists", "browse", ["target": ["kind": "artists"], "symbol": "person.fill"]),
-  actionItem("Songs", "browse", ["target": ["kind": "songs"], "symbol": "music.note"]),
+  actionItem("Liked Songs", "browse", ["target": ["kind": "songs"], "symbol": "music.note"]),
   actionItem(
     "Search", "catalog", ["symbol": "magnifyingglass", "detail": "Search Spotify’s catalogue"]),
 ]
@@ -28,9 +33,13 @@ struct LibraryPath {
 
   static func prefix(for routes: [JSONObject]) -> String {
     if text(routes.last?["kind"]) == "catalog" { return "/" }
+    if text(routes.last?["kind"]) == "songs", routes.last?["path_component"] == nil {
+      return "liked songs/"
+    }
     return routes.map { route in
       if text(route["kind"]) == "catalog" { return "/" + text(route["query"]) }
       if let component = route["path_component"] as? String { return component }
+      if text(route["kind"]) == "songs" { return "liked songs" }
       let name = text(route["name"])
       return (name.isEmpty ? text(route["kind"]) : name).lowercased()
     }.joined(separator: "/") + (routes.isEmpty ? "" : "/")
@@ -57,14 +66,24 @@ final class MusicLibrary {
     let hasSongs = items.contains {
       text($0["kind"]) == "track" && downloaded.contains(text($0["uri"]))
     }
+    let hasLikedSongs =
+      items.contains(where: isLikedSongsPlaylist)
+      && store.items("track", saved: true).contains { downloaded.contains(text($0["uri"])) }
     return items.filter { item in
       if text(item["kind"]) == "action" {
         let uri = text(item["play_uri"])
         return uri.isEmpty || (isLikedSongsURI(uri) ? hasSongs : downloaded.contains(uri))
       }
+      if isLikedSongsPlaylist(item) { return hasLikedSongs }
       return downloaded.contains(text(item["uri"]))
         && (text(item["kind"]) != "artist" || followed.contains(text(item["uri"])))
     }
+  }
+  func canonicalRoute(_ item: JSONObject) -> JSONObject {
+    guard isLikedSongsPlaylist(item) else { return item }
+    var route: JSONObject = ["kind": "songs", "name": "Liked Songs"]
+    if let component = item["path_component"] as? String { route["path_component"] = component }
+    return route
   }
   func catalog() -> [JSONObject] { available(stableUnique(orderedPlaylists() + store.items())) }
   func sync(cancellation: RequestCancellation? = nil) throws {
@@ -141,7 +160,9 @@ final class MusicLibrary {
       item -> [(String, JSONObject)] in
       let name = text(item["name"])
       let route = dict(item["target"]).merging(["name": name]) { _, new in new }
-      return [(name, route), (String(name.dropLast()), route)]
+      let names =
+        text(route["kind"]) == "songs" ? [name, "Songs", "Song"] : [name, String(name.dropLast())]
+      return names.map { ($0, route) }
     }
     if let (raw, route) = match(roots) {
       consumed += raw
@@ -161,7 +182,8 @@ final class MusicLibrary {
       guard let (raw, route) = match(folders.map { (text($0["name"]), $0) }) else { break }
       consumed += raw
       remaining.removeFirst(raw.count)
-      routes.append(route.merging(["path_component": String(raw.dropLast())]) { _, new in new })
+      routes.append(
+        canonicalRoute(route.merging(["path_component": String(raw.dropLast())]) { _, new in new }))
     }
     return LibraryPath(routes: routes, consumed: consumed)
   }
@@ -173,6 +195,7 @@ final class MusicLibrary {
   func browse(_ route: JSONObject, network: Bool = false, cancellation: RequestCancellation? = nil)
     throws -> [JSONObject]
   {
+    let route = canonicalRoute(route)
     do {
       return available(try load(route, network: network && online(), cancellation: cancellation))
     } catch let error as SpotifyFailure where network && error.isNetworkError {
@@ -192,6 +215,10 @@ final class MusicLibrary {
     case "playlists": return orderedPlaylists()
     case "songs":
       let context = PlaybackContext.likedSongs.object
+      let component = text(route["path_component"])
+      let legacyName = ["songs", "song"].contains {
+        component.compare($0, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+      }
       let songs = store.items("track", saved: true).sorted {
         text($0["name"]).localizedStandardCompare(text($1["name"])) == .orderedAscending
       }
@@ -201,7 +228,7 @@ final class MusicLibrary {
           [
             "play_uri": PlaybackContext.likedSongs.uri, "playback_context": context,
             "symbol": "play.fill", "detail": "Play all Liked Songs",
-            "match": "Liked Songs All",
+            "match": legacyName ? "Liked Songs All" : "All",
           ])
       ]
         + songs.map { $0.merging(["playback_context": context]) { _, new in new } }

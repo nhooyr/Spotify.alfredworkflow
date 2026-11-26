@@ -280,6 +280,7 @@ private struct MusicItem {
   let album: String
   let albumURI: String
   let albumTrackCount: Int
+  let queueRole: String
   let words: [Substring]
   let ascii: Bool
   let wordInitials: UInt64
@@ -337,6 +338,7 @@ private struct MusicItem {
     album = value["album"] as? String ?? ""
     albumURI = value["album_uri"] as? String ?? ""
     albumTrackCount = (value["album_total"] as? NSNumber)?.intValue ?? 0
+    queueRole = value["queue_role"] as? String ?? ""
     let normalized = Self.normalize(value["match"] as? String ?? name)
     words = normalized.split(whereSeparator: { $0.isWhitespace })
     ascii = normalized.utf8.allSatisfy { $0 < 128 }
@@ -990,6 +992,12 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var catalogSearchWork: DispatchWorkItem?
   private var catalogPending = false
   private var statusMessage = ""
+  private var queueNotice: String?
+  private var queueRequest = 0
+  private var queuePending: [Int: Int] = [:]
+  private var menuInteraction = 0
+  private var lastObservedLocalTrack = ""
+
   private var statusIsError = false
   private var pendingHomeQuery: String?
   private var lastPlaintextPath: String?
@@ -1000,7 +1008,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var previewURI = ""
   private var previewPaths: [String: String] = [:]
   private let homePreviewURIs = Set(
-    homeItems.filter { text($0["action"]) == "browse" }.map { text($0["uri"]) })
+    homeItems.filter {
+      text($0["action"]) == "browse" && text(dict($0["target"])["kind"]) != "queue"
+    }.map { text($0["uri"]) })
   private var homePreviewCaptions: [String: (title: String, detail: String)] = [:]
   private var previewIsCover = false
   private var previewImageChanges = 0
@@ -1383,7 +1393,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       artworkPaths = artworkPaths.filter { !$0.value.isEmpty }
       imagesRequested = Set(artworkPaths.keys)
     }
-    if !["preview", "liked", "image", "repeat-state"].contains(command) {
+    if !["preview", "liked", "image", "repeat-state", "observe-playback"].contains(command) {
       inlineError = nil
       renderStatus()
     }
@@ -1408,6 +1418,21 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       renderStatus()
     }
     if type == "initial-sync" { return }
+    if type == "queue-add" {
+      guard connection == "connected", let request = value["request"] as? Int,
+        let interaction = queuePending.removeValue(forKey: request)
+      else { return }
+      if let error = value["error"] as? String {
+        showError(error)
+      } else if interaction == menuInteraction {
+        inlineError = nil
+        statusIsError = false
+        queueNotice = "Added \(text(value["name"])) to queue."
+        renderStatus()
+      }
+      return
+    }
+
     let nextConnection = value["connection"] as? String ?? connection
     if nextConnection == connection {
       if let request = value["navigation"] as? Int, request != navigationRequest { return }
@@ -1676,6 +1701,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return
     }
     if let rows = value["rows"] as? [[String: Any]] {
+      let enteringQueue =
+        value["route_kind"] as? String == "queue" && (routeKind != "queue" || filtered.isEmpty)
       if let kind = value["route_kind"] as? String { routeKind = kind }
       if routeKind == "catalog" {
         catalogPending = value["searching"] as? Bool == true
@@ -1705,10 +1732,19 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       let restored = restore ? navigationSelections[breadcrumb] : nil
       if opening { restoreOpeningSelection = false }
       if let restored = restored { setSearchText(restored.query) }
+      let currentQueue =
+        enteringQueue && restored == nil
+        ? source.first { $0.queueRole == "current" }?.uri : nil
       filter(
-        preferredURI: restored?.uri,
+        preferredURI: restored?.uri ?? currentQueue,
+
         resetSelection: value["search_text"] != nil || command == "path")
+      if currentQueue != nil, table.selectedRow >= 0 {
+        let row = table.rect(ofRow: table.selectedRow)
+        scrollMenu(to: NSPoint(x: 0, y: row.midY - scroll.contentView.bounds.height / 2))
+      }
       if value["search_text"] != nil { placeSearchCaretAtEnd() }
+
     }
     let variables = value["variables"] as? [String: Any] ?? [:]
     let responseURI = value["selected"] as? String ?? ""
@@ -1729,7 +1765,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if let item = selectedItem(), responseURI == item.uri && responseURI == previewURI,
       !homePreviewURIs.contains(responseURI) || homePreviewCaptions[responseURI] != nil
     {
-      if let caption = homePreviewCaptions[responseURI] {
+      if !item.queueRole.isEmpty {
+        previewTitle.stringValue = item.name
+        previewDetail.stringValue = previewDescription(item.detail, for: item)
+      } else if let caption = homePreviewCaptions[responseURI] {
+
         previewTitle.stringValue = caption.title
         previewDetail.stringValue = caption.detail
       } else {
@@ -1764,6 +1804,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
 
   private func clearDisconnectedState() {
+    queuePending.removeAll()
+    lastObservedLocalTrack = ""
+    dismissQueueNotice()
     homePreviewCaptions.removeAll()
     initialSyncing = false
     clearPlaybackTarget()
@@ -1860,6 +1903,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     guard pendingPlaintextPath == nil else { return }
     let selection = preferredURI ?? (resetSelection ? nil : selectedItem()?.uri)
     let previous = filtered
+    let previousSelection = selectedItem()
     let origin = scroll.contentView.bounds.origin
     let input = connection == "connected" ? search.stringValue : ""
     let query = input.hasPrefix(breadcrumb) ? String(input.dropFirst(breadcrumb.count)) : input
@@ -1901,8 +1945,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
     }
     suppressSelection = false
+    let updatedSelection = selectedItem()
+    let changedPreview =
+      previousSelection?.uri == updatedSelection?.uri
+      && (previousSelection?.name != updatedSelection?.name
+        || previousSelection?.detail != updatedSelection?.detail
+        || previousSelection?.art != updatedSelection?.art
+        || previousSelection?.queueRole != updatedSelection?.queueRole)
+    if changedPreview { previewURI = "" }
     updateMenuShortcuts()
-    previewSelection(debounce: true)
+    previewSelection(debounce: !(routeKind == "queue" && changedPreview))
+
   }
   private var visibleShortcutRows: Range<Int> {
     let visible = scroll.contentView.documentVisibleRect
@@ -1957,7 +2010,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func previewPlaceholder(_ item: MusicItem) -> NSImage? {
     symbol(
-      item.payload["action"] as? String == "catalog" ? item.symbol : "questionmark", height: 150)
+      item.payload["action"] as? String == "catalog"
+        || text(dict(item.payload["target"])["kind"]) == "queue" ? item.symbol : "questionmark",
+      height: 150)
   }
   private func updatePreviewTint() {
     let isSearch =
@@ -2104,7 +2159,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     else { return }
     editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
   }
+  private func dismissQueueNotice() {
+    menuInteraction += 1
+    guard queueNotice != nil else { return }
+    queueNotice = nil
+    renderStatus()
+  }
   private func handleInteraction(_ event: NSEvent) {
+    if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(event.type) {
+      dismissQueueNotice()
+    }
+
     guard [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(event.type),
       !search.bounds.contains(search.convert(event.locationInWindow, from: nil))
     else { return }
@@ -2184,6 +2249,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   func controlTextDidChange(_ obj: Notification) {
     guard !updatingSearchField else { return }
+    dismissQueueNotice()
     search.needsDisplay = true
     if connection == "credentials" {
       let text = singleLineQuery(search.stringValue)
@@ -2258,6 +2324,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func handleInputCommand(
     _ commandSelector: Selector, editor textView: NSTextView, modifiers: NSEvent.ModifierFlags
   ) -> Bool {
+    dismissQueueNotice()
     if connection != "connected" {
       if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
         hide()
@@ -2276,7 +2343,19 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       return connection != "credentials"
     }
+    if modifiers == .command
+      && [
+        #selector(NSResponder.insertNewline(_:)),
+        #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)),
+        #selector(NSResponder.insertLineBreak(_:)),
+        #selector(NSResponder.insertParagraphSeparator(_:)),
+      ].contains(commandSelector)
+    {
+      queueSelection()
+      return true
+    }
     if modifiers.isEmpty && commandSelector == #selector(NSResponder.scrollPageUp(_:)) {
+
       page(-1)
       return true
     }
@@ -2334,6 +2413,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { NSApp.terminate(nil) }
   }
   private func key(_ event: NSEvent) -> Bool {
+    dismissQueueNotice()
     let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
     let key = event.charactersIgnoringModifiers ?? ""
     if modifiers == .command && key.lowercased() == "q" {
@@ -2372,7 +2452,12 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       return false
     }
+    if modifiers == .command && [36, 76].contains(event.keyCode) {
+      queueSelection()
+      return true
+    }
     if modifiers == .option && [36, 76].contains(event.keyCode) {
+
       openSelection(preservingSelection: false, playDirectly: true)
       return true
     }
@@ -2422,12 +2507,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         return true
       }
-      if event.keyCode == 36 {
-        let value = search.stringValue
-        enterCatalog(
-          value.hasPrefix(breadcrumb) ? String(value.dropFirst(breadcrumb.count)) : value)
-        return true
-      }
     }
     if modifiers.isEmpty && event.keyCode == 36 && !search.isEnabled {
       activateSelection()
@@ -2473,7 +2552,32 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       CGFloat(direction) * max(1, scroll.contentView.bounds.height - scroll.verticalPageScroll)
     scrollMenu(to: origin)
   }
+  private func queueSelection() {
+    guard connection == "connected", let item = selectedItem() else { return }
+    let playURI = text(item.payload["play_uri"])
+    let liked =
+      isLikedSongsPlaylist(item.payload) || isLikedSongsURI(playURI)
+      || text(dict(item.payload["target"])["kind"]) == "songs"
+    let collection =
+      PlaybackContext(uri: playURI).map { ["album", "playlist"].contains($0.kind) } == true
+    guard
+      ["track", "album", "playlist"].contains(item.kind) || validTrack(playURI) || collection
+        || liked
+    else {
+      showError("Select a song, album or playlist to add to queue.")
+      return
+    }
+    guard !offline else {
+      showError("Go online to add music to Spotify’s queue.")
+      return
+    }
+    guard let data = try? jsonData(item.payload) else { return }
+    queueRequest += 1
+    queuePending[queueRequest] = menuInteraction
+    send("queue-add", args: [String(decoding: data, as: UTF8.self), String(queueRequest)])
+  }
   @objc private func activateSelection() { openSelection(preservingSelection: false) }
+
   private func openSelection(preservingSelection: Bool, playDirectly: Bool = false) {
     collapseSearchSelection()
     guard pendingPlaintextPath == nil, let item = selectedItem() else { return }
@@ -3028,7 +3132,21 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     guard !validTrack(values[5]) || !title.isEmpty else { return }
     let artist = metadata(values[2], known: currentTrackArtist, cached: cached?.artist ?? "")
     let album = metadata(values[3], known: currentTrackAlbum, cached: cached?.album ?? "")
+    if !fromWeb, !testMode, validTrack(values[5]), values[5] != lastObservedLocalTrack {
+      lastObservedLocalTrack = values[5]
+      let state: JSONObject = [
+        "item": [
+          "uri": values[5], "name": title, "kind": "track",
+          "artists": [["name": artist]], "album": ["name": album], "image": values[4],
+        ],
+        "context": currentPlaybackContext?.object ?? [:],
+      ]
+      if let data = try? jsonData(state) {
+        send("observe-playback", args: [String(decoding: data, as: UTF8.self)])
+      }
+    }
     let imageURL = sameTrack && values[4].isEmpty ? currentImageURL : values[4]
+
     let keepArtwork = sameTrack && values[4].isEmpty && !currentArtPath.isEmpty
     currentTrackArtist = artist
     currentTrackAlbum = album
@@ -3057,7 +3175,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     } else if connection != "connected" {
       message = statusMessage
     } else {
-      message = initialSyncing && !offline ? "Syncing with Spotify…" : ""
+      message = queueNotice ?? (initialSyncing && !offline ? "Syncing with Spotify…" : "")
     }
     status.frame = NSRect(x: 12, y: 10, width: max(0, preview.frame.maxX - 12), height: 16)
     if status.stringValue != message { status.stringValue = message }
@@ -3123,6 +3241,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     show()
   }
   private func hide() {
+    dismissQueueNotice()
     finishSearchInput()
     collapseSearchSelection()
     hotkeyHandoffAllowed = false
@@ -3302,6 +3421,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-menu-scrolling-result" {
       return menuScrollingTestResult ?? ["status": "pending"]
     }
+    if testMode && value["command"] as? String == "test-queue-ui" { return queueUIChecks() }
     if testMode && value["command"] as? String == "test-home-captions" {
       return homeCaptionChecks()
     }
@@ -5113,17 +5233,124 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     return ink > 20 && stray == 0
   }
+  private func queueUIChecks() -> JSONObject {
+    demo()
+    defer { demo() }
+    let uri = "spotify:track:" + String(repeating: "q", count: 22)
+    let item: JSONObject = ["uri": uri, "kind": "track", "name": "Queue fixture"]
+    source = [MusicItem(item.merging(["item": item]) { _, new in new })]
+    setSearchText("")
+    filter(resetSelection: true)
+    func press(_ code: UInt16, _ characters: String, _ modifiers: NSEvent.ModifierFlags = []) {
+      _ = key(
+        NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+          windowNumber: panel.windowNumber, context: nil, characters: characters,
+          charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!)
+    }
+    func acknowledge() {
+      receive(["type": "queue-add", "request": queueRequest, "name": "Queue fixture", "added": 1])
+    }
+    let playbackBefore = playbackRequest
+    press(36, "\r", .command)
+    let queuedInstead =
+      sentTestCommands.last == "queue-add" && playbackRequest == playbackBefore
+      && !search.stringValue.hasPrefix("/")
+    showError("Previous queue request failed")
+    acknowledge()
+    let notice =
+      inlineError == nil && status.stringValue == "Added Queue fixture to queue."
+      && status.textColor == playerTheme.secondary
+    press(125, "\u{f701}")
+    let keyboardClears = queueNotice == nil && status.stringValue.isEmpty
+    press(76, "\r", .command)
+    press(123, "\u{f702}")
+    acknowledge()
+    let lateNoticeSuppressed = queueNotice == nil && status.stringValue.isEmpty
+    press(36, "\r", .command)
+    acknowledge()
+    setSearchText("Queue")
+    controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    let typingClears = queueNotice == nil && status.stringValue.isEmpty
+    setSearchText("")
+    filter(resetSelection: true)
+    press(36, "\r", .command)
+    acknowledge()
+    hide()
+    let closingClears = queueNotice == nil
+    let beforeOffline = sentTestCommands.filter { $0 == "queue-add" }.count
+    offline = true
+    press(36, "\r", .command)
+    let offlineNoMutation =
+      sentTestCommands.filter { $0 == "queue-add" }.count == beforeOffline
+      && inlineError?.contains("Go online") == true
+    offline = false
+    inlineError = nil
+    connection = "connecting"
+    press(36, "\r", .command)
+    let disconnectedNoMutation =
+      sentTestCommands.filter { $0 == "queue-add" }.count == beforeOffline
+    connection = "connected"
+    let rows: [JSONObject] = ["history", "current", "upcoming"].enumerated().map { index, role in
+      [
+        "uri": "queue:\(role):\(index)", "kind": "track", "name": "Queue fixture",
+        "queue_role": role, "detail": role == "current" ? "Now playing" : "Played",
+        "item": item.merging(["play_uri": uri]) { _, new in new },
+      ]
+    }
+    receive([
+      "type": "update", "command": "activate", "connection": "connected",
+      "route_kind": "queue", "prefix": "queue/", "search_text": "queue/", "rows": rows,
+    ])
+    let currentSelected =
+      table.selectedRow == 1 && selectedItem()?.queueRole == "current"
+      && filtered.count == 3 && Set(filtered.map { $0.uri }).count == 3
+    activateSelection()
+    let actualTrackPlayed = currentTrackURI == uri
+    var advancedRows = rows
+    advancedRows[1]["queue_role"] = "history"
+    advancedRows[1]["detail"] = "Played"
+    advancedRows[2]["queue_role"] = "current"
+    receive([
+      "type": "update", "command": "queue-update", "route_kind": "queue",
+      "prefix": "queue/", "rows": advancedRows,
+    ])
+    receive([
+      "type": "update", "command": "preview", "selected": text(rows[1]["uri"]),
+      "variables": ["preview_title": "Queue fixture", "preview_detail": "Now playing"],
+    ])
+    let refreshKeepsSelection =
+
+      table.selectedRow == 1 && selectedItem()?.queueRole == "history"
+      && previewDetail.stringValue == "Song · Played"
+
+    demo()
+    setSearchText("")
+    filter(resetSelection: true)
+    press(22, "6", .command)
+    let queueShortcut = selectedItem()?.name == "Queue" && sentTestCommands.last == "activate"
+    press(23, "5", .command)
+    let searchShortcut = routeKind == "catalog" && search.stringValue == "/"
+    return [
+      "status": "ok", "command_return_queues_without_playing": queuedInstead,
+      "queue_confirmation_names_selection": notice, "next_key_clears_confirmation": keyboardClears,
+      "late_queue_success_does_not_resurrect_notice": lateNoticeSuppressed,
+      "typing_clears_confirmation": typingClears, "closing_clears_confirmation": closingClears,
+      "offline_enqueue_sends_no_mutation": offlineNoMutation,
+      "disconnected_enqueue_is_disabled": disconnectedNoMutation,
+      "queue_defaults_to_current_and_keeps_duplicates": currentSelected,
+      "queue_rows_play_actual_spotify_uri": actualTrackPlayed,
+      "queue_refresh_keeps_selection_and_updates_caption": refreshKeepsSelection,
+      "command_six_opens_queue": queueShortcut, "command_five_keeps_search": searchShortcut,
+    ]
+  }
   private func catalogModeChecks() -> [String: Any] {
     demo()
     search.stringValue = "/literal/"
     controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
     let slashIsCatalog = routeKind == "catalog" && catalogPending && breadcrumb == "/"
     search.stringValue = "initial query"
-    let commandReturn = NSEvent.keyEvent(
-      with: .keyDown, location: .zero, modifierFlags: .command,
-      timestamp: 0, windowNumber: panel.windowNumber, context: nil, characters: "\r",
-      charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
-    _ = key(commandReturn)
+    enterCatalog("initial query")
     let preservesInitial = routeKind == "catalog" && search.stringValue == "/initial query"
     let entryQuiet = status.stringValue.isEmpty
     search.stringValue = "/changed"
@@ -5186,7 +5413,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     filter()
     return [
       "status": "ok", "leading_slash_enters_catalogue": slashIsCatalog,
-      "command_return_preserves_query": preservesInitial, "spotify_menu_enters_search": menu,
+      "catalogue_entry_preserves_query": preservesInitial, "spotify_menu_enters_search": menu,
       "stale_live_search_ignored": staleIgnored, "remote_ranking_preserved": resultsKept,
       "search_loading_retains_cover": loading, "deleting_slash_exits_search": exits,
       "search_caret_after_slash": caretAtEnd && caretAfterReply,
@@ -6690,6 +6917,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func demo() {
+    queuePending.removeAll()
+    queueNotice = nil
     homePreviewCaptions.removeAll()
     confirmedPlaying = playing
     desktopPlaybackAvailable = false

@@ -356,7 +356,7 @@ final class RequestCancellation {
 
 final class SpotifyAPI {
   static let scopes =
-    "user-library-read user-library-modify playlist-read-private playlist-read-collaborative user-follow-read user-read-playback-state user-modify-playback-state"
+    "user-library-read user-library-modify playlist-read-private playlist-read-collaborative user-follow-read user-read-playback-state user-modify-playback-state user-read-recently-played"
   private static let tokenLock = NSRecursiveLock()
   let paths: WorkflowPaths
   let session: URLSession

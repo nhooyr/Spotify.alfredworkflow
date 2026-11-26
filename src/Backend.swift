@@ -8,6 +8,7 @@ final class NativeBackend {
   private let likeWork = DispatchQueue(label: "spotify.likes", qos: .userInitiated)
   private let repeatWork = DispatchQueue(label: "spotify.repeat", qos: .userInitiated)
   private let playbackWork = DispatchQueue(label: "spotify.web-playback", qos: .userInteractive)
+  private let enqueueWork = DispatchQueue(label: "spotify.enqueue", qos: .userInitiated)
   private var repeatPolling: (request: Int, playbackRequest: Int)?
   private var pendingRepeatPoll: (request: Int, playbackRequest: Int)?
   private var playbackContextSnapshot: (state: JSONObject, request: Int)?
@@ -27,6 +28,9 @@ final class NativeBackend {
   private var playbackCancellation: RequestCancellation?
   private let transportLock = NSLock()
   private var transportCancellations: [RequestCancellation] = []
+  private var queueAddCancellations: [RequestCancellation] = []
+  private var observedQueueTrack = ""
+  private var queueRefreshWork: DispatchWorkItem?
   private var cache: DesktopCache!
   private var library: MusicLibrary!
   private var auth: AuthorizationFlow?
@@ -44,7 +48,7 @@ final class NativeBackend {
   private var lastRefresh = Date.distantPast
   private static let rowKeys: Set<String> = [
     "uri", "name", "kind", "context", "playback_context", "action", "target", "play_uri", "image",
-    "query", "is_local", "is_playable", "detail",
+    "query", "is_local", "is_playable", "detail", "queue_row_id", "queue_role", "queue_label",
   ]
   private static let rowSymbols = [
     "playlist": "music.note.list", "album": "square.stack", "artist": "person.fill",
@@ -120,6 +124,7 @@ final class NativeBackend {
     transportCancellations.removeAll()
     transportLock.unlock()
     for cancellation in transports { cancellation.cancel() }
+    cancelQueueAdditions()
     libraryCancellation?.cancel()
     auth?.cancel()
     cacheMaintenance?.cancel()
@@ -187,14 +192,20 @@ final class NativeBackend {
     let kind = text(item["kind"])
     let album = text(albumInfo["name"])
     let match = text(item["match"])
-    let detail =
+    let baseDetail =
       kind == "track"
       ? [artists, album].filter { !$0.isEmpty }.joined(separator: " · ")
       : text(item["detail"]).isEmpty ? artists : text(item["detail"])
+    let detail = [text(item["queue_label"]), baseDetail].filter { !$0.isEmpty }.joined(
+      separator: " · ")
+    let rowURI = text(item["queue_row_id"])
     return [
       "item": item.filter { Self.rowKeys.contains($0.key) }, "name": text(item["name"]),
-      "uri": text(item["uri"]), "kind": kind, "detail": detail, "art": artPath(item),
-      "symbol": item["symbol"] ?? Self.rowSymbols[kind] ?? "music.note", "artist": artists,
+      "uri": rowURI.isEmpty ? text(item["uri"]) : rowURI, "kind": kind, "detail": detail,
+      "queue_role": text(item["queue_role"]),
+      "art": artPath(item),
+      "symbol": text(item["queue_role"]) == "current"
+        ? "play.fill" : item["symbol"] ?? Self.rowSymbols[kind] ?? "music.note", "artist": artists,
       "album": album, "album_uri": kind == "album" ? text(item["uri"]) : text(albumInfo["uri"]),
       "album_total": number(kind == "album" ? item["total"] : albumInfo["total"]),
       "match": match.isEmpty ? [text(item["name"]), artists, album].joined(separator: " ") : match,
@@ -304,6 +315,7 @@ final class NativeBackend {
     } catch { failedSignIn(error) }
   }
   private func failedSignIn(_ error: Error) {
+    cancelQueueAdditions()
     auth?.cancel()
     auth = nil
     playbackCancellation?.cancel()
@@ -431,14 +443,15 @@ final class NativeBackend {
     let current = route
     let generation = revision
     guard WebPlayback.networkAvailable(),
-      ["artist", "album", "playlist", "catalog"].contains(text(current["kind"]))
+      ["artist", "album", "playlist", "catalog", "queue"].contains(text(current["kind"]))
     else { return }
     if text(current["kind"]) == "catalog"
       && text(current["query"]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     {
       return
     }
-    let cancellation = text(current["kind"]) == "catalog" ? RequestCancellation() : nil
+    let cancellation =
+      ["catalog", "queue"].contains(text(current["kind"])) ? RequestCancellation() : nil
     catalogRequest = cancellation
     work.async { [weak self] in
       guard let self = self, cancellation?.isCancelled != true else { return }
@@ -482,19 +495,24 @@ final class NativeBackend {
   }
   private func preview(_ thin: JSONObject) {
     var item = previewItem(thin)
-    let selectedURI = text(thin["uri"])
+    let selectedURI =
+      text(thin["queue_row_id"]).isEmpty ? text(thin["uri"]) : text(thin["queue_row_id"])
     var title = text(item["action"]) == "catalog" ? "Search Spotify" : text(item["name"])
     var detail = text(item["detail"])
     if text(item["kind"]) == "action", text(item["action"]) == "browse" {
       let kind = text(dict(item["target"])["kind"])
-      let rows = (try? library.browse(["kind": kind])) ?? []
-      let count = rows.lazy.filter { text($0["kind"]) != "action" }.count
-      title = "\(count) \(text(item["name"]))"
-      detail = kind == "songs" ? "Liked Songs" : ""
-      if let cover = rows.first(where: { !text($0["image"]).isEmpty }) {
-        item["image"] = cover["image"]
+      if kind == "queue" {
+        detail = "Recently played and up next"
+      } else {
+        let rows = (try? library.browse(["kind": kind])) ?? []
+        let count = rows.lazy.filter { text($0["kind"]) != "action" }.count
+        title = "\(count) \(text(item["name"]))"
+        detail = kind == "songs" ? "Liked Songs" : ""
+        if let cover = rows.first(where: { !text($0["image"]).isEmpty }) {
+          item["image"] = cover["image"]
+        }
       }
-    } else if detail.isEmpty {
+    } else if !text(item["queue_row_id"]).isEmpty || detail.isEmpty {
       detail = text(nativeRow(item)["detail"])
     }
     let imageURL = text(item["image"])
@@ -628,6 +646,7 @@ final class NativeBackend {
     guard connection == "connected" else { return }
     let track = text(dict(state["item"])["uri"])
     guard validTrack(track) else { return }
+    observeQueuePlayback(state)
     playbackContextSnapshot = (state, request)
     let context = library.playbackContext(state)
     output([
@@ -646,6 +665,156 @@ final class NativeBackend {
           text(dict(latest.state["context"])["uri"]) == context.uri
         else { return }
         self.publishPlaybackContext(latest.state, request: latest.request, resolve: false)
+      }
+    }
+  }
+  private func cancelQueueAdditions() {
+    queueRefreshWork?.cancel()
+    queueRefreshWork = nil
+    transportLock.lock()
+    let pending = queueAddCancellations
+    queueAddCancellations.removeAll()
+    transportLock.unlock()
+    for cancellation in pending { cancellation.cancel() }
+  }
+  private func observeQueuePlayback(_ snapshot: JSONObject) {
+    var state = snapshot
+    let incoming = dict(state["item"])
+    let item = text(incoming["kind"]) == "track" ? previewItem(incoming) : incoming
+    state["item"] = item
+    let uri = text(item["uri"])
+    guard validTrack(uri), !text(item["name"]).isEmpty else { return }
+    do {
+      try library.playbackQueue.observe(state)
+      if observedQueueTrack != uri {
+        observedQueueTrack = uri
+        if text(route["kind"]) == "queue" {
+          try library.playbackQueue.invalidate()
+          publishRows(command: "queue-update")
+          browseNetwork()
+        }
+      }
+    } catch {
+      // A failed cache write must not interrupt playback or its state updates.
+    }
+  }
+  private func queueTracks(_ selected: JSONObject, cancellation: RequestCancellation) throws -> (
+    String, [JSONObject]
+  ) {
+    let item = previewItem(selected)
+    let action = text(item["action"])
+    let playURI = text(item["play_uri"])
+    let uri = playURI.isEmpty ? text(item["uri"]) : playURI
+    let name = text(item["name"])
+    if validTrack(uri) {
+      guard item["is_local"] as? Bool != true, item["is_playable"] as? Bool != false else {
+        throw SpotifyFailure(message: "This song cannot be added through Spotify’s catalog.")
+      }
+      return (name, [item.merging(["uri": uri]) { _, new in new }])
+    }
+    let context = PlaybackContext(uri: uri)
+    let kind = context?.kind ?? text(item["kind"])
+    let liked =
+      isLikedSongsPlaylist(item) || isLikedSongsURI(uri)
+      || action == "browse" && text(dict(item["target"])["kind"]) == "songs"
+    let route: JSONObject
+    let displayName: String
+    if liked {
+      route = ["kind": "songs", "name": "Liked Songs"]
+      displayName = "Liked Songs"
+    } else if ["album", "playlist"].contains(kind), validURI(uri) {
+      route = (store.item(uri) ?? item).merging(["uri": uri, "kind": kind]) { _, new in new }
+      displayName = text(route["name"]).isEmpty ? name : text(route["name"])
+    } else {
+      throw SpotifyFailure(message: "Select a song, album or playlist to add to the queue.")
+    }
+    let tracks = try library.browse(route, network: true, cancellation: cancellation).filter {
+      text($0["kind"]) == "track" && validTrack(text($0["uri"]))
+        && $0["is_local"] as? Bool != true && $0["is_playable"] as? Bool != false
+    }
+    guard !tracks.isEmpty else {
+      throw SpotifyFailure(
+        message: "Spotify did not provide any playable songs for this selection.")
+    }
+    return (displayName, tracks)
+  }
+  private func settleQueueAddition() {
+    queueRefreshWork?.cancel()
+    let refresh = DispatchWorkItem { [weak self] in
+      guard let self = self, self.running, self.connection == "connected",
+        text(self.route["kind"]) == "queue"
+      else { return }
+      self.queueRefreshWork = nil
+      try? self.library.playbackQueue.invalidate()
+      self.browseNetwork()
+    }
+    queueRefreshWork = refresh
+    queue.asyncAfter(deadline: .now() + 2.1, execute: refresh)
+  }
+  private func addToQueue(_ item: JSONObject, request: Int) {
+    let cancellation = RequestCancellation()
+    transportLock.lock()
+    queueAddCancellations.append(cancellation)
+    transportLock.unlock()
+    enqueueWork.async { [weak self] in
+      guard let self = self else { return }
+      defer {
+        self.transportLock.lock()
+        self.queueAddCancellations.removeAll { $0 === cancellation }
+        self.transportLock.unlock()
+      }
+      guard self.running, !cancellation.isCancelled else { return }
+      var name = text(item["name"])
+      var added = 0
+      var error: Error?
+      var acknowledged: [JSONObject] = []
+      do {
+        guard self.api.connected else {
+          throw SpotifyFailure(
+            message: "Open Spotify Mini Player to connect before adding to the queue.")
+        }
+        guard WebPlayback.networkAvailable() else {
+          throw SpotifyFailure(
+            message: "Go online to add songs to Spotify’s queue.", isNetworkError: true)
+        }
+        guard self.api.hasScope("user-modify-playback-state") else {
+          throw SpotifyFailure(
+            message: "Run \(self.paths.command("reauth")) to allow adding songs to Spotify’s queue."
+          )
+        }
+        let resolved = try self.queueTracks(item, cancellation: cancellation)
+        name = resolved.0
+        for track in resolved.1 {
+          if cancellation.isCancelled { throw URLError(.cancelled) }
+          _ = try self.api.request(
+            "/me/player/queue", params: ["uri": text(track["uri"])], method: "POST",
+            expectJSON: false, cancellation: cancellation)
+          added += 1
+          acknowledged.append(track)
+        }
+      } catch let caught { error = caught }
+      guard self.running, !cancellation.isCancelled else { return }
+      if added > 0 { try? self.library.playbackQueue.didEnqueue(acknowledged) }
+      self.queue.async {
+        guard self.running, !cancellation.isCancelled else { return }
+        var result: JSONObject = [
+          "type": "queue-add", "request": request, "name": name, "added": added,
+        ]
+        if let error = error {
+          result["error"] =
+            added > 0
+            ? "Added \(added) \(added == 1 ? "song" : "songs") before Spotify stopped the request. "
+              + error.localizedDescription
+            : error.localizedDescription
+        }
+        self.output(result)
+        if added > 0 {
+          self.settleQueueAddition()
+          if self.connection == "connected", text(self.route["kind"]) == "queue" {
+            self.publishRows(command: "queue-update")
+            self.browseNetwork()
+          }
+        }
       }
     }
   }
@@ -695,6 +864,8 @@ final class NativeBackend {
             self.connect()
           } catch { self.failedSignIn(error) }
         case "reset":
+          self.cancelQueueAdditions()
+          self.observedQueueTrack = ""
           self.auth?.cancel()
           self.libraryCancellation?.cancel()
           try Self.clearConnection(self.paths)
@@ -782,6 +953,17 @@ final class NativeBackend {
               }
             }
           }
+        case "queue-add":
+          let item =
+            argument.data(using: .utf8).flatMap {
+              try? JSONSerialization.jsonObject(with: $0) as? JSONObject
+            } ?? [:]
+          self.addToQueue(item, request: args.count > 1 ? Int(args[1]) ?? 0 : 0)
+        case "observe-playback":
+          guard self.connection == "connected", let data = argument.data(using: .utf8),
+            let state = try? JSONSerialization.jsonObject(with: data) as? JSONObject
+          else { break }
+          self.observeQueuePlayback(state)
         case "repeat-state":
           self.repeatCommand(
             nil, request: Int(argument) ?? 0,

@@ -3051,6 +3051,12 @@ private func testThemes() {
 }
 
 func runModelTests() {
+  do {
+    try runQueueRegressionTests()
+    try runQueueBackendRegressionTests()
+  } catch {
+    check(false, "Queue regression test: \(error)")
+  }
   do { try testVersionLabels() } catch { check(false, "Version label regression test: \(error)") }
   do {
     try testCredentialStorage()
@@ -3371,7 +3377,7 @@ func runModelTests() {
     try paths.saveClientID(String(repeating: "a", count: 32))
     check(
       homeItems.map { text($0["name"]) } == [
-        "Playlists", "Albums", "Artists", "Liked Songs", "Search",
+        "Playlists", "Albums", "Artists", "Liked Songs", "Search", "Queue",
       ],
       "Menu priority")
     let finished = DispatchSemaphore(value: 0)
@@ -3862,7 +3868,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     dict(request("state")["theme"])["id"] as? String == env["alfred_theme"],
     "C launcher safely forwards theme context")
   for command in [
-    "test-ui", "test-text-updates", "test-home-captions", "test-menu-scrolling",
+    "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
     "test-local-bindings",
     "test-navigation",

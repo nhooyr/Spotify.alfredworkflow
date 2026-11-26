@@ -51,7 +51,8 @@ If you encounter a hiccup, open an issue at [github.com/nhooyr/Spotify.alfredwor
 
 ## Usage
 
-Browse **Playlists**, **Albums**, **Artists** and **Liked Songs** or type to search library music.
+Browse **Playlists**, **Albums**, **Artists**, **Liked Songs** and **Queue**, or type
+to search library music.
 
 ### Browsing and search
 
@@ -74,6 +75,7 @@ text after any folder path to filter its contents.
 | `<artist>/<album>/` | Open a library artist’s album directly. |
 | `/` | Open Spotify catalogue search, ready for a query. |
 | `/query` | Search Spotify’s full catalogue (for example, `/meow`). |
+| `queue/` | Browse recently played songs, the current song and what’s next. |
 
 Local results prioritise playlists, albums, artists, then songs. For one-track
 albums, the song appears before its album in search.
@@ -89,6 +91,10 @@ removing the leading `/` returns to library search.
   ([Spotify Premium required](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback)).
 
 Active like, shuffle and repeat controls stay Spotify green.
+
+**Queue** opens on the current song, with recently played songs above and upcoming
+songs below. Select a song to play it. History is kept between launches; Spotify’s
+recent history is included when your sign-in grants access.
 
 The second header line always shows the current song’s artist and album.
 The third line shows its playback source when known: playlist, album, artist,
@@ -108,8 +114,9 @@ The player reuses Spotify’s desktop metadata and covers. Missing covers downlo
 in the background while online; unavailable artwork shows a grey question mark.
 Spotify manages downloaded audio; this workflow caches only metadata and artwork.
 
-The bottom-left footer shows sync progress only during the initial library import.
-After that, it stays quiet unless there is an error, shown in red.
+The bottom-left footer shows sync progress during the initial library import,
+errors in red and brief queue confirmations. Queue confirmations clear when you
+next use the menu, type, or close the player.
 
 The workflow checks its own cache hourly. Above **1 GB**, it removes the oldest
 unused artwork, protecting covers for your saved/downloaded library and anything
@@ -157,7 +164,8 @@ rate limits a refresh. A confirmed account change clears the previous account’
 * <kbd>Cmd</kbd><kbd>1</kbd>–<kbd>9</kbd>, <kbd>Cmd</kbd><kbd>0</kbd> and <kbd>Cmd</kbd><kbd>-</kbd> Open the eleven fully visible menu items; shortcuts follow scrolling.
 * <kbd>Fn</kbd><kbd>Up</kbd> / <kbd>Fn</kbd><kbd>Down</kbd> Scroll one page without changing the selection.
 * <kbd>Cmd</kbd><kbd>5</kbd> Open **Search** from the home menu.
-* <kbd>Cmd</kbd><kbd>Enter</kbd> Carry your current query into catalogue search.
+* <kbd>Cmd</kbd><kbd>6</kbd> Open **Queue** from the home menu.
+* <kbd>Cmd</kbd><kbd>Enter</kbd> Add the selected song, album or playlist to Spotify’s queue while online.
 * <kbd>Backspace</kbd> Delete text; at a folder path with no filter, go up and restore the parent selection.
 * <kbd>Cmd</kbd><kbd>R</kbd> Refresh the library and desktop cache index in the mini player.
 * <kbd>Cmd</kbd><kbd>Comma</kbd> Open the Workflow’s Configuration.

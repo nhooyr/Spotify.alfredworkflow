@@ -25,6 +25,9 @@ let homeItems = [
   actionItem("Liked Songs", "browse", ["target": ["kind": "songs"], "symbol": "music.note"]),
   actionItem(
     "Search", "catalog", ["symbol": "magnifyingglass", "detail": "Search Spotify's full catalogue"]),
+  actionItem(
+    "Queue", "browse",
+    ["target": ["kind": "queue"], "symbol": "list.bullet", "detail": "Recently played and up next"]),
 ]
 
 struct LibraryPath {
@@ -49,12 +52,14 @@ struct LibraryPath {
 final class MusicLibrary {
   let store: MusicStore
   let api: SpotifyAPI
+  let playbackQueue: PlaybackQueue
   static let syncKey = "library:synced:v2"
   private let online: () -> Bool
   init(_ store: MusicStore, _ api: SpotifyAPI, online: @escaping () -> Bool = { true }) {
     self.store = store
     self.api = api
     self.online = online
+    self.playbackQueue = PlaybackQueue(store, api, online: online)
   }
   private var followedArtists: Set<String> {
     Set(store.get("library:followed-artists", stale: true) as? [String] ?? [])
@@ -161,7 +166,9 @@ final class MusicLibrary {
       let name = text(item["name"])
       let route = dict(item["target"]).merging(["name": name]) { _, new in new }
       let names =
-        text(route["kind"]) == "songs" ? [name, "Songs", "Song"] : [name, String(name.dropLast())]
+        text(route["kind"]) == "songs"
+        ? [name, "Songs", "Song"]
+        : text(route["kind"]) == "queue" ? [name] : [name, String(name.dropLast())]
       return names.map { ($0, route) }
     }
     if let (raw, route) = match(roots) {
@@ -213,6 +220,7 @@ final class MusicLibrary {
     switch kind {
     case "", "home": return homeItems
     case "playlists": return orderedPlaylists()
+    case "queue": return try playbackQueue.rows(network: network, cancellation: cancellation)
     case "songs":
       let context = PlaybackContext.likedSongs.object
       let component = text(route["path_component"])

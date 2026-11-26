@@ -237,6 +237,33 @@ func runQueueBackendRegressionTests() throws {
   }
   wait { cachedCoverRetained() }
   try require(cachedCoverRetained(), "local observations retain cached artwork metadata")
+  backend.send([
+    "command": "observe-playback",
+    "args": [String(decoding: try jsonData(["item": tracks[1]]), as: UTF8.self)],
+  ])
+  func currentQueueURI() -> String {
+    text(((try? observedQueue.rows()) ?? []).first { text($0["queue_role"]) == "current" }?["uri"])
+  }
+  wait { currentQueueURI() == text(tracks[1]["uri"]) }
+  try require(currentQueueURI() == text(tracks[1]["uri"]), "accepted observations advance history")
+  let acceptedRows = try observedQueue.rows().map { text($0["queue_row_id"]) }
+  backend.send(["command": "repeat-state", "args": ["60000", "60001"]])
+  wait {
+    updates.contains { text($0["type"]) == "playback-state" && number($0["request"]) == 60001 }
+  }
+  try require(
+    updates.contains { text($0["type"]) == "playback-state" && number($0["request"]) == 60001 },
+    "receives the stale raw API playback snapshot")
+  let afterPollRows = try observedQueue.rows().map { text($0["queue_row_id"]) }
+  try require(
+    afterPollRows == acceptedRows
+      && currentQueueURI() == text(tracks[1]["uri"]),
+    "raw API snapshots cannot bypass accepted playback history")
+  backend.send([
+    "command": "observe-playback",
+    "args": [String(decoding: try jsonData(["item": localTrack]), as: UTF8.self)],
+  ])
+  wait { cachedCoverRetained() }
   let first = try enqueue(tracks[0])
   try require(number(first["added"]) == 1 && first["error"] == nil, "adds a single song")
   let albumResult = try enqueue(album)

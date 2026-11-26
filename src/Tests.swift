@@ -3883,7 +3883,8 @@ func runIntegrationTests(screenshot: URL? = nil) {
     return state
   }
   for command in [
-    "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-menu-scrolling",
+    "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-queue-playback",
+    "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
     "test-local-bindings",
     "test-navigation",

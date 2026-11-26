@@ -174,7 +174,14 @@ func runQueueRegressionTests() throws {
   try model.invalidate()
   let changedCurrent = try model.rows(network: true).first { text($0["queue_role"]) == "current" }
   try require(
-    changedCurrent.map { text($0["uri"]) == text(third["uri"]) && text($0["context"]).isEmpty }
+    changedCurrent.map {
+      text($0["uri"]) == text(first["uri"]) && text($0["context"]) == text(context["uri"])
+    } == true,
+    "a lagging queue response cannot replace accepted playback after its timestamp ages")
+  try model.observe(["item": third])
+  let acceptedCurrent = try model.rows().first { text($0["queue_role"]) == "current" }
+  try require(
+    acceptedCurrent.map { text($0["uri"]) == text(third["uri"]) && text($0["context"]).isEmpty }
       == true,
     "new current tracks never inherit another track's playlist context")
   isOnline = false
@@ -219,6 +226,88 @@ func runQueueRegressionTests() throws {
     try require(error.code == .cancelled, "account switches reject late responses")
   }
   try require(try model.rows().isEmpty, "late account responses cannot repopulate the new account")
+
+  let transitions = try MusicStore(paths.cache.appendingPathComponent("queue-transitions.sqlite3"))
+  try transitions.useAccount("queue-transitions")
+  let transitionQueue = PlaybackQueue(transitions, api, online: { true })
+  var queueCurrent = first
+  var queueUpcoming = [third, third]
+  QueueTestProtocol.response = { _ in
+    (200, ["currently_playing": queueCurrent, "queue": queueUpcoming])
+  }
+  try transitionQueue.observe([:])
+  let bootstrapped = try transitionQueue.rows(network: true)
+  try require(
+    bootstrapped.filter { text($0["queue_role"]) == "current" }.map { text($0["uri"]) }
+      == [text(first["uri"])],
+    "the queue endpoint bootstraps current playback before an accepted observation")
+  try transitionQueue.observe(["item": first])
+  queueCurrent = second
+  try transitionQueue.invalidate()
+  let unchangedAccepted = try transitionQueue.rows(network: true)
+  try require(
+    unchangedAccepted.filter { text($0["queue_role"]) == "current" }.map { text($0["uri"]) }
+      == [text(first["uri"])],
+    "an unchanged accepted poll also prevents the queue endpoint from inventing a transition")
+  queueCurrent = first
+  try transitionQueue.observe(["item": second])
+  var oldObservations = dict(transitions.get("playback-queue:observed", stale: true))
+  var oldHistory = oldObservations["history"] as? [JSONObject] ?? []
+  var oldCurrent = dict(oldObservations["current"])
+  try require(oldHistory.count == 1, "accepted A-to-B playback records exactly one history entry")
+  let now = Date().timeIntervalSince1970
+  oldHistory[0]["at"] = now - 120
+  oldCurrent["at"] = now - 60
+  oldObservations["history"] = oldHistory
+  oldObservations["current"] = oldCurrent
+  try transitions.put("playback-queue:observed", oldObservations)
+  let acceptedIDs = try transitionQueue.rows().prefix(2).map { text($0["queue_row_id"]) }
+  queueUpcoming = [third, first, third]
+  try transitionQueue.invalidate()
+  let staleQueue = try transitionQueue.rows(network: true)
+  try require(
+    staleQueue.map { text($0["uri"]) } == [
+      text(first["uri"]), text(second["uri"]), text(third["uri"]), text(first["uri"]),
+      text(third["uri"]),
+    ]
+      && staleQueue.map { text($0["queue_role"]) } == [
+        "history", "current", "upcoming", "upcoming", "upcoming",
+      ] && staleQueue.prefix(2).map { text($0["queue_row_id"]) } == acceptedIDs,
+    "a stale queue current cannot invent a transition after accepted playback ages")
+  queueCurrent = second
+  try transitionQueue.invalidate()
+  let confirmedQueue = try transitionQueue.rows(network: true)
+  try require(
+    confirmedQueue.prefix(2).map { text($0["queue_row_id"]) } == acceptedIDs,
+    "a later queue confirmation does not create duplicate playback history")
+  try transitionQueue.observe(["item": first])
+  let repeatedPlayback = try transitionQueue.rows()
+  try require(
+    repeatedPlayback.prefix(3).map { text($0["uri"]) } == [
+      text(first["uri"]), text(second["uri"]), text(first["uri"]),
+    ]
+      && repeatedPlayback.prefix(3).map { text($0["queue_role"]) } == [
+        "history", "history", "current",
+      ],
+    "genuine accepted A-to-B-to-A playback retains all three occurrences")
+  try transitions.useAccount("new-queue-account")
+  try require(
+    try transitionQueue.rows().isEmpty,
+    "switching accounts removes cached queue and playback history")
+  queueCurrent = second
+  queueUpcoming = [third]
+  let newAccountQueue = try transitionQueue.rows(network: true)
+  try require(
+    newAccountQueue.map { text($0["uri"]) } == [text(second["uri"]), text(third["uri"])],
+    "a new account can bootstrap playback despite the previous account's accepted observation")
+  try transitionQueue.observe(["item": second])
+  queueCurrent = first
+  try transitionQueue.invalidate()
+  let newAccountAccepted = try transitionQueue.rows(network: true)
+  try require(
+    newAccountAccepted.map { text($0["uri"]) } == [text(second["uri"]), text(third["uri"])]
+      && newAccountAccepted.map { text($0["queue_role"]) } == ["current", "upcoming"],
+    "an accepted observation under the new account also rejects stale queue playback")
   print(
     "Queue regression tests passed: history, duplicates, caching, additions, offline filtering, scopes and account isolation."
   )

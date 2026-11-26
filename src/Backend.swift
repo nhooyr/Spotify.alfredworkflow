@@ -646,7 +646,6 @@ final class NativeBackend {
     guard connection == "connected" else { return }
     let track = text(dict(state["item"])["uri"])
     guard validTrack(track) else { return }
-    observeQueuePlayback(state)
     playbackContextSnapshot = (state, request)
     let context = library.playbackContext(state)
     output([

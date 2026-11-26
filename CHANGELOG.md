@@ -2,6 +2,7 @@
 
 ## v0.7.2 (Unreleased)
 
+- Prevent false duplicate Queue history entries and mismatched song details during track changes.
 - Add Queue with playback history and upcoming songs; Command–Enter queues songs, albums and playlists with a brief confirmation.
 - Keep the Search preview subtitle visible after background updates.
 - Reuse completed library captions so switching categories does not briefly show provisional text.

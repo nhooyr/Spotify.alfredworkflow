@@ -5,6 +5,7 @@ final class PlaybackQueue {
   private let api: SpotifyAPI
   private let online: () -> Bool
   private let refreshing = NSLock()
+  private var observedAccount: String?
   private static let observedKey = "playback-queue:observed"
   private static let remoteKey = "playback-queue:remote"
   private static let recentKey = "playback-queue:recent"
@@ -20,9 +21,19 @@ final class PlaybackQueue {
   }
 
   func observe(_ state: JSONObject) throws {
+    try observe(state, accepted: true)
+  }
+
+  private func observe(_ state: JSONObject, accepted: Bool) throws {
     guard let track = normalized(dict(state["item"])) else { return }
     let context = dict(state["context"])
     try store.transaction {
+      let account = text(store.get("library:account", stale: true))
+      if accepted {
+        observedAccount = account
+      } else if observedAccount == account {
+        return
+      }
       var saved = dict(store.get(Self.observedKey, stale: true))
       let current = dict(saved["current"])
       let previous = dict(current["track"])
@@ -87,16 +98,12 @@ final class PlaybackQueue {
           if let current = normalized(dict(result["currently_playing"])) {
             let saved = dict(store.get(Self.observedKey, stale: true))
             let observed = dict(saved["current"])
-            // A fresh playback poll is more reliable than a lagging queue response.
-            if dict(observed["track"]).isEmpty
-              || text(dict(observed["track"])["uri"]) == text(current["uri"])
-              || Date().timeIntervalSince1970 - number(observed["at"]) > 3
-            {
-              let sameTrack = text(dict(observed["track"])["uri"]) == text(current["uri"])
-              try observe([
+            let sameTrack = text(dict(observed["track"])["uri"]) == text(current["uri"])
+            // Queue snapshots bootstrap the display; accepted playback owns transitions.
+            try observe(
+              [
                 "item": current, "context": sameTrack ? observed["context"] ?? [:] : [:],
-              ])
-            }
+              ], accepted: false)
           }
           let upcoming = (result["queue"] as? [JSONObject] ?? []).compactMap(normalized)
           try store.put(Self.remoteKey, upcoming, ttl: 365 * 86400)

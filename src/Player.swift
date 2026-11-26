@@ -747,7 +747,8 @@ final class SpotifyCommands {
         if application id "com.spotify.client" is not running then return {}
         tell application id "com.spotify.client"
             try
-                return {player state as text, name of current track, artist of current track, album of current track, artwork url of current track, id of current track, shuffling as text}
+                set trackProperties to properties of current track
+                return {player state as text, name of trackProperties, artist of trackProperties, album of trackProperties, artwork url of trackProperties, id of trackProperties, shuffling as text}
             on error
                 return {player state as text}
             end try
@@ -1004,7 +1005,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var queueRequest = 0
   private var queuePending: [Int: Int] = [:]
   private var menuInteraction = 0
-  private var lastObservedLocalTrack = ""
+  private var lastQueueObservation: Data?
+  private var localQueueMetadataAvailable = false
 
   private var statusIsError = false
   private var pendingHomeQuery: String?
@@ -1813,7 +1815,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
   private func clearDisconnectedState() {
     queuePending.removeAll()
-    lastObservedLocalTrack = ""
+    lastQueueObservation = nil
+    localQueueMetadataAvailable = false
     dismissQueueNotice()
     homePreviewCaptions.removeAll()
     initialSyncing = false
@@ -3055,7 +3058,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       playbackConfirmationWork?.cancel()
       playbackConfirmationWork = nil
     }
-    if remotePlaybackDevice != remote { desktopPlaybackAvailable = false }
+    if remotePlaybackDevice != remote {
+      desktopPlaybackAvailable = false
+      localQueueMetadataAvailable = false
+    }
     spotify.invalidateStatus()
     remotePlaybackDevice = remote
     let track = dict(state["item"])
@@ -3108,6 +3114,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       updateShuffle()
     }
     func clearMetadata() {
+      localQueueMetadataAvailable = false
       currentTrackArtist = ""
       currentTrackAlbum = ""
       setCurrentTrack("")
@@ -3115,6 +3122,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       currentImageURL = ""
       setNowArt("")
     }
+    if !fromWeb { localQueueMetadataAvailable = false }
     guard values.count >= 6 else {
       // A metadata-property error returns only the playback state. It does not
       // mean the current track or its cached cover disappeared.
@@ -3136,8 +3144,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     guard !validTrack(values[5]) || !title.isEmpty else { return }
     let artist = metadata(values[2], known: currentTrackArtist, cached: cached?.artist ?? "")
     let album = metadata(values[3], known: currentTrackAlbum, cached: cached?.album ?? "")
-    if !fromWeb, !testMode, validTrack(values[5]), values[5] != lastObservedLocalTrack {
-      lastObservedLocalTrack = values[5]
+    if !fromWeb { localQueueMetadataAvailable = validTrack(values[5]) }
+    if validTrack(values[5]), !fromWeb || remotePlaybackDevice || !localQueueMetadataAvailable {
       let state: JSONObject = [
         "item": [
           "uri": values[5], "name": title, "kind": "track",
@@ -3145,7 +3153,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         ],
         "context": currentPlaybackContext?.object ?? [:],
       ]
-      if let data = try? jsonData(state) {
+      if let data = try? jsonData(state), data != lastQueueObservation {
+        lastQueueObservation = data
         send("observe-playback", args: [String(decoding: data, as: UTF8.self)])
       }
     }
@@ -3426,6 +3435,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return menuScrollingTestResult ?? ["status": "pending"]
     }
     if testMode && value["command"] as? String == "test-queue-ui" { return queueUIChecks() }
+    if testMode && value["command"] as? String == "test-queue-playback" {
+      return queuePlaybackChecks()
+    }
     if testMode && value["command"] as? String == "test-home-captions" {
       return homeCaptionChecks()
     }
@@ -5324,6 +5336,71 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     return ink > 20 && stray == 0
   }
+  private func queuePlaybackChecks() -> JSONObject {
+    demo()
+    defer { demo() }
+    optimisticUntil = .distantPast
+    let first = "spotify:track:" + String(repeating: "a", count: 22)
+    let second = "spotify:track:" + String(repeating: "b", count: 22)
+    func local(_ uri: String, _ title: String) {
+      updatePlayback(["playing", title, "Artist", "Album", "", uri, "false"])
+    }
+    func web(_ uri: String, remote: Bool, request: Int? = nil) {
+      receive([
+        "type": "playback-state", "request": request ?? playbackRequest, "remote": remote,
+        "state": [
+          "is_playing": true,
+          "item": ["uri": uri, "name": uri == first ? "First" : "Second"],
+        ],
+      ])
+    }
+    func observations() -> Int { sentTestCommands.filter { $0 == "observe-playback" }.count }
+    func lastTrack() -> JSONObject {
+      guard let data = lastQueueObservation else { return [:] }
+      return dict(dict(try? JSONSerialization.jsonObject(with: data))["item"])
+    }
+    let initial = observations()
+    local(first, "First")
+    local(second, "Second")
+    web(first, remote: false)
+    local(second, "Second")
+    let desktopEchoIgnored =
+      observations() == initial + 2 && text(lastTrack()["uri"]) == second
+      && text(lastTrack()["name"]) == "Second"
+    local(second, "Updated second")
+    let correctedMetadataSent =
+      observations() == initial + 3 && text(lastTrack()["name"]) == "Updated second"
+    updatePlayback(["playing"])
+    web(second, remote: false)
+    let metadataFallback =
+      observations() == initial + 4 && text(lastTrack()["uri"]) == second
+      && text(lastTrack()["name"]) == "Second"
+    let accepted = observations()
+    web(first, remote: true, request: playbackRequest - 1)
+    let staleReadIgnored = observations() == accepted
+    playbackTarget = PlaybackTarget(
+      uri: second, context: "", previousTrack: first, previousContext: "", allowsLocal: true)
+    web(first, remote: true)
+    let pendingSelectionIgnored = observations() == accepted
+    clearPlaybackTarget()
+    web(first, remote: true)
+    let remoteFirst = observations() == accepted + 1 && text(lastTrack()["uri"]) == first
+    local(second, "Second")
+    let unrelatedDesktopIgnored = observations() == accepted + 1
+    web(second, remote: true)
+    let remoteSecond = observations() == accepted + 2 && text(lastTrack()["uri"]) == second
+    web(first, remote: true)
+    let remoteRepeat = observations() == accepted + 3 && text(lastTrack()["uri"]) == first
+    return [
+      "status": "ok", "desktop_api_echo_does_not_record_false_plays": desktopEchoIgnored,
+      "same_track_metadata_corrections_reach_history": correctedMetadataSent,
+      "api_metadata_used_when_local_metadata_unavailable": metadataFallback,
+      "stale_web_generations_do_not_record_plays": staleReadIgnored,
+      "unconfirmed_selection_does_not_record_plays": pendingSelectionIgnored,
+      "remote_playback_ignores_unrelated_desktop": unrelatedDesktopIgnored,
+      "genuine_remote_repeated_plays_are_recorded": remoteFirst && remoteSecond && remoteRepeat,
+    ]
+  }
   private func queueUIChecks() -> JSONObject {
     let wasVisible = panel.isVisible
     demo()
@@ -7031,6 +7108,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func demo() {
     queuePending.removeAll()
+    lastQueueObservation = nil
+    localQueueMetadataAvailable = false
     queueNotice = nil
     homePreviewCaptions.removeAll()
     confirmedPlaying = playing

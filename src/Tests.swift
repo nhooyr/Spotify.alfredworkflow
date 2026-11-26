@@ -3881,6 +3881,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode",
     "test-catalog-resume",
   ] {
+    let previousWindow = command == "test-queue-ui" ? request("test-demo-windows") : nil
     let initial = request(command)
     var result = initial
     let deadline = Date().addingTimeInterval(command.hasPrefix("test-menu-") ? 10 : 3)
@@ -3895,6 +3896,14 @@ func runIntegrationTests(screenshot: URL? = nil) {
       }
     }
     check(text(result["status"]) == "ok", command + " completed")
+    if let previousWindow = previousWindow {
+      let restored = request("test-demo-windows")
+      check(
+        restored["visible"] as? Bool == previousWindow["visible"] as? Bool
+          && restored["key"] as? Bool == previousWindow["key"] as? Bool,
+        "Queue UI regression test restores window visibility and keyboard focus")
+    }
+
   }
   func waitForDemoWindow(mode: Bool, shows: Double) -> JSONObject {
     let deadline = Date().addingTimeInterval(3)

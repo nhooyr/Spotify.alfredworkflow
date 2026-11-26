@@ -5269,8 +5269,14 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     return ink > 20 && stray == 0
   }
   private func queueUIChecks() -> JSONObject {
+    let wasVisible = panel.isVisible
     demo()
-    defer { demo() }
+    defer {
+      demo()
+      setSearchText("")
+      filter(resetSelection: true)
+      if wasVisible { show() }
+    }
     let uri = "spotify:track:" + String(repeating: "q", count: 22)
     let item: JSONObject = ["uri": uri, "kind": "track", "name": "Queue fixture"]
     source = [MusicItem(item.merging(["item": item]) { _, new in new })]

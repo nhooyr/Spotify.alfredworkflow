@@ -2,6 +2,7 @@
 
 ## v0.7.2 (Unreleased)
 
+- Keep the Search preview subtitle visible after background updates.
 - Reuse completed library captions so switching categories does not briefly show provisional text.
 - Keep artwork captions, now-playing metadata and menu text steady while browsing and refreshing.
 

@@ -2244,6 +2244,22 @@ private func testPlaintextPaths() throws {
   func activate(_ item: JSONObject) -> JSONObject {
     command("activate", [String(decoding: try! jsonData(item), as: UTF8.self)])
   }
+  let searchRows = command("home")["rows"] as? [JSONObject] ?? []
+  let searchRow = searchRows.first { text(dict($0["item"])["action"]) == "catalog" } ?? [:]
+  let searchPayload = dict(searchRow["item"])
+  let searchSubtitle = "Search Spotify's full catalogue"
+  check(
+    text(searchRow["detail"]) == searchSubtitle && text(searchPayload["detail"]) == searchSubtitle,
+    "Search caption regression test preserves the subtitle in the published row and preview payload"
+  )
+  for _ in 0..<2 {
+    let preview = command("preview", [String(decoding: try jsonData(searchPayload), as: UTF8.self)])
+    let variables = dict(preview["variables"])
+    check(
+      text(variables["preview_title"]) == "Search Spotify"
+        && text(variables["preview_detail"]) == searchSubtitle,
+      "Search caption regression test keeps the subtitle through repeated backend preview replies")
+  }
   let likedMenu = homeItems.first { text(dict($0["target"])["kind"]) == "songs" }!
   check(
     text(likedMenu["name"]) == "Liked Songs"

@@ -44,7 +44,7 @@ final class NativeBackend {
   private var lastRefresh = Date.distantPast
   private static let rowKeys: Set<String> = [
     "uri", "name", "kind", "context", "playback_context", "action", "target", "play_uri", "image",
-    "query", "is_local", "is_playable",
+    "query", "is_local", "is_playable", "detail",
   ]
   private static let rowSymbols = [
     "playlist": "music.note.list", "album": "square.stack", "artist": "person.fill",

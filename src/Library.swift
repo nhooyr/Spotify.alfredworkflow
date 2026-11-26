@@ -24,7 +24,7 @@ let homeItems = [
   actionItem("Artists", "browse", ["target": ["kind": "artists"], "symbol": "person.fill"]),
   actionItem("Liked Songs", "browse", ["target": ["kind": "songs"], "symbol": "music.note"]),
   actionItem(
-    "Search", "catalog", ["symbol": "magnifyingglass", "detail": "Search Spotify’s catalogue"]),
+    "Search", "catalog", ["symbol": "magnifyingglass", "detail": "Search Spotify's full catalogue"]),
 ]
 
 struct LibraryPath {

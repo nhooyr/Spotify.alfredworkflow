@@ -999,6 +999,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var previewWork: DispatchWorkItem?
   private var previewURI = ""
   private var previewPaths: [String: String] = [:]
+  private let homePreviewURIs = Set(
+    homeItems.filter { text($0["action"]) == "browse" }.map { text($0["uri"]) })
+  private var homePreviewCaptions: [String: (title: String, detail: String)] = [:]
   private var previewIsCover = false
   private var previewImageChanges = 0
   private var playbackButtons: [NSButton] = []
@@ -1709,6 +1712,12 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     let variables = value["variables"] as? [String: Any] ?? [:]
     let responseURI = value["selected"] as? String ?? ""
+    if connection == "connected", homePreviewURIs.contains(responseURI),
+      let title = variables["preview_title"] as? String, !title.isEmpty,
+      let detail = variables["preview_detail"] as? String
+    {
+      homePreviewCaptions[responseURI] = (title, detail)
+    }
     var loaded: NSImage?
     if let art = variables["preview_art"] as? [String: Any], let path = art["src"] as? String,
       !path.isEmpty
@@ -1717,20 +1726,31 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       loaded = image(path)
     }
     // A late reply may warm the cache, but only the current selection can paint the preview.
-    if let item = selectedItem(), responseURI == item.uri && responseURI == previewURI {
-      if let title = variables["preview_title"] as? String, !title.isEmpty {
-        previewTitle.stringValue = title
+    if let item = selectedItem(), responseURI == item.uri && responseURI == previewURI,
+      !homePreviewURIs.contains(responseURI) || homePreviewCaptions[responseURI] != nil
+    {
+      if let caption = homePreviewCaptions[responseURI] {
+        previewTitle.stringValue = caption.title
+        previewDetail.stringValue = caption.detail
+      } else {
+        if let title = variables["preview_title"] as? String, !title.isEmpty {
+          previewTitle.stringValue = title
+        }
+        if let detail = variables["preview_detail"] as? String {
+          previewDetail.stringValue = previewDescription(detail, for: item)
+        }
       }
-      if let detail = variables["preview_detail"] as? String {
-        previewDetail.stringValue = previewDescription(detail, for: item)
-        previewDetail.textColor = playerTheme.secondary
+      previewDetail.textColor = playerTheme.secondary
+      if loaded == nil, homePreviewURIs.contains(responseURI) {
+        loaded = image(previewPaths[responseURI] ?? item.art)
       }
       if let cover = loaded {
         setPreviewImage(cover)
         previewIsCover = true
-      } else if value["preview_complete"] as? Bool == true, let item = selectedItem() {
+      } else if value["preview_complete"] as? Bool == true || homePreviewURIs.contains(responseURI)
+      {
         let path = previewPaths[responseURI] ?? item.art
-        if path.isEmpty || failedImages.contains(path) {
+        if homePreviewURIs.contains(responseURI) || path.isEmpty || failedImages.contains(path) {
           setPreviewImage(previewPlaceholder(item))
           previewIsCover = false
         }
@@ -1744,6 +1764,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
 
   private func clearDisconnectedState() {
+    homePreviewCaptions.removeAll()
     initialSyncing = false
     clearPlaybackTarget()
     desktopPlaybackAvailable = false
@@ -1817,6 +1838,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         if self.connection == "connected", let item = self.selectedItem(),
           self.previewURI == item.uri,
+          !self.homePreviewURIs.contains(item.uri) || self.homePreviewCaptions[item.uri] != nil,
           (self.previewPaths[item.uri] ?? item.art) == path
         {
           self.setPreviewImage(decoded ?? self.previewPlaceholder(item))
@@ -2014,17 +2036,23 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func applyPreview(_ item: MusicItem) {
     guard connection == "connected", selectedItem()?.uri == item.uri else { return }
     previewURI = item.uri
-    previewTitle.stringValue =
-      item.payload["action"] as? String == "catalog" ? "Search Spotify" : item.name
-    previewDetail.stringValue = previewDescription(item.detail, for: item)
-    previewDetail.textColor = playerTheme.secondary
-    let path = previewPaths[item.uri] ?? item.art
-    if let cover = image(path) {
-      setPreviewImage(cover)
-      previewIsCover = true
-    } else if !previewIsCover || failedImages.contains(path) {
-      setPreviewImage(previewPlaceholder(item))
-      previewIsCover = false
+    let homePreview = homePreviewURIs.contains(item.uri)
+    let caption = homePreviewCaptions[item.uri]
+    // Keep the previous complete preview until this category's final caption is known.
+    if !homePreview || caption != nil {
+      previewTitle.stringValue =
+        caption?.title
+        ?? (item.payload["action"] as? String == "catalog" ? "Search Spotify" : item.name)
+      previewDetail.stringValue = caption?.detail ?? previewDescription(item.detail, for: item)
+      previewDetail.textColor = playerTheme.secondary
+      let path = previewPaths[item.uri] ?? item.art
+      if let cover = image(path) {
+        setPreviewImage(cover)
+        previewIsCover = true
+      } else if homePreview || !previewIsCover || failedImages.contains(path) {
+        setPreviewImage(previewPlaceholder(item))
+        previewIsCover = false
+      }
     }
     if !testMode, let data = try? JSONSerialization.data(withJSONObject: item.payload),
       let text = String(data: data, encoding: .utf8)
@@ -3273,6 +3301,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-menu-scrolling-result" {
       return menuScrollingTestResult ?? ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-home-captions" {
+      return homeCaptionChecks()
     }
     if testMode && value["command"] as? String == "test-text-updates" {
       return textUpdateChecks()
@@ -4721,6 +4752,107 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "repeated_keys_at_limits_do_not_scroll": limitsStable,
       "menu_scrolls_in_both_directions": scrolledBothWays,
       "keyboard_navigation_keeps_input_focus": panel.firstResponder === editor,
+    ]
+  }
+  private func homeCaptionChecks() -> JSONObject {
+    demo()
+    defer { demo() }
+    let existingCover = NSImage(size: NSSize(width: 32, height: 32))
+    let artistCover = NSImage(size: NSSize(width: 32, height: 32))
+    let likedCover = NSImage(size: NSSize(width: 32, height: 32))
+    imageCache.setObject(artistCover, forKey: "fixture-home-artists")
+    imageCache.setObject(likedCover, forKey: "fixture-home-liked")
+    let kinds = ["artists", "songs"]
+    source = kinds.map { kind in
+      let item = homeItems.first { text(dict($0["target"])["kind"]) == kind }!
+      return MusicItem([
+        "uri": text(item["uri"]), "name": text(item["name"]), "kind": "action",
+        "symbol": text(item["symbol"]), "item": item,
+        "art": kind == "artists" ? "fixture-home-artists" : "fixture-home-liked",
+      ])
+    }
+    setSearchText("")
+    previewTitle.stringValue = "Existing preview"
+    previewDetail.stringValue = "Existing detail"
+    setPreviewImage(existingCover)
+    previewIsCover = true
+    filter(resetSelection: true)
+    previewSelection()
+    let coldArtistKeepsPreview =
+      previewTitle.stringValue == "Existing preview"
+      && previewDetail.stringValue == "Existing detail"
+      && preview.image === existingCover
+    func reply(_ index: Int, title: String, detail: String) {
+      receive([
+        "type": "update", "command": "preview", "selected": source[index].uri,
+        "preview_complete": true,
+        "variables": [
+          "preview_title": title, "preview_detail": detail,
+          "preview_art": ["src": source[index].art],
+        ],
+      ])
+    }
+    reply(0, title: "12 Artists", detail: "")
+    let artistFinalApplies =
+      previewTitle.stringValue == "12 Artists" && previewDetail.stringValue.isEmpty
+      && preview.image === artistCover
+    table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+    previewSelection()
+    let coldLikedKeepsPreview =
+      previewTitle.stringValue == "12 Artists" && previewDetail.stringValue.isEmpty
+      && preview.image === artistCover
+    reply(1, title: "9876 Liked Songs", detail: "Liked Songs")
+    let likedFinalApplies =
+      previewTitle.stringValue == "9876 Liked Songs" && previewDetail.stringValue == "Liked Songs"
+      && preview.image === likedCover
+    table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+    previewSelection()
+    let warmArtistImmediate =
+      previewTitle.stringValue == "12 Artists" && previewDetail.stringValue.isEmpty
+      && preview.image === artistCover
+    table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+    previewSelection()
+    let warmLikedImmediate =
+      previewTitle.stringValue == "9876 Liked Songs" && previewDetail.stringValue == "Liked Songs"
+      && preview.image === likedCover
+    previewTitle.needsDisplay = false
+    previewDetail.needsDisplay = false
+    let imageChanges = previewImageChanges
+    reply(1, title: "9876 Liked Songs", detail: "Liked Songs")
+    let duplicateStable =
+      !previewTitle.needsDisplay && !previewDetail.needsDisplay
+      && previewImageChanges == imageChanges
+    reply(0, title: "13 Artists", detail: "")
+    let staleKeepsCurrent =
+      previewTitle.stringValue == "9876 Liked Songs" && previewDetail.stringValue == "Liked Songs"
+      && preview.image === likedCover
+    table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+    previewSelection()
+    let staleWarmsCache = previewTitle.stringValue == "13 Artists" && preview.image === artistCover
+    reply(0, title: "14 Artists", detail: "")
+    let countRefreshApplies =
+      previewTitle.stringValue == "14 Artists" && preview.image === artistCover
+    receive([
+      "type": "update", "command": "preview", "selected": source[0].uri,
+      "variables": ["preview_title": "Incomplete caption"],
+    ])
+    let incompleteKeepsPair =
+      previewTitle.stringValue == "14 Artists" && previewDetail.stringValue.isEmpty
+    receive(["type": "update", "connection": "credentials", "rows": []])
+    let disconnectClears = homePreviewCaptions.isEmpty
+    return [
+      "status": "ok",
+      "cold_home_selection_keeps_complete_previous_preview": coldArtistKeepsPreview
+        && coldLikedKeepsPreview,
+      "final_home_reply_updates_caption_and_cover": artistFinalApplies && likedFinalApplies,
+      "warm_home_navigation_uses_final_captions_immediately": warmArtistImmediate
+        && warmLikedImmediate,
+      "duplicate_home_reply_does_not_redraw": duplicateStable,
+      "late_home_reply_does_not_replace_current_preview": staleKeepsCurrent,
+      "late_home_reply_warms_next_selection": staleWarmsCache,
+      "home_count_refresh_updates_final_caption": countRefreshApplies,
+      "incomplete_home_reply_keeps_final_caption_pair": incompleteKeepsPair,
+      "disconnect_clears_cached_home_captions": disconnectClears,
     ]
   }
   private func textUpdateChecks() -> JSONObject {
@@ -6558,6 +6690,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func demo() {
+    homePreviewCaptions.removeAll()
     confirmedPlaying = playing
     desktopPlaybackAvailable = false
     pendingTransportRequest = nil

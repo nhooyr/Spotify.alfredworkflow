@@ -3,6 +3,7 @@
 ## v0.7.2 (Unreleased)
 
 - Keep artwork captions, now-playing metadata and menu text steady while browsing and refreshing.
+- Reuse completed library captions so switching categories does not briefly show provisional text.
 
 ## v0.7.1
 

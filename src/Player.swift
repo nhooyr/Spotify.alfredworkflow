@@ -223,6 +223,14 @@ private final class SearchField: NSTextField {
   var keyAction: ((NSEvent) -> Bool)?
   var hint: String? { didSet { if hint != oldValue { needsDisplay = true } } }
   var hintColor = NSColor.placeholderTextColor
+  func setText(_ text: String, editor: NSTextView? = nil) {
+    if stringValue != text { stringValue = text }
+    if let editor = editor ?? currentEditor() as? NSTextView {
+      if editor.string != text { editor.string = text }
+      let selection = NSRange(location: (text as NSString).length, length: 0)
+      if editor.selectedRange() != selection { editor.setSelectedRange(selection) }
+    }
+  }
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
     guard stringValue.isEmpty, (currentEditor()?.string ?? "").isEmpty, let hint = hint else {
@@ -2131,11 +2139,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let text = singleLineQuery(value)
     updatingSearchField = true
     defer { updatingSearchField = false }
-    if search.stringValue != text { search.stringValue = text }
-    if let editor = search.currentEditor() as? NSTextView {
-      if editor.string != text { editor.string = text }
-      editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
-    }
+    search.setText(text)
   }
   private func focusSearch(selectAll: Bool) {
     guard search.isEnabled else { return }
@@ -5024,6 +5028,58 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     label.stringValue = ""
     let clearedLabel = label.stringValue.isEmpty
 
+    final class EditorProbe: NSTextView {
+      var textWrites = 0
+      var selectionWrites = 0
+      override var string: String {
+        get { super.string }
+        set {
+          textWrites += 1
+          super.string = newValue
+        }
+      }
+      override func setSelectedRange(_ range: NSRange) {
+        selectionWrites += 1
+        super.setSelectedRange(range)
+      }
+    }
+    let input = SearchField(frame: .zero)
+    let inputCell = CellProbe(textCell: "Existing query")
+    input.cell = inputCell
+    let editor = EditorProbe()
+    editor.string = input.stringValue
+    editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+    func resetInputMutations() {
+      inputCell.mutations = 0
+      editor.textWrites = 0
+      editor.selectionWrites = 0
+    }
+    resetInputMutations()
+    input.setText(input.stringValue, editor: editor)
+    let unchangedInput =
+      inputCell.mutations == 0 && editor.textWrites == 0 && editor.selectionWrites == 0
+    input.setText("Replacement query", editor: editor)
+    let end = NSRange(location: (input.stringValue as NSString).length, length: 0)
+    let replacedInput =
+      input.stringValue == "Replacement query" && editor.string == input.stringValue
+      && editor.selectedRange() == end && inputCell.mutations > 0 && editor.textWrites > 0
+    editor.setSelectedRange(NSRange(location: 0, length: 5))
+    resetInputMutations()
+    input.setText(input.stringValue, editor: editor)
+    let collapsedInput =
+      editor.selectedRange() == end && editor.selectionWrites > 0
+      && inputCell.mutations == 0 && editor.textWrites == 0
+    editor.setSelectedRange(NSRange(location: 2, length: 0))
+    resetInputMutations()
+    input.setText(input.stringValue, editor: editor)
+    let movedInput =
+      editor.selectedRange() == end && editor.selectionWrites > 0
+      && inputCell.mutations == 0 && editor.textWrites == 0
+    input.setText("", editor: editor)
+    let clearedInput =
+      input.stringValue.isEmpty && editor.string.isEmpty
+      && editor.selectedRange() == NSRange(location: 0, length: 0)
+
     demo()
     let item: JSONObject = [
       "name": "Caption fixture", "uri": "spotify:track:1234567890123456789012",
@@ -5057,9 +5113,6 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "variables": ["preview_title": ""],
     ])
     let incompleteCaption = previewTitle.stringValue == "Caption fixture"
-    search.needsDisplay = false
-    setSearchText(search.stringValue)
-    let unchangedInput = !search.needsDisplay
     return [
       "status": "ok", "equal_label_updates_do_not_invalidate": unchangedLabel,
       "replacement_text_is_applied": replacedLabel,
@@ -5069,7 +5122,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "unchanged_menu_preserves_symbol": retainedSymbol,
       "duplicate_preview_reply_keeps_caption": duplicateCaption,
       "incomplete_preview_reply_keeps_known_title": incompleteCaption,
-      "equal_query_update_does_not_redraw_input": unchangedInput,
+      "equal_query_updates_do_not_mutate_field_or_editor": unchangedInput,
+      "replacement_query_updates_field_editor_and_caret": replacedInput,
+      "same_query_collapses_selection_and_moves_caret": collapsedInput && movedInput,
+      "empty_query_clears_field_and_editor": clearedInput,
     ]
   }
   private func previewChecks() -> [String: Any] {

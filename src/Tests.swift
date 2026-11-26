@@ -3050,7 +3050,89 @@ private func testThemes() {
     "Unavailable theme font falls back to system font")
 }
 
+private func runPlaybackBarrierRegressionTests() {
+  let commands = SpotifyCommands()
+  let lock = NSLock()
+  var events: [String] = []
+  func append(_ event: String) {
+    lock.lock()
+    events.append(event)
+    lock.unlock()
+  }
+  func snapshot() -> [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return events
+  }
+  let owner = RequestCancellation()
+  var idleCompleted = false
+  commands.afterPlayback(owner) { idleCompleted = true }
+  check(idleCompleted, "Playback barrier regression test keeps the idle dispatch immediate")
+  let entered = DispatchSemaphore(value: 0)
+  let release = DispatchSemaphore(value: 0)
+  commands.enqueuePlayback {
+    append("local began")
+    entered.signal()
+    release.wait()
+    append("local finished")
+  }
+  check(
+    entered.wait(timeout: .now() + 3) == .success,
+    "Playback barrier regression test enters the simulated local mutation")
+  defer { release.signal() }
+  let superseded = RequestCancellation()
+  commands.afterPlayback(superseded) { append("superseded Web mutation") }
+  superseded.cancel()
+  commands.afterPlayback(owner) { append("first Web mutation") }
+  commands.afterPlayback(owner) { append("second Web mutation") }
+  check(
+    snapshot() == ["local began"],
+    "Playback barrier regression test still waits after the previous owner is cancelled")
+  release.signal()
+  let deadline = Date().addingTimeInterval(3)
+  while snapshot().count < 4, Date() < deadline {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+  }
+  check(
+    snapshot() == ["local began", "local finished", "first Web mutation", "second Web mutation"],
+    "Playback barrier regression test preserves mutation order and discards superseded owners")
+  var cancelledCompleted = false
+  commands.afterPlayback(superseded) { cancelledCompleted = true }
+  check(
+    !cancelledCompleted,
+    "Playback barrier regression test also rejects a cancelled owner on the idle path")
+  let pendingEntered = DispatchSemaphore(value: 0)
+  let pendingRelease = DispatchSemaphore(value: 0)
+  let physical = commands.enqueuePlayback {
+    pendingEntered.signal()
+    pendingRelease.wait()
+  }
+  check(
+    pendingEntered.wait(timeout: .now() + 3) == .success,
+    "Playback barrier regression test enters a second simulated local mutation")
+  commands.afterPlayback(owner) { append("older deferred Web mutation") }
+  pendingRelease.signal()
+  check(
+    physical.wait(timeout: .now() + 3) == .success,
+    "Playback barrier regression test finishes local work while main delivery is blocked")
+  commands.afterPlayback(owner) { append("newer Web mutation") }
+  check(
+    snapshot().count == 4,
+    "Playback barrier regression test prevents an idle-path overtake of a queued delivery")
+  let deliveryDeadline = Date().addingTimeInterval(3)
+  while snapshot().count < 6, Date() < deliveryDeadline {
+    RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+  }
+  check(
+    Array(snapshot().suffix(2)) == ["older deferred Web mutation", "newer Web mutation"],
+    "Playback barrier regression test retains order after physical local work completes")
+  print(
+    "Playback mutation barrier regression tests passed: local completion, ordered Web dispatch, owner cancellation, and idle fast path."
+  )
+}
+
 func runModelTests() {
+  runPlaybackBarrierRegressionTests()
   do {
     try runQueueRegressionTests()
     try runQueueBackendRegressionTests()

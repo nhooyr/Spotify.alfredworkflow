@@ -5575,8 +5575,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let staleReadIgnored = observations() == accepted
     playbackTarget = PlaybackTarget(
       uri: second, context: "", previousTrack: first, previousContext: "", allowsLocal: true)
+    playbackTargetUntil = Date().addingTimeInterval(5)
     web(first, remote: true)
-    let pendingSelectionIgnored = observations() == accepted
+    let pendingSelectionIgnored =
+      playbackTarget != nil && observations() == accepted
     clearPlaybackTarget()
     web(first, remote: true)
     let remoteFirst = observations() == accepted + 1 && text(lastTrack()["uri"]) == first
@@ -6699,6 +6701,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   @MainActor
   private func playbackHeaderChecks() async -> [String: Any] {
     demo()
+    var sampleTime: TimeInterval = 1000
+    func nextSample() -> Date {
+      sampleTime += 1
+      return Date(timeIntervalSince1970: sampleTime)
+    }
     let oldTrack = "spotify:track:" + String(repeating: "a", count: 22)
     let newTrack = "spotify:track:" + String(repeating: "b", count: 22)
     let thirdTrack = "spotify:track:" + String(repeating: "c", count: 22)
@@ -6724,10 +6731,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         ],
       ]
     }
-    func snapshot(_ state: JSONObject) {
+    func snapshot(_ state: JSONObject, changedAt: TimeInterval? = nil) {
+      let sampledAt = nextSample()
+      var state = state
+      state["timestamp"] = (changedAt ?? sampledAt.timeIntervalSince1970) * 1000
       receive([
         "type": "playback-state", "state": state, "remote": false, "request": playbackRequest,
+        "sampled_at": sampledAt.timeIntervalSince1970,
       ])
+    }
+    func local(_ values: [String]) {
+      updatePlayback(values, sampledAt: nextSample())
     }
     func select(_ uri: String, _ name: String, kind: String = "playlist", art: String = "") {
       routeKind = "home"
@@ -6745,7 +6759,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let oldState = state(oldTrack, oldList, "Old song", oldURL)
     let newState = state(newTrack, newList, "New song", newURL)
     let thirdState = state(thirdTrack, thirdList, "Third song", newURL)
-    snapshot(oldState)
+    let oldChangedAt = sampleTime
+    snapshot(oldState, changedAt: oldChangedAt)
     currentPlaybackContext = PlaybackContext(uri: oldList, name: "Old playlist")
     updateContextLabel()
     let pollsBeforeSelection = selectionStatusPolls
@@ -6762,19 +6777,19 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       selectionStatusPolls >= pollsBeforeSelection + 2
       && playbackTarget?.acknowledged == false && lastRepeatPoll == apiPollBeforeSelection
     let optimisticSource = nowContext.stringValue == "Playlist · New playlist"
-    snapshot(oldState)
+    snapshot(oldState, changedAt: oldChangedAt)
     let preCompletion = nowContext.stringValue == "Playlist · New playlist"
     // A fresh desktop snapshot can fill the header before Spotify's HTTP read catches up.
-    updatePlayback(["playing", "New song", "Artist", "Album", newURL, newTrack, "false"])
+    local(["playing", "New song", "Artist", "Album", newURL, newTrack, "false"])
     let immediateLocal = nowTitle.stringValue == "New song" && nowArt.image === newCover
     optimisticUntil = .distantPast
-    updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
-    snapshot(oldState)
+    local(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
+    snapshot(oldState, changedAt: oldChangedAt)
     let pendingStable =
       nowTitle.stringValue == "New song" && nowArt.image === newCover
       && nowContext.stringValue == "Playlist · New playlist"
     receive(["type": "playback", "request": playbackRequest])
-    snapshot(oldState)
+    snapshot(oldState, changedAt: oldChangedAt)
     receive([
       "type": "playback-context", "request": playbackRequest, "track": newTrack,
       "context": ["uri": oldList, "name": "Old playlist"],
@@ -6789,8 +6804,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let retriesPromptly = playbackConfirmationAttempts > 0 && playbackConfirmationWork != nil
     snapshot(newState)
     let confirmed = playbackTarget?.confirmedTrack == newTrack && playbackConfirmationWork == nil
-    snapshot(oldState)
-    updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
+    snapshot(oldState, changedAt: oldChangedAt)
+    local(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
     receive([
       "type": "playback-context", "request": playbackRequest, "track": newTrack,
       "context": ["uri": oldList, "name": "Old playlist"],
@@ -6808,11 +6823,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let pollsBeforeRapidSwitch = selectionStatusPolls
     select(thirdList, "Third playlist")
     let rapidDoesNotProbeWrongPlaylist = selectionStatusPolls == pollsBeforeRapidSwitch
-    updatePlayback(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
+    local(["playing", "Old song", "Artist", "Album", oldURL, oldTrack, "false"])
     receive(["type": "playback", "request": superseded])
     let rapidStable = nowTitle.stringValue == "New song" && playbackTarget?.acknowledged == false
     receive(["type": "playback", "request": playbackRequest])
-    snapshot(oldState)
+    snapshot(oldState, changedAt: oldChangedAt)
     snapshot(thirdState)
     let latestWins =
       nowTitle.stringValue == "Third song" && playbackTarget?.confirmedTrack == thirdTrack
@@ -6868,6 +6883,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "matching_state_stops_extra_refreshes": confirmed,
       "old_api_local_and_context_snapshots_cannot_undo_confirmation": confirmedStable,
       "reselecting_same_playlist_settles": repeatedSettles,
+      "rapid_selection_rejects_intermediate_local_state": rapidStable,
+      "rapid_selection_accepts_latest_web_state": latestWins,
       "rapid_selection_ignores_intermediate_song": rapidStable && latestWins,
       "old_artwork_cannot_replace_clicked_song_cover": lateArtwork,
       "failures_and_offline_cancel_confirmation": failureClears && offlineClears,

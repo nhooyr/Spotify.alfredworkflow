@@ -3489,6 +3489,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if let theme = value["theme"] as? [String: String] { themeContext = theme }
 
+    if testMode && value["command"] as? String == "test-hidden-prepare" {
+      demo()
+      search.isEnabled = true
+      setSearchText("")
+      filter(resetSelection: true)
+      focusSearch(selectAll: false)
+      renderStatus()
+      return ["status": "ok"]
+    }
     if testMode && value["command"] as? String == "test-demo-prepare" {
       setScreenshotMode(false)
       demo()

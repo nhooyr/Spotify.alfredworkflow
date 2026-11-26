@@ -3964,6 +3964,10 @@ func runIntegrationTests(screenshot: URL? = nil) {
     check(ready(), "Player window finishes activation and focus for mode=\(mode), shows=\(shows)")
     return state
   }
+  var uiFailures: [String] = []
+  func checkUI(_ condition: Bool, _ message: String) {
+    if !condition { uiFailures.append(message) }
+  }
   for command in [
     "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-queue-playback",
     "test-menu-scrolling",
@@ -3995,19 +3999,20 @@ func runIntegrationTests(screenshot: URL? = nil) {
     print("\(command): \(String(decoding: try! jsonData(result), as: UTF8.self))")
     for (key, value) in result where key != "status" {
       if let value = value as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() {
-        check(value.boolValue, command + ": " + key)
+        checkUI(value.boolValue, command + ": " + key)
       }
     }
-    check(text(result["status"]) == "ok", command + " completed")
+    checkUI(text(result["status"]) == "ok", command + " completed")
     if let previousWindow = previousWindow {
       let restored = request("test-demo-windows")
-      check(
+      checkUI(
         restored["visible"] as? Bool == previousWindow["visible"] as? Bool
           && restored["key"] as? Bool == previousWindow["key"] as? Bool,
         "Queue UI regression test restores window visibility and keyboard focus")
     }
 
   }
+  check(uiFailures.isEmpty, "UI regression test failures:\n" + uiFailures.joined(separator: "\n"))
   let showsBeforePrepare = number(request("state")["shows"])
   _ = request("test-demo-prepare")
   let prepared = waitForFocusedWindow(mode: false, shows: showsBeforePrepare + 1)

@@ -15,14 +15,15 @@ case "${1-}" in
 esac
 
 if [ "${GITHUB_ACTIONS-}" ]; then
-	brew install shfmt clang-format
+	brew install parallel shfmt clang-format
 fi
 
-perl ci/parallel.pl \
+printf '%s\0' \
 	prettier 'npx prettier --log-level warn -w --print-width=110 --no-semi --bracket-same-line --ignore-path .gitignore --ignore-path .prettierignore .' \
 	shfmt 'shfmt -s -w .' \
 	swift-format 'xcrun swift format --in-place --parallel src/*.swift' \
-	clang-format 'clang-format -i src/*.c src/*.h'
+	clang-format 'clang-format -i src/*.c src/*.h' |
+	PARALLEL_SHELL=/bin/sh parallel --plain --null -N 2 --jobs 4 --line-buffer --tagstring '[{1}]' --halt never 'sh -ec {2} 2>&1'
 
 if [ "${CI-}" ]; then
 	git add --intent-to-add --ignore-removal .

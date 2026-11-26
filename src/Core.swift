@@ -378,14 +378,14 @@ final class SpotifyAPI {
   }
   var canSave: Bool { hasScope("user-library-modify") }
   var canReadPlayback: Bool { hasScope("user-read-playback-state") }
-  func playbackState() throws -> JSONObject {
+  func playbackState(cancellation: RequestCancellation? = nil) throws -> JSONObject {
     guard canReadPlayback else {
       throw SpotifyFailure(
         message:
           "Run \(paths.command("reauth")) once to allow reading playback state, then open Spotify Mini Player again."
       )
     }
-    return dict(try request("/me/player"))
+    return dict(try request("/me/player", timeout: 2, cancellation: cancellation))
   }
   func repeatState() throws -> RepeatMode? {
     RepeatMode(rawValue: text(try playbackState()["repeat_state"]))

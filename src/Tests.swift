@@ -596,6 +596,31 @@ private func testWebPlayback() throws {
   )
 }
 
+private final class PlaybackPollingURLProtocol: URLProtocol {
+  static var response: ((URLRequest) -> (Int, Data))?
+  private let delivery = DispatchQueue(label: "spotify.polling-fixture")
+  private var stopped = false
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+  override func startLoading() {
+    let response = Self.response
+    DispatchQueue.global().async {
+      let (status, data) = response?(self.request) ?? (500, Data())
+      self.delivery.async {
+        guard !self.stopped else { return }
+        self.client?.urlProtocol(
+          self,
+          didReceive: HTTPURLResponse(
+            url: self.request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!,
+          cacheStoragePolicy: .notAllowed)
+        self.client?.urlProtocol(self, didLoad: data)
+        self.client?.urlProtocolDidFinishLoading(self)
+      }
+    }
+  }
+  override func stopLoading() { delivery.async { self.stopped = true } }
+}
+
 private func testPlaybackPolling() throws {
   let root = tempDirectory("spotify-polling-regression-")
   defer { try? FileManager.default.removeItem(at: root) }
@@ -617,9 +642,10 @@ private func testPlaybackPolling() throws {
   try store.put(MusicLibrary.syncKey, true, ttl: 3600)
   try store.put("desktop:scanned:v4", true, ttl: 3600)
   let config = URLSessionConfiguration.ephemeral
-  config.protocolClasses = [TestURLProtocol.self]
+  config.protocolClasses = [PlaybackPollingURLProtocol.self]
   let session = URLSession(configuration: config)
-  let gate = DispatchSemaphore(value: 0)
+  let firstGate = DispatchSemaphore(value: 0)
+  let emptyGate = DispatchSemaphore(value: 0)
   let lock = NSLock()
   var requests = 0
   func requestCount() -> Int {
@@ -627,15 +653,17 @@ private func testPlaybackPolling() throws {
     defer { lock.unlock() }
     return requests
   }
-  TestURLProtocol.response = { request in
+  PlaybackPollingURLProtocol.response = { request in
     check(
       request.url?.path == "/v1/me/player",
       "Playback polling regression test uses only mocked state requests")
+    check(request.timeoutInterval == 2, "Playback polling regression test bounds each state read")
     lock.lock()
     requests += 1
     let index = requests
     lock.unlock()
     if index == 1 || index == 3 {
+      let gate = index == 1 ? firstGate : emptyGate
       check(
         gate.wait(timeout: .now() + 3) == .success,
         "Playback polling regression test releases its gated request " + String(index))
@@ -663,10 +691,11 @@ private func testPlaybackPolling() throws {
     if text(value["type"]) == "repeat", value["poll"] as? Bool == true { repeats.append(value) }
   }
   defer {
-    gate.signal()
+    firstGate.signal()
+    emptyGate.signal()
     backend.stop()
     session.invalidateAndCancel()
-    TestURLProtocol.response = nil
+    PlaybackPollingURLProtocol.response = nil
   }
   func wait(_ condition: () -> Bool) {
     let deadline = Date().addingTimeInterval(3)
@@ -681,21 +710,19 @@ private func testPlaybackPolling() throws {
   wait { requestCount() == 1 }
   check(requestCount() == 1, "Playback polling regression test holds the first state request")
   backend.send(["command": "repeat-state", "args": ["1", "10"]])
-  backend.send(["command": "repeat-state", "args": ["2", "11"]])
   backend.send(["command": "repeat-state", "args": ["3", "12"]])
   backend.send(["command": "show"])
   wait { barrier }
   check(
     barrier, "Playback polling regression test queues newer requests before completing the old one")
-  gate.signal()
-  wait { states.count == 2 }
+  wait { states.count == 1 }
   check(
-    requestCount() == 2 && states.map { number($0["request"]) } == [10, 12]
+    requestCount() == 2 && states.map { number($0["request"]) } == [12]
       && states.allSatisfy { $0["remote"] as? Bool == true }
-      && dict(states[0]["state"])["is_playing"] as? Bool == true
-      && dict(states[1]["state"])["is_playing"] as? Bool == false,
-    "Playback polling regression test coalesces to the latest request without relabeling a stale snapshot"
+      && dict(states[0]["state"])["is_playing"] as? Bool == false,
+    "Playback polling regression test cancels the obsolete read and drains the latest generation before the old reply"
   )
+  firstGate.signal()
   backend.send(["command": "repeat-state", "args": ["4", "13"]])
   wait { requestCount() == 3 }
   check(
@@ -706,18 +733,18 @@ private func testPlaybackPolling() throws {
   wait { barrier }
   check(
     barrier, "Playback polling regression test queues recovery before the empty response finishes")
-  gate.signal()
   wait {
     states.contains { number($0["request"]) == 14 }
       && repeats.contains { number($0["request"]) == 5 }
   }
   check(
-    requestCount() == 4 && states.map { number($0["request"]) } == [10, 12, 14]
+    requestCount() == 4 && states.map { number($0["request"]) } == [12, 14]
       && states.allSatisfy { !dict($0["state"]).isEmpty && $0["remote"] as? Bool == true }
-      && repeats.map { number($0["request"]) } == [1, 3, 5]
+      && repeats.map { number($0["request"]) } == [3, 5]
       && text(repeats.last?["mode"]) == "off",
-    "Playback polling regression test keeps the header on HTTP 204 and resumes coalesced state and repeat updates"
+    "Playback polling regression test recovers without waiting for a cancelled empty reply or publishing its stale state"
   )
+  emptyGate.signal()
   print(
     "Playback polling regression test passed: coalesced refresh, preserved generations, remote state, and temporary empty-response recovery."
   )
@@ -3980,7 +4007,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",
     "test-single-line", "test-offline-ui", "test-status-ui", "test-remote-playback",
-    "test-playback-header", "test-playback-metadata",
+    "test-playback-header", "test-next-header", "test-playback-metadata",
     "test-repeat",
     "test-playback-context", "test-play-artwork", "test-theme", "test-screenshot-mode",
     "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode",

@@ -2,6 +2,7 @@
 
 ## v0.8.2 (Unreleased)
 
+- Refresh now-playing details promptly after Next or Previous, without waiting for the regular polling interval.
 - Add Command–Shift–Left/Right to seek backward/forward five seconds on Spotify’s current output.
 
 ## v0.8.1

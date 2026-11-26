@@ -9,7 +9,8 @@ final class NativeBackend {
   private let repeatWork = DispatchQueue(label: "spotify.repeat", qos: .userInitiated)
   private let playbackWork = DispatchQueue(label: "spotify.web-playback", qos: .userInteractive)
   private let enqueueWork = DispatchQueue(label: "spotify.enqueue", qos: .userInitiated)
-  private var repeatPolling: (request: Int, playbackRequest: Int)?
+  private var repeatPolling:
+    (request: Int, playbackRequest: Int, cancellation: RequestCancellation)?
   private var pendingRepeatPoll: (request: Int, playbackRequest: Int)?
   private var playbackContextSnapshot: (state: JSONObject, request: Int)?
   private var resolvingContexts: Set<String> = []
@@ -118,7 +119,10 @@ final class NativeBackend {
   }
   func stop() {
     running = false
-    queue.async { [weak self] in self?.setInitialSyncing(false) }
+    queue.async { [weak self] in
+      self?.cancelPlaybackPoll()
+      self?.setInitialSyncing(false)
+    }
     playbackCancellation?.cancel()
     transportLock.lock()
     let transports = transportCancellations
@@ -584,6 +588,10 @@ final class NativeBackend {
       }
     }
   }
+  private func cancelPlaybackPoll() {
+    repeatPolling?.cancellation.cancel()
+    pendingRepeatPoll = nil
+  }
   private func repeatCommand(_ mode: RepeatMode?, request: Int, playbackRequest: Int = 0) {
     guard WebPlayback.networkAvailable() else {
       if let mode = mode {
@@ -594,15 +602,19 @@ final class NativeBackend {
       }
       return
     }
+    let cancellation = RequestCancellation()
     if mode == nil {
       guard api.canReadPlayback else { return }
       if let current = repeatPolling {
-        if current.request != request || current.playbackRequest != playbackRequest {
+        if current.cancellation.isCancelled || current.request != request
+          || current.playbackRequest != playbackRequest
+        {
           pendingRepeatPoll = (request, playbackRequest)
+          if current.playbackRequest != playbackRequest { current.cancellation.cancel() }
         }
         return
       }
-      repeatPolling = (request, playbackRequest)
+      repeatPolling = (request, playbackRequest, cancellation)
     }
     repeatWork.async { [weak self] in
       guard let self = self else { return }
@@ -618,29 +630,32 @@ final class NativeBackend {
         }
       } else {
         let sampledAt = Date().timeIntervalSince1970
-        if let state = try? self.api.playbackState(), !state.isEmpty {
+        let state = try? self.api.playbackState(cancellation: cancellation)
+        self.queue.async {
+          guard self.repeatPolling?.cancellation === cancellation else { return }
+          defer {
+            self.repeatPolling = nil
+            if let pending = self.pendingRepeatPoll {
+              self.pendingRepeatPoll = nil
+              if self.running {
+                self.repeatCommand(
+                  nil, request: pending.request, playbackRequest: pending.playbackRequest)
+              }
+            }
+          }
+          guard self.running, !cancellation.isCancelled, let state = state, !state.isEmpty else {
+            return
+          }
           if let mode = RepeatMode(rawValue: text(state["repeat_state"])) {
             self.output(["type": "repeat", "mode": mode.rawValue, "request": request, "poll": true])
           }
-          self.queue.async {
-            self.output([
-              "type": "playback-state", "state": state, "request": playbackRequest,
-              "sampled_at": sampledAt,
-              "remote": !dict(state["device"]).isEmpty
-                && !self.playback.isDesktopDevice(dict(state["device"])),
-            ])
-            self.publishPlaybackContext(state, request: playbackRequest)
-          }
-        }
-        self.queue.async {
-          self.repeatPolling = nil
-          if let pending = self.pendingRepeatPoll {
-            self.pendingRepeatPoll = nil
-            if self.running {
-              self.repeatCommand(
-                nil, request: pending.request, playbackRequest: pending.playbackRequest)
-            }
-          }
+          self.output([
+            "type": "playback-state", "state": state, "request": playbackRequest,
+            "sampled_at": sampledAt,
+            "remote": !dict(state["device"]).isEmpty
+              && !self.playback.isDesktopDevice(dict(state["device"])),
+          ])
+          self.publishPlaybackContext(state, request: playbackRequest)
         }
       }
     }
@@ -887,6 +902,7 @@ final class NativeBackend {
         case "reset":
           self.cancelQueueAdditions()
           self.cancelSeeks()
+          self.cancelPlaybackPoll()
           self.observedQueueTrackURIs.removeAll()
           self.auth?.cancel()
           self.libraryCancellation?.cancel()

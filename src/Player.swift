@@ -1097,6 +1097,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var menuScrollingTestResult: [String: Any]?
   private var screenshotModeTestResult: [String: Any]?
   private var playbackHeaderTestResult: [String: Any]?
+  private var nextHeaderTestResult: [String: Any]?
   private var inlineError: String?
   private var statusTimer: Timer?
   private var lifeTimer: Timer?
@@ -1118,6 +1119,13 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var playbackConfirmationWork: DispatchWorkItem?
   private var playbackConfirmationAttempts = 0
   private var selectionStatusPolls = 0
+  private var skipRefreshRequest: Int?
+  private var skipRefreshOrigin = ""
+  private var skipRefreshSession: RequestCancellation?
+  private var skipRefreshAcknowledgedAt: Date?
+  private var skipRefreshWork: DispatchWorkItem?
+  private var skipRefreshDesktopReads = 0
+  private var skipRefreshAPIReads = 0
   private var currentImageURL = ""
   private var currentArtPath = ""
   private let imageCache = NSCache<NSString, NSImage>()
@@ -1594,6 +1602,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       // Keep operation ownership separate from the generation of status reads.
       if request == playbackRequest { playbackRequest += 1 }
       spotify.invalidateStatus()
+      var refreshedSkip = false
       if value["fallback"] as? Bool == true {
         if let localCommand = WebPlayback.appleScriptCommand(
           for: value, offline: offline, remote: remotePlaybackDevice)
@@ -1603,11 +1612,14 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             remotePlaybackDevice = false
           }
           playLocally(localCommand, request: request)
+          refreshedSkip = skipRefreshRequest == request
         } else {
+          if skipRefreshRequest == request { cancelSkipRefresh() }
           finishPlaybackIntent(request: request, error: "offline")
           showError("Go online to control the Spotify device already playing.")
         }
       } else if let error = value["error"] as? String {
+        if skipRefreshRequest == request { cancelSkipRefresh() }
         optimisticUntil = .distantPast
         finishPlaybackIntent(request: request, error: error)
         lastRepeatPoll = .distantPast
@@ -1618,8 +1630,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
           self.playing = playing
           updateToggle()
         }
+        refreshedSkip = acknowledgeSkipRefresh(request)
       }
-      if !testMode { refreshRepeat() }
+      if !refreshedSkip && !testMode { refreshRepeat() }
       schedulePlaybackConfirmation()
       return
     }
@@ -2832,7 +2845,67 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       playing = desired
       updateToggle()
     }
+    let skipping = command == "previous" || command == "next"
+    if skipping { cancelSeekRequests() } else { cancelSkipRefresh() }
     send("transport", args: [target, String(playbackRequest)])
+    if skipping { beginSkipRefresh(playbackRequest) }
+  }
+  private func cancelSkipRefresh() {
+    skipRefreshSession?.cancel()
+    skipRefreshSession = nil
+    skipRefreshWork?.cancel()
+    skipRefreshWork = nil
+    skipRefreshRequest = nil
+    skipRefreshAcknowledgedAt = nil
+  }
+  private func beginSkipRefresh(_ request: Int) {
+    cancelSkipRefresh()
+    skipRefreshRequest = request
+    skipRefreshOrigin = currentTrackURI
+    let session = RequestCancellation()
+    skipRefreshSession = session
+    refreshSkippedPlayback(session, attempt: 0)
+  }
+  @discardableResult
+  private func acknowledgeSkipRefresh(_ request: Int) -> Bool {
+    guard skipRefreshRequest == request else { return false }
+    skipRefreshSession?.cancel()
+    skipRefreshWork?.cancel()
+    skipRefreshWork = nil
+    skipRefreshAcknowledgedAt = Date()
+    let session = RequestCancellation()
+    skipRefreshSession = session
+    refreshSkippedPlayback(session, attempt: 0)
+    return true
+  }
+  private func refreshSkippedPlayback(_ session: RequestCancellation, attempt: Int) {
+    guard !session.isCancelled, skipRefreshSession === session, connection == "connected" else {
+      return
+    }
+    if let acknowledged = skipRefreshAcknowledgedAt, attempt > 0,
+      currentTrackURI != skipRefreshOrigin,
+      number(acceptedPlayback?["observed_at"]) >= acknowledged.timeIntervalSince1970
+    {
+      cancelSkipRefresh()
+      return
+    }
+    if !remotePlaybackDevice {
+      if testMode { skipRefreshDesktopReads += 1 } else { spotify.poll() }
+    }
+    if skipRefreshAcknowledgedAt != nil, !offline, [0, 2, 4].contains(attempt) {
+      if testMode { skipRefreshAPIReads += 1 }
+      refreshRepeat()
+    }
+    let delays = [0.12, 0.35, 0.8, 1.5]
+    guard attempt < delays.count else {
+      if skipRefreshAcknowledgedAt != nil { cancelSkipRefresh() }
+      return
+    }
+    let work = DispatchWorkItem { [weak self] in
+      self?.refreshSkippedPlayback(session, attempt: attempt + 1)
+    }
+    skipRefreshWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt], execute: work)
   }
   private func requestSeek(_ direction: Int) {
     guard connection == "connected" else { return }
@@ -2941,7 +3014,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     finishPlaybackIntent(request: request, error: error)
     if let error = error { showError(error) }
     spotify.invalidateStatus()
-    if !testMode { spotify.poll() }
+    if error != nil, skipRefreshRequest == request { cancelSkipRefresh() }
+    let refreshedSkip = error == nil && acknowledgeSkipRefresh(request)
+    if !refreshedSkip && !testMode { spotify.poll() }
   }
   private func cancelLocalPlayback() {
     for cancellation in localPlaybackCancellations.values { cancellation.cancel() }
@@ -2950,6 +3025,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func supersedePlaybackSession() {
     cancelLocalPlayback()
     cancelSeekRequests()
+    cancelSkipRefresh()
     playbackDispatchSession.cancel()
     playbackDispatchSession = RequestCancellation()
   }
@@ -3526,6 +3602,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     show()
   }
   private func hide() {
+    cancelSkipRefresh()
     dismissQueueNotice()
     finishSearchInput()
     collapseSearchSelection()
@@ -3639,6 +3716,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-playback-header-result" {
       return playbackHeaderTestResult ?? ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-next-header" {
+      nextHeaderTestResult = nil
+      Task { @MainActor [weak self] in
+        guard let self = self else { return }
+        self.nextHeaderTestResult = await self.nextHeaderChecks()
+      }
+      return ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-next-header-result" {
+      return nextHeaderTestResult ?? ["status": "pending"]
     }
     if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
     if testMode && value["command"] as? String == "test-playback-metadata" {
@@ -5806,6 +5894,161 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
     }
     return ink > 20 && stray == 0
+  }
+  @MainActor
+  private func nextHeaderChecks() async -> JSONObject {
+    let wasVisible = panel.isVisible
+    defer {
+      cancelSkipRefresh()
+      demo()
+      setSearchText("")
+      if wasVisible { show() }
+    }
+    let first = "spotify:track:" + String(repeating: "u", count: 22)
+    let second = "spotify:track:" + String(repeating: "v", count: 22)
+    let firstURL = "https://i.scdn.co/image/skip-first"
+    let secondURL = "https://i.scdn.co/image/skip-second"
+    let firstCover = NSImage(size: NSSize(width: 32, height: 32))
+    let secondCover = NSImage(size: NSSize(width: 32, height: 32))
+    imageCache.setObject(firstCover, forKey: "skip-first")
+    imageCache.setObject(secondCover, forKey: "skip-second")
+    artworkPaths[firstURL] = "skip-first"
+    artworkPaths[secondURL] = "skip-second"
+    func local(_ uri: String, _ name: String, _ image: String) {
+      updatePlayback(["playing", name, "Artist", "Album", image, uri, "false"])
+    }
+    func state(_ uri: String, _ name: String, _ image: String, timestamp: Double) -> JSONObject {
+      [
+        "is_playing": true, "timestamp": timestamp,
+        "item": [
+          "uri": uri, "name": name, "artists": [["name": "Artist"]],
+          "album": ["name": "Album", "images": [["url": image]]],
+        ],
+      ]
+    }
+    func web(_ state: JSONObject, remote: Bool, request: Int? = nil) {
+      receive([
+        "type": "playback-state", "state": state, "request": request ?? playbackRequest,
+        "remote": remote, "sampled_at": Date().timeIntervalSince1970,
+      ])
+    }
+    cancelSkipRefresh()
+    demo()
+    optimisticUntil = .distantPast
+    local(first, "First song", firstURL)
+    let oldState = state(first, "First song", firstURL, timestamp: 1000)
+    let desktopReads = skipRefreshDesktopReads
+    let apiReads = skipRefreshAPIReads
+    nextTrack()
+    let request = pendingTransportRequest ?? -1
+    let eagerLocal = skipRefreshDesktopReads == desktopReads + 1 && skipRefreshAPIReads == apiReads
+    receive(["type": "transport", "command": "next", "request": request])
+    let acknowledgedReads = skipRefreshDesktopReads
+    let immediateAfterAck =
+      acknowledgedReads == desktopReads + 2
+      && skipRefreshAPIReads == apiReads + 1
+    web(oldState, remote: false)
+    try? await Task.sleep(nanoseconds: 170_000_000)
+    let retriesOldMetadata =
+      skipRefreshDesktopReads > acknowledgedReads
+      && currentTrackURI == first && nowTitle.stringValue == "First song"
+    local(second, "Second song", secondURL)
+    web(oldState, remote: false, request: request)
+    web(oldState, remote: false)
+    let freshHeader =
+      currentTrackURI == second && nowTitle.stringValue == "Second song"
+      && nowArt.image === secondCover && playing
+    try? await Task.sleep(nanoseconds: 360_000_000)
+    let stopsAfterFreshMetadata = skipRefreshSession == nil && currentTrackURI == second
+
+    cancelSkipRefresh()
+    demo()
+    web(oldState, remote: true)
+    let remoteDesktopReads = skipRefreshDesktopReads
+    let remoteAPIReads = skipRefreshAPIReads
+    nextTrack()
+    let remoteRequest = pendingTransportRequest ?? -1
+    receive(["type": "transport", "command": "next", "request": remoteRequest])
+    web(oldState, remote: true)
+    try? await Task.sleep(nanoseconds: 520_000_000)
+    let remoteRetries =
+      skipRefreshAPIReads == remoteAPIReads + 2
+      && skipRefreshDesktopReads == remoteDesktopReads && remotePlaybackDevice
+    web(state(second, "Second song", secondURL, timestamp: 2000), remote: true)
+    web(oldState, remote: true)
+    let remoteHeader =
+      currentTrackURI == second && nowTitle.stringValue == "Second song"
+      && nowArt.image === secondCover && remotePlaybackDevice && playing
+
+    cancelSkipRefresh()
+    demo()
+    offline = true
+    local(first, "First song", firstURL)
+    let offlineAPIReads = skipRefreshAPIReads
+    nextTrack()
+    let offlineRequest = pendingTransportRequest ?? -1
+    receive([
+      "type": "transport", "command": "next", "request": offlineRequest,
+      "fallback": true, "fallback_reason": "offline",
+    ])
+    let readsBeforeLocalCompletion = skipRefreshDesktopReads
+    let localCompletion = localPlaybackCancellations[offlineRequest] ?? RequestCancellation()
+    completeLocalPlayback(request: offlineRequest, cancellation: localCompletion, error: nil)
+    let offlineRefresh =
+      skipRefreshDesktopReads == readsBeforeLocalCompletion + 1
+      && skipRefreshAPIReads == offlineAPIReads && skipRefreshAcknowledgedAt != nil
+
+    cancelSkipRefresh()
+    demo()
+    local(first, "First song", firstURL)
+    previousTrack()
+    let previousRequest = pendingTransportRequest ?? -1
+    receive(["type": "transport", "command": "previous", "request": previousRequest])
+    let boundedAPIReads = skipRefreshAPIReads
+    let boundedSession = skipRefreshSession
+    if let session = boundedSession {
+      refreshSkippedPlayback(session, attempt: 2)
+      refreshSkippedPlayback(session, attempt: 4)
+      refreshSkippedPlayback(session, attempt: 4)
+    }
+    let bounded =
+      boundedSession != nil && skipRefreshSession == nil
+      && skipRefreshAPIReads == boundedAPIReads + 2 && inlineError == nil && playing
+    nextTrack()
+    let supersededRequest = pendingTransportRequest ?? -1
+    let supersededSession = skipRefreshSession
+    nextTrack()
+    let latestSession = skipRefreshSession
+    let readsBeforeOldCallback = skipRefreshDesktopReads
+    if let session = supersededSession { refreshSkippedPlayback(session, attempt: 2) }
+    let superseded =
+      supersededSession?.isCancelled == true
+      && !acknowledgeSkipRefresh(supersededRequest)
+      && skipRefreshSession === latestSession && skipRefreshDesktopReads == readsBeforeOldCallback
+    let failedRequest = pendingTransportRequest ?? -1
+    receive([
+      "type": "transport", "command": "next", "request": failedRequest,
+      "error": "Fixture skip error",
+    ])
+    let errorCancels = skipRefreshSession == nil && inlineError == "Fixture skip error"
+    nextTrack()
+    hide()
+    let readsAtHide = skipRefreshDesktopReads
+    try? await Task.sleep(nanoseconds: 160_000_000)
+    let hideCancels = skipRefreshSession == nil && skipRefreshDesktopReads == readsAtHide
+    return [
+      "status": "ok", "skip_starts_desktop_detection_immediately": eagerLocal,
+      "acknowledgement_forces_fresh_desktop_and_api_reads": immediateAfterAck,
+      "stale_metadata_gets_quick_followup_reads": retriesOldMetadata,
+      "fresh_metadata_and_cached_cover_apply_without_rewind": freshHeader,
+      "fresh_header_stops_extra_reads": stopsAfterFreshMetadata,
+      "remote_skip_retries_api_without_polling_mac": remoteRetries && remoteHeader,
+      "offline_skip_completion_forces_fresh_desktop_only_read": offlineRefresh,
+      "same_track_previous_restart_has_bounded_silent_refresh": bounded,
+      "new_skip_cancels_superseded_refresh_callbacks": superseded,
+      "skip_error_cancels_refresh": errorCancels,
+      "hide_cancels_refresh_without_late_reads": hideCancels,
+    ]
   }
   private func queuePlaybackChecks() -> JSONObject {
     demo()

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.8.1 (Unreleased)
+## v0.8.1
 
 - Add Command–L to like or unlike the current song in the mini player.
 

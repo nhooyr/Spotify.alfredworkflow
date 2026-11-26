@@ -2518,7 +2518,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return true
       }
       guard connection == "credentials" else { return true }
-      if modifiers == .command, ["s", "p", "n", "r"].contains(key.lowercased()) { return true }
+      if modifiers == .command, ["s", "p", "n", "r", "l"].contains(key.lowercased()) {
+        return true
+      }
       if modifiers.contains(.command),
         modifiers.contains(.control) || menuShortcutKeys.contains(key)
           || [125, 126].contains(event.keyCode)
@@ -2526,6 +2528,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return true
       }
       return false
+    }
+    if modifiers == .command && key.lowercased() == "l" {
+      collapseSearchSelection()
+      toggleLiked()
+      return true
     }
     if modifiers == .command && [36, 76].contains(event.keyCode) {
       queueSelection()
@@ -3581,6 +3588,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-local-bindings" {
       return localBindingChecks()
     }
+    if testMode && value["command"] as? String == "test-like-shortcut" {
+      return likeShortcutChecks()
+    }
     if testMode && value["command"] as? String == "test-navigation" { return navigationChecks() }
     if testMode && value["command"] as? String == "test-input-focus" { return inputFocusChecks() }
     if testMode && value["command"] as? String == "test-plaintext-paths" {
@@ -3810,6 +3820,89 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "only_launch_hotkey_is_configurable": customized && fixedAfterChange,
       "fixed_keys_do_not_open_apps_or_rebuild_window": beforeShows + 1 == showCount
         && beforeOpened + 1 == openedSpotify,
+    ]
+  }
+  private func likeShortcutChecks() -> JSONObject {
+    let originalHotkey = launchHotkey
+    let originalLikes = likedTracks
+    let originalPending = pendingLikes
+    defer {
+      launchHotkey = originalHotkey
+      likedTracks = originalLikes
+      pendingLikes = originalPending
+      demo()
+      setCurrentTrack("", refresh: false)
+      setSearchText("")
+    }
+    launchHotkey = nil
+    demo()
+    search.isEnabled = true
+    let current = "spotify:track:" + String(repeating: "x", count: 22)
+    let selected = "spotify:track:" + String(repeating: "y", count: 22)
+    likedTracks[current] = false
+    pendingLikes.removeValue(forKey: current)
+    setCurrentTrack(current, refresh: false)
+    routeKind = "songs"
+    breadcrumb = "liked songs/"
+    source = [MusicItem(["uri": selected, "kind": "track", "name": "Other song"])]
+    let query = breadcrumb + "Other"
+    setSearchText(query)
+    filter(resetSelection: true)
+    focusSearch(selectAll: true)
+    func event(_ modifiers: NSEvent.ModifierFlags = .command) -> NSEvent {
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "l",
+        charactersIgnoringModifiers: "l", isARepeat: false, keyCode: 37)!
+    }
+    let shows = showCount
+    let opened = openedSpotify
+    let navigation = navigationRequest
+    let transport = transportCommands
+    let panelHandled = panel.performKeyEquivalent(with: event())
+    let likesCurrent =
+      pendingLikes[current] == true && pendingLikes[selected] == nil
+      && selectedItem()?.uri == selected && currentTrackURI == current
+    let preservesQuery =
+      search.stringValue == query
+      && (search.currentEditor() as? NSTextView)?.selectedRange()
+        == NSRange(location: (query as NSString).length, length: 0)
+    receive(["type": "liked", "uri": current, "liked": true, "cached": true])
+    _ = panel.performKeyEquivalent(with: event())
+    let pendingLikeIgnored = pendingLikes[current] == true && !like.isEnabled
+    receive(["type": "liked", "uri": current, "liked": true])
+    let searchHandled = search.performKeyEquivalent(with: event())
+    let unlikesCurrent = pendingLikes[current] == false && pendingLikes[selected] == nil
+    receive(["type": "liked", "uri": current, "liked": false, "cached": true])
+    _ = search.performKeyEquivalent(with: event())
+    let pendingUnlikeIgnored = pendingLikes[current] == false && !like.isEnabled
+    receive(["type": "liked", "uri": current, "liked": false])
+    let otherModifiersIgnored = [
+      NSEvent.ModifierFlags(), [.command, .shift], [.command, .control],
+    ]
+    .allSatisfy { !key(event($0)) && pendingLikes[current] == nil }
+    setCurrentTrack("", refresh: false)
+    let noTrackIgnored = panel.performKeyEquivalent(with: event()) && pendingLikes[current] == nil
+    setCurrentTrack(current, refresh: false)
+    let disconnectedIgnored = ["credentials", "connecting", "cleared", "failed", "loading"]
+      .allSatisfy { state in
+        connection = state
+        updateLike()
+        return panel.performKeyEquivalent(with: event()) && pendingLikes[current] == nil
+      }
+    return [
+      "status": "ok",
+      "panel_command_l_likes_current_not_selected_song": panelHandled && likesCurrent,
+      "search_command_l_unlikes_current_song": searchHandled && unlikesCurrent,
+      "query_and_caret_preserved": preservesQuery,
+      "pending_like_ignores_repeat_press": pendingLikeIgnored,
+      "pending_unlike_ignores_repeat_press": pendingUnlikeIgnored,
+      "other_modifiers_do_not_toggle_likes": otherModifiersIgnored,
+      "no_track_does_not_send_like": noTrackIgnored,
+      "shortcut_disabled_before_connection": disconnectedIgnored,
+      "shortcut_does_not_navigate_or_control_playback": navigationRequest == navigation
+        && transportCommands == transport,
+      "shortcut_does_not_open_window_or_spotify": showCount == shows && openedSpotify == opened,
     ]
   }
   private func navigationChecks() -> [String: Any] {
@@ -4710,6 +4803,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       (36, "\r", .command), (36, "\r", .option), (125, "", .command), (126, "", .command),
       (18, "1", .command),
       (1, "s", .command), (35, "p", .command), (45, "n", .command), (15, "r", .command),
+      (37, "l", .command),
       (123, "", [.control, .command]), (124, "", [.control, .command]),
       (125, "", [.control, .command]), (126, "", [.control, .command]),
     ]

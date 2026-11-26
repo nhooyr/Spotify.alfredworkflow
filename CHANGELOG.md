@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.1 (Unreleased)
+
+- Add Command–L to like or unlike the current song in the mini player.
+
 ## v0.8.0
 
 - Keep song details and errors current, and prevent superseded playback commands from overriding newer selections.

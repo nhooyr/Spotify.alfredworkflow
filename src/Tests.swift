@@ -3972,7 +3972,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-queue-playback",
     "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
-    "test-local-bindings",
+    "test-local-bindings", "test-like-shortcut",
     "test-navigation",
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",

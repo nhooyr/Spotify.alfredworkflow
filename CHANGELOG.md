@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.2 (Unreleased)
+## v0.8.0
 
 - Keep song details and errors current, and prevent superseded playback commands from overriding newer selections.
 - Keep Queue history consistent across restarts, remote playback and recently played refreshes while preserving genuine repeats.

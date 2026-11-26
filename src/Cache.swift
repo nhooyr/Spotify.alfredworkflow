@@ -85,7 +85,9 @@ func fromAPI(_ value: JSONObject, kind: String? = nil) -> JSONObject? {
   }
   if kind == "track" {
     item["album"] = fromAPI(album, kind: "album") ?? [:]
-    for key in ["duration_ms", "disc_number", "track_number", "is_playable", "is_local"] {
+    for key in [
+      "duration_ms", "disc_number", "track_number", "is_playable", "is_local", "linked_from",
+    ] {
       item[key] = value[key]
     }
   }

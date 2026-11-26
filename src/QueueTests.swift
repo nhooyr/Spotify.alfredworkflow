@@ -151,7 +151,7 @@ func runQueueRegressionTests() throws {
     "Spotify history merges with local plays without collapsing repeated occurrences")
   _ = try model.rows(network: true)
   try require(QueueTestProtocol.requests().count == 2, "fresh reads do not repeat API requests")
-  try model.didEnqueue([third, third])
+  try model.didEnqueue([third, third], expectedAccount: "queue-fixture")
   let added = try model.rows(network: true).filter { text($0["queue_role"]) == "upcoming" }
   try require(
     added.count == 5 && added.suffix(2).allSatisfy { text($0["uri"]) == text(third["uri"]) }
@@ -308,6 +308,249 @@ func runQueueRegressionTests() throws {
     newAccountAccepted.map { text($0["uri"]) } == [text(second["uri"]), text(third["uri"])]
       && newAccountAccepted.map { text($0["queue_role"]) } == ["current", "upcoming"],
     "an accepted observation under the new account also rejects stale queue playback")
+
+  func fixture(_ name: String) throws -> (MusicStore, PlaybackQueue) {
+    let database = try MusicStore(paths.cache.appendingPathComponent(name + ".sqlite3"))
+    try database.useAccount(name)
+    return (database, PlaybackQueue(database, api, online: { true }))
+  }
+  func snapshot(
+    _ item: JSONObject, at: Double, progress: Double? = nil, timestamp: Double? = nil
+  ) -> JSONObject {
+    var result: JSONObject = ["item": item, "observed_at": at, "is_playing": true]
+    if let progress = progress { result["progress_ms"] = progress }
+    if let timestamp = timestamp { result["timestamp"] = timestamp }
+    return result
+  }
+  let (seedStore, provisional) = try fixture("queue-provisional")
+  QueueTestProtocol.response = { _ in (200, ["currently_playing": first, "queue": []]) }
+  let seedRows = try provisional.rows(network: true)
+  try require(
+    seedRows.count == 1 && seedStore.get("playback-queue:observed", stale: true) == nil,
+    "queue bootstrap uses a separate provisional entry rather than accepted history")
+  let seedID = text(seedRows.first?["queue_row_id"])
+  let matchingConfirmation = try provisional.observe(["item": first])
+  try require(
+    !matchingConfirmation && text(try provisional.rows().first?["queue_row_id"]) == seedID,
+    "matching accepted playback keeps the provisional row identity without a visible change")
+  try provisional.observe(["item": second])
+  let persistedIDs = try provisional.rows().map { text($0["queue_row_id"]) }
+  let restarted = PlaybackQueue(seedStore, api, online: { true })
+  try restarted.invalidate()
+  _ = try restarted.rows(network: true)
+  try restarted.observe(["item": second])
+  try require(
+    try restarted.rows().map { text($0["queue_row_id"]) } == persistedIDs,
+    "a stale queue bootstrap cannot replay persisted accepted tracks after a process restart")
+  let (unconfirmedStore, unconfirmed) = try fixture("queue-unconfirmed")
+  _ = try unconfirmed.rows(network: true)
+  let reopenedUnconfirmed = PlaybackQueue(unconfirmedStore, api, online: { true })
+  try reopenedUnconfirmed.observe(["item": second])
+  try require(
+    try reopenedUnconfirmed.rows().map { text($0["uri"]) } == [text(second["uri"])],
+    "a stale provisional track never becomes a played history entry, including after restart")
+
+  var relinked = track("d")
+  relinked["name"] = first["name"]
+  relinked["linked_from"] = ["uri": text(first["uri"])]
+  try require(
+    text(dict(fromAPI(relinked, kind: "track")?["linked_from"])["uri"]) == text(first["uri"]),
+    "API normalization retains the original identity of relinked tracks")
+  let (aliasStore, aliasQueue) = try fixture("queue-relinked")
+  try aliasQueue.observe(["item": relinked])
+  let aliasID = text(try aliasQueue.rows().first?["queue_row_id"])
+  var thinRelinked = relinked
+  thinRelinked.removeValue(forKey: "linked_from")
+  for item in [thinRelinked, first, thinRelinked] {
+    try aliasQueue.observe(["item": item])
+    let rows = try aliasQueue.rows()
+    try require(
+      rows.count == 1 && text(rows[0]["queue_row_id"]) == aliasID
+        && text(rows[0]["play_uri"]) == text(item["uri"])
+        && PlaybackQueue.canonicalURI(rows[0]) == text(first["uri"]),
+      "thin relinked metadata preserves one occurrence and the actual incoming play URI")
+  }
+  try aliasQueue.observe(["item": second])
+  try aliasQueue.observe(["item": thinRelinked])
+  try aliasQueue.observe(["item": first])
+  try require(
+    try aliasQueue.rows().count == 3,
+    "recording aliases remain known across genuine intervening plays without merging occurrences")
+  try aliasQueue.observe(["item": first, "context": context])
+  var renamedContext = context
+  renamedContext["name"] = "Updated context name"
+  let contextChanged = try aliasQueue.observe(["item": first, "context": renamedContext])
+  let contextualRows = try aliasQueue.rows()
+  try require(
+    contextChanged && contextualRows.count == 3
+      && text(dict(contextualRows.last?["playback_context"])["name"]) == "Updated context name",
+    "same-URI context metadata corrections update the current entry without adding a play")
+  try aliasStore.put(
+    "playback-queue:recent",
+    [
+      ["track": thinRelinked, "at": 80.0, "id": "thin-alias"],
+      ["track": first, "at": 80.0, "id": "original-alias"],
+      ["track": first, "at": 82.0, "id": "distinct-repeated-play"],
+    ])
+  let knownAliasEvents = try aliasQueue.rows().filter {
+    text($0["queue_row_id"]).hasPrefix("queue:played:spotify:")
+  }
+  try require(
+    knownAliasEvents.count == 2,
+    "known recording aliases deduplicate thin cached events only at the same exact instant")
+
+  try grant(SpotifyAPI.scopes)
+  let (_, historyQueue) = try fixture("queue-history-events")
+  try historyQueue.observe(snapshot(first, at: 110, progress: 30_000, timestamp: 80_000))
+  let localHistoryID = text(try historyQueue.rows().first?["queue_row_id"])
+  let timingChanged = try historyQueue.observe(
+    snapshot(first, at: 111, progress: 31_000, timestamp: 111_000))
+  try require(!timingChanged, "progress-only observations do not change visible queue metadata")
+  try historyQueue.observe(snapshot(second, at: 200, progress: 0))
+  QueueTestProtocol.response = { request in
+    if request.url!.path.hasSuffix("/queue") {
+      return (200, ["currently_playing": second, "queue": []])
+    }
+    return (
+      200,
+      [
+        "items": [
+          ["track": first, "played_at": "1970-01-01T00:01:20Z"],
+          ["track": first, "played_at": "1970-01-01T00:01:20.000Z"],
+          ["track": relinked, "played_at": "1970-01-01T00:01:20.000Z"],
+          ["track": first, "played_at": "1970-01-01T00:01:22Z"],
+          ["track": third, "played_at": "1970-01-01T00:01:21Z"],
+        ]
+      ]
+    )
+  }
+  let reconciled = try historyQueue.rows(network: true)
+  try require(
+    reconciled.map { text($0["uri"]) } == [
+      text(first["uri"]), text(third["uri"]), text(first["uri"]), text(second["uri"]),
+    ] && text(reconciled.first?["queue_row_id"]) == localHistoryID,
+    "exact Spotify event timestamps reconcile local/API occurrences with stable local IDs")
+  let (remoteStore, remoteQueue) = try fixture("queue-remote-events")
+  let providerRows = try remoteQueue.rows(network: true)
+  try require(
+    providerRows.filter { text($0["queue_role"]) == "history" }.count == 3
+      && Set(providerRows.map { text($0["queue_row_id"]) }).count == providerRows.count,
+    "identical remote instants and aliases deduplicate while distinct close repeats survive")
+  let cachedRemote = remoteStore.get("playback-queue:recent", stale: true) as? [JSONObject] ?? []
+  try remoteStore.put(
+    "playback-queue:recent",
+    cachedRemote.enumerated().map { index, entry -> JSONObject in
+      var entry = entry
+      entry["id"] = "stored-format-variant-" + String(index)
+      return entry
+    })
+  try require(
+    try remoteQueue.rows().map { text($0["queue_row_id"]) }
+      == providerRows.map { text($0["queue_row_id"]) },
+    "cached remote event identity derives from the instant and recording rather than old ID formatting"
+  )
+  let (_, unknownQueue) = try fixture("queue-unknown-timing")
+  try unknownQueue.observe(snapshot(first, at: 81))
+  try unknownQueue.observe(snapshot(second, at: 200))
+  let ambiguous = try unknownQueue.rows(network: true)
+  try require(
+    ambiguous.filter { text($0["queue_role"]) == "history" }.count == 4,
+    "unknown local start timing preserves potentially distinct plays instead of guessing by URI")
+  let progressOnly = try unknownQueue.observe(snapshot(second, at: 205, progress: 5_000))
+  try require(!progressOnly, "progress alone does not change visible queue metadata")
+  let (identityStore, identityQueue) = try fixture("queue-late-event-identity")
+  try identityQueue.observe(snapshot(first, at: 110))
+  try identityStore.put(
+    "playback-queue:recent", [["track": first, "at": 80.0, "id": "unmatched-provider-event"]])
+  let beforeIdentity = try identityQueue.rows()
+  try require(beforeIdentity.count == 2, "missing provider identity keeps ambiguous plays separate")
+  let acquiredIdentity = try identityQueue.observe(snapshot(first, at: 111, timestamp: 80_000))
+  let afterIdentity = try identityQueue.rows()
+  try require(
+    acquiredIdentity && afterIdentity.count == 1
+      && text(afterIdentity[0]["queue_row_id"]) == text(beforeIdentity.last?["queue_row_id"]),
+    "acquiring an exact provider event identity refreshes membership while keeping the local row ID"
+  )
+  for (name, timestamp): (String, Double?) in [("seek", nil), ("resume", 105_000)] {
+    let (seekStore, seekQueue) = try fixture("queue-unverified-" + name)
+    try seekQueue.observe(snapshot(first, at: 110, progress: 90_000, timestamp: timestamp))
+    try seekQueue.observe(snapshot(second, at: 200, progress: 0))
+    try seekStore.put(
+      "playback-queue:recent",
+      [["track": first, "at": 50.0, "id": "earlier-distinct-play"]])
+    try require(
+      try seekQueue.rows().map { text($0["uri"]) } == [
+        text(first["uri"]), text(first["uri"]), text(second["uri"]),
+      ],
+      "a seek or resume cannot turn playback position into proof of an earlier play")
+  }
+
+  let (enqueueStore, enqueueQueue) = try fixture("queue-enqueue-old")
+  try enqueueQueue.didEnqueue([first], expectedAccount: "queue-enqueue-old")
+  try enqueueStore.useAccount("queue-enqueue-new")
+  try enqueueQueue.didEnqueue([second], expectedAccount: "queue-enqueue-new")
+  func responses(_ database: MusicStore) throws -> Data {
+    try jsonData(database.rows("SELECT * FROM responses ORDER BY key"))
+  }
+  let beforeRejectedAdd = try responses(enqueueStore)
+  do {
+    try enqueueQueue.didEnqueue([third], expectedAccount: "queue-enqueue-old")
+    throw SpotifyFailure(message: "Queue regression test: an old-account addition was accepted")
+  } catch let error as URLError {
+    try require(error.code == .cancelled, "old-account additions are rejected")
+  }
+  let cancelledAdd = RequestCancellation()
+  cancelledAdd.cancel()
+  do {
+    try enqueueQueue.didEnqueue(
+      [third], expectedAccount: "queue-enqueue-new", cancellation: cancelledAdd)
+    throw SpotifyFailure(message: "Queue regression test: a cancelled addition was accepted")
+  } catch let error as URLError {
+    try require(error.code == .cancelled, "cancelled additions are rejected")
+  }
+  try require(
+    try responses(enqueueStore) == beforeRejectedAdd,
+    "rejected additions preserve the response cache byte-for-byte")
+  do {
+    _ = try enqueueQueue.rows(cancellation: cancelledAdd)
+    throw SpotifyFailure(message: "Queue regression test: a cancelled cache read was accepted")
+  } catch let error as URLError {
+    try require(error.code == .cancelled, "cancelled reads do not return cached queue data")
+  }
+  let (cancelStore, cancelQueue) = try fixture("queue-cancelled-response")
+  let cancelledRead = RequestCancellation()
+  QueueTestProtocol.response = { _ in
+    cancelledRead.cancel()
+    return (200, ["currently_playing": first, "queue": [third]])
+  }
+  let beforeCancelledRead = try responses(cancelStore)
+  do {
+    _ = try cancelQueue.rows(network: true, cancellation: cancelledRead)
+    throw SpotifyFailure(message: "Queue regression test: a cancelled queue response was accepted")
+  } catch let error as URLError {
+    try require(error.code == .cancelled, "cancelled queue replies are rejected before caching")
+  }
+  try require(
+    try responses(cancelStore) == beforeCancelledRead,
+    "cancelled queue responses cannot persist a provisional current or upcoming rows")
+  let (accountStore, accountQueue) = try fixture("queue-account-response")
+  QueueTestProtocol.response = { request in
+    if request.url!.path.hasSuffix("/queue") {
+      return (200, ["currently_playing": first, "queue": [third]])
+    }
+    try! accountStore.useAccount("queue-account-switched")
+    return (200, ["items": [["track": first, "played_at": "1970-01-01T00:01:20Z"]]])
+  }
+  do {
+    _ = try accountQueue.rows(network: true)
+    throw SpotifyFailure(
+      message: "Queue regression test: an old-account history reply was accepted")
+  } catch let error as URLError {
+    try require(error.code == .cancelled, "account changes cancel late history responses")
+  }
+  try require(
+    try accountQueue.rows().isEmpty,
+    "a late history reply cannot repopulate provisional playback or queue data for a new account")
   print(
     "Queue regression tests passed: history, duplicates, caching, additions, offline filtering, scopes and account isolation."
   )

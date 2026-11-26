@@ -29,7 +29,7 @@ final class NativeBackend {
   private let transportLock = NSLock()
   private var transportCancellations: [RequestCancellation] = []
   private var queueAddCancellations: [RequestCancellation] = []
-  private var observedQueueTrack = ""
+  private var observedQueueTrackURIs: Set<String> = []
   private var queueRefreshWork: DispatchWorkItem?
   private var cache: DesktopCache!
   private var library: MusicLibrary!
@@ -616,6 +616,7 @@ final class NativeBackend {
           ])
         }
       } else {
+        let sampledAt = Date().timeIntervalSince1970
         if let state = try? self.api.playbackState(), !state.isEmpty {
           if let mode = RepeatMode(rawValue: text(state["repeat_state"])) {
             self.output(["type": "repeat", "mode": mode.rawValue, "request": request, "poll": true])
@@ -623,6 +624,7 @@ final class NativeBackend {
           self.queue.async {
             self.output([
               "type": "playback-state", "state": state, "request": playbackRequest,
+              "sampled_at": sampledAt,
               "remote": !dict(state["device"]).isEmpty
                 && !self.playback.isDesktopDevice(dict(state["device"])),
             ])
@@ -684,14 +686,18 @@ final class NativeBackend {
     let uri = text(item["uri"])
     guard validTrack(uri), !text(item["name"]).isEmpty else { return }
     do {
-      try library.playbackQueue.observe(state)
-      if observedQueueTrack != uri {
-        observedQueueTrack = uri
-        if text(route["kind"]) == "queue" {
-          try library.playbackQueue.invalidate()
-          publishRows(command: "queue-update")
-          browseNetwork()
-        }
+      let changed = try library.playbackQueue.observe(state)
+      let identities = Set([uri, PlaybackQueue.canonicalURI(item)])
+      let trackChanged = observedQueueTrackURIs.isDisjoint(with: identities)
+      if trackChanged {
+        observedQueueTrackURIs = identities
+      } else {
+        observedQueueTrackURIs.formUnion(identities)
+      }
+      if text(route["kind"]) == "queue", changed || trackChanged {
+        if trackChanged { try library.playbackQueue.invalidate() }
+        publishRows(command: "queue-update")
+        if trackChanged { browseNetwork() }
       }
     } catch {
       // A failed cache write must not interrupt playback or its state updates.
@@ -752,6 +758,7 @@ final class NativeBackend {
   }
   private func addToQueue(_ item: JSONObject, request: Int) {
     let cancellation = RequestCancellation()
+    let account = text(store.get("library:account", stale: true))
     transportLock.lock()
     queueAddCancellations.append(cancellation)
     transportLock.unlock()
@@ -762,7 +769,11 @@ final class NativeBackend {
         self.queueAddCancellations.removeAll { $0 === cancellation }
         self.transportLock.unlock()
       }
-      guard self.running, !cancellation.isCancelled else { return }
+      func isCurrent() -> Bool {
+        self.running && !cancellation.isCancelled
+          && text(self.store.get("library:account", stale: true)) == account
+      }
+      guard isCurrent() else { return }
       var name = text(item["name"])
       var added = 0
       var error: Error?
@@ -784,7 +795,7 @@ final class NativeBackend {
         let resolved = try self.queueTracks(item, cancellation: cancellation)
         name = resolved.0
         for track in resolved.1 {
-          if cancellation.isCancelled { throw URLError(.cancelled) }
+          if !isCurrent() { throw URLError(.cancelled) }
           _ = try self.api.request(
             "/me/player/queue", params: ["uri": text(track["uri"])], method: "POST",
             expectJSON: false, cancellation: cancellation)
@@ -792,10 +803,13 @@ final class NativeBackend {
           acknowledged.append(track)
         }
       } catch let caught { error = caught }
-      guard self.running, !cancellation.isCancelled else { return }
-      if added > 0 { try? self.library.playbackQueue.didEnqueue(acknowledged) }
+      guard isCurrent() else { return }
+      if added > 0 {
+        try? self.library.playbackQueue.didEnqueue(
+          acknowledged, expectedAccount: account, cancellation: cancellation)
+      }
       self.queue.async {
-        guard self.running, !cancellation.isCancelled else { return }
+        guard isCurrent() else { return }
         var result: JSONObject = [
           "type": "queue-add", "request": request, "name": name, "added": added,
         ]
@@ -864,7 +878,7 @@ final class NativeBackend {
           } catch { self.failedSignIn(error) }
         case "reset":
           self.cancelQueueAdditions()
-          self.observedQueueTrack = ""
+          self.observedQueueTrackURIs.removeAll()
           self.auth?.cancel()
           self.libraryCancellation?.cancel()
           try Self.clearConnection(self.paths)

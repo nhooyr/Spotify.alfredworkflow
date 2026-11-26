@@ -15,6 +15,11 @@ private final class QueueBackendFixture {
     defer { lock.unlock() }
     return requests.filter { $0.httpMethod == "POST" }
   }
+  var queueReads: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return requests.filter { $0.httpMethod == "GET" && $0.url?.path == "/v1/me/player/queue" }.count
+  }
   func respond(_ request: URLRequest) throws -> (Int, Data) {
     lock.lock()
     requests.append(request)
@@ -237,6 +242,56 @@ func runQueueBackendRegressionTests() throws {
   }
   wait { cachedCoverRetained() }
   try require(cachedCoverRetained(), "local observations retain cached artwork metadata")
+  let queueActivation = updates.count
+  _ = try command(
+    "activate", [String(decoding: try jsonData(dict(queueHome["item"])), as: UTF8.self)])
+  wait { updates.dropFirst(queueActivation).contains { text($0["command"]) == "browse" } }
+  try require(
+    updates.dropFirst(queueActivation).contains { text($0["command"]) == "browse" },
+    "finishes the Queue refresh before a metadata-only correction")
+  let currentRowID = text(
+    try observedQueue.rows().first { text($0["queue_role"]) == "current" }?["queue_row_id"])
+  let readsBeforeCorrection = fixture.queueReads
+  let correctionStart = updates.count
+  var correctedTrack = localTrack
+  correctedTrack["name"] = "Corrected current song"
+  correctedTrack["artists"] = [["name": "Corrected artist"]]
+  correctedTrack["album"] = ["name": "Corrected album"]
+  correctedTrack["image"] = "fixture-corrected-cover"
+  let correctedState: JSONObject = [
+    "item": correctedTrack,
+    "context": ["uri": text(playlist["uri"])],
+  ]
+  backend.send([
+    "command": "observe-playback",
+    "args": [String(decoding: try jsonData(correctedState), as: UTF8.self)],
+  ])
+  func correctionRow() -> JSONObject? {
+    updates.dropFirst(correctionStart).filter { text($0["command"]) == "queue-update" }
+      .compactMap { $0["rows"] as? [JSONObject] }.flatMap { $0 }
+      .first { text($0["queue_role"]) == "current" && text($0["name"]) == "Corrected current song" }
+  }
+  wait { correctionRow() != nil }
+  let correctedRow = correctionRow() ?? [:]
+  try require(
+    text(correctedRow["uri"]) == currentRowID
+      && text(correctedRow["detail"]) == "Now playing · Corrected artist · Corrected album"
+      && text(dict(correctedRow["item"])["image"]) == "fixture-corrected-cover"
+      && text(dict(correctedRow["item"])["context"]) == text(playlist["uri"]),
+    "same-track metadata and context corrections refresh visible Queue rows with stable identity")
+  try require(
+    fixture.queueReads == readsBeforeCorrection, "metadata corrections do not refetch the API queue"
+  )
+  let duplicateStart = updates.count
+  backend.send([
+    "command": "observe-playback",
+    "args": [String(decoding: try jsonData(correctedState), as: UTF8.self)],
+  ])
+  _ = try command("home")
+  try require(
+    !updates.dropFirst(duplicateStart).contains { text($0["command"]) == "queue-update" }
+      && fixture.queueReads == readsBeforeCorrection,
+    "duplicate accepted metadata neither republishes Queue rows nor refetches them")
   backend.send([
     "command": "observe-playback",
     "args": [String(decoding: try jsonData(["item": tracks[1]]), as: UTF8.self)],
@@ -254,6 +309,11 @@ func runQueueBackendRegressionTests() throws {
   try require(
     updates.contains { text($0["type"]) == "playback-state" && number($0["request"]) == 60001 },
     "receives the stale raw API playback snapshot")
+  try require(
+    updates.contains {
+      text($0["type"]) == "playback-state" && number($0["request"]) == 60001
+        && number($0["sampled_at"]) > 0
+    }, "API snapshots retain their sampling time for playback ordering")
   let afterPollRows = try observedQueue.rows().map { text($0["queue_row_id"]) }
   try require(
     afterPollRows == acceptedRows
@@ -316,6 +376,38 @@ func runQueueBackendRegressionTests() throws {
   try token(SpotifyAPI.scopes)
   fixture.lock.lock()
   fixture.blockNextPost = true
+  fixture.blocked = false
+  fixture.lock.unlock()
+  let beforeAccountSwitch = fixture.posts.count
+  request += 1
+  let oldAccountRequest = request
+  backend.send([
+    "command": "queue-add",
+    "args": [String(decoding: try jsonData(album), as: UTF8.self), String(oldAccountRequest)],
+  ])
+  wait {
+    fixture.lock.lock()
+    defer { fixture.lock.unlock() }
+    return fixture.blocked
+  }
+  fixture.lock.lock()
+  let accountRequestBlocked = fixture.blocked
+  fixture.lock.unlock()
+  try require(accountRequestBlocked, "blocks the old account addition before acknowledgement")
+  try store.useAccount("new-queue-backend-account")
+  fixture.release.signal()
+  let newAccountAddition = try enqueue(tracks[0])
+  let newAccountRows = try observedQueue.rows()
+  try require(
+    number(newAccountAddition["added"]) == 1
+      && fixture.posts.count == beforeAccountSwitch + 2
+      && newAccountRows.map { text($0["uri"]) } == [text(tracks[0]["uri"])]
+      && !updates.contains {
+        text($0["type"]) == "queue-add" && number($0["request"]) == Double(oldAccountRequest)
+      }, "an account switch rejects old additions, cached acknowledgements and success notices")
+  fixture.lock.lock()
+  fixture.blockNextPost = true
+  fixture.blocked = false
   fixture.lock.unlock()
   request += 1
   let cancelledRequest = request

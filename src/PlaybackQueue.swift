@@ -5,8 +5,8 @@ final class PlaybackQueue {
   private let api: SpotifyAPI
   private let online: () -> Bool
   private let refreshing = NSLock()
-  private var observedAccount: String?
   private static let observedKey = "playback-queue:observed"
+  private static let seedKey = "playback-queue:seed"
   private static let remoteKey = "playback-queue:remote"
   private static let recentKey = "playback-queue:recent"
   private static let freshKey = "playback-queue:fresh"
@@ -20,58 +20,101 @@ final class PlaybackQueue {
     self.online = online
   }
 
-  func observe(_ state: JSONObject) throws {
-    try observe(state, accepted: true)
-  }
-
-  private func observe(_ state: JSONObject, accepted: Bool) throws {
-    guard let track = normalized(dict(state["item"])) else { return }
-    let context = dict(state["context"])
+  @discardableResult func observe(_ state: JSONObject) throws -> Bool {
+    guard var track = normalized(dict(state["item"])) else { return false }
+    var changed = false
     try store.transaction {
-      let account = text(store.get("library:account", stale: true))
-      if accepted {
-        observedAccount = account
-      } else if observedAccount == account {
-        return
-      }
+      let context = dict(state["context"])
       var saved = dict(store.get(Self.observedKey, stale: true))
+      let seed = dict(store.get(Self.seedKey, stale: true))
       let current = dict(saved["current"])
       let previous = dict(current["track"])
-      if text(previous["uri"]) == text(track["uri"]) {
-        if (try? jsonData(previous)) == (try? jsonData(track)),
-          text(dict(current["context"])["uri"]) == text(context["uri"])
-        {
-          return
-        }
-        var updated = current
-        updated["track"] = track
-        updated["context"] = context
-        saved["current"] = updated
-      } else {
-        var history = saved["history"] as? [JSONObject] ?? []
-        if !previous.isEmpty { history.append(current) }
-        saved["history"] = Array(history.suffix(100))
-        saved["current"] = [
-          "id": UUID().uuidString, "track": track, "context": context,
-          "at": Date().timeIntervalSince1970,
-        ]
+      var history = saved["history"] as? [JSONObject] ?? []
+      if !Self.sameTrack(previous, track),
+        let known = history.reversed().first(where: {
+          Self.sameTrack(dict($0["track"]), track)
+            && Self.aliases(dict($0["track"])).count > 1
+        })
+      {
+        track = Self.retainingIdentity(track, from: dict(known["track"]))
       }
-      try store.put(Self.observedKey, saved, ttl: 365 * 86400)
+      let sampled = (state["observed_at"] as? NSNumber)?.doubleValue
+      let at =
+        sampled.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        ?? Date().timeIntervalSince1970
+      var updated: JSONObject
+      let same = Self.sameTrack(previous, track)
+      if same {
+        track = Self.retainingIdentity(track, from: previous)
+        updated = current
+        changed =
+          (try? jsonData(previous)) != (try? jsonData(track))
+          || (try? jsonData(dict(current["context"]))) != (try? jsonData(context))
+      } else {
+        if !previous.isEmpty {
+          history.append(current)
+        }
+        saved["history"] = Array(history.suffix(100))
+        let seedID = Self.sameTrack(dict(seed["track"]), track) ? text(seed["id"]) : ""
+        updated = [
+          "id": seedID.isEmpty ? UUID().uuidString : seedID, "at": at,
+        ]
+        changed =
+          !previous.isEmpty || seedID.isEmpty
+          || (try? jsonData(dict(seed["track"]))) != (try? jsonData(track))
+          || (try? jsonData(dict(seed["context"]))) != (try? jsonData(context))
+      }
+      updated["track"] = track
+      updated["context"] = context
+      if updated["playback_timestamp_ms"] == nil,
+        let timestamp = (state["timestamp"] as? NSNumber)?.doubleValue,
+        timestamp.isFinite, timestamp >= 0, timestamp < Double(Int64.max)
+      {
+        updated["playback_timestamp_ms"] = Int64(timestamp.rounded())
+        changed = true
+      }
+      if !same || (try? jsonData(updated)) != (try? jsonData(current)) {
+        saved["current"] = updated
+        try store.put(Self.observedKey, saved, ttl: 365 * 86400)
+      }
+      if !seed.isEmpty { try store.execute("DELETE FROM responses WHERE key=?", [Self.seedKey]) }
     }
+    return changed
+  }
+
+  private func seed(_ track: JSONObject) throws {
+    let saved = dict(store.get(Self.observedKey, stale: true))
+    guard dict(dict(saved["current"])["track"]).isEmpty else { return }
+    let previous = dict(store.get(Self.seedKey, stale: true))
+    let same = Self.sameTrack(dict(previous["track"]), track)
+    let updated = same ? Self.retainingIdentity(track, from: dict(previous["track"])) : track
+    if (try? jsonData(dict(previous["track"]))) == (try? jsonData(updated)) { return }
+    try store.put(
+      Self.seedKey,
+      [
+        "id": same ? text(previous["id"]) : UUID().uuidString,
+        "track": updated, "at": same ? number(previous["at"]) : Date().timeIntervalSince1970,
+      ], ttl: 365 * 86400)
   }
 
   func invalidate() throws {
     try store.execute("DELETE FROM responses WHERE key=?", [Self.freshKey])
   }
 
-  func didEnqueue(_ tracks: [JSONObject]) throws {
+  func didEnqueue(
+    _ tracks: [JSONObject], expectedAccount: String, cancellation: RequestCancellation? = nil
+  ) throws {
     let added = tracks.compactMap(normalized)
     guard !added.isEmpty else { return }
     try store.transaction {
+      guard cancellation?.isCancelled != true,
+        text(store.get("library:account", stale: true)) == expectedAccount
+      else { throw URLError(.cancelled) }
       let upcoming = store.get(Self.remoteKey, stale: true) as? [JSONObject] ?? []
       try store.put(Self.remoteKey, upcoming + added, ttl: 365 * 86400)
       // Spotify's acknowledgement can precede the updated queue response.
       try store.put(Self.freshKey, true, ttl: 2)
+      if cancellation?.isCancelled == true { throw URLError(.cancelled) }
     }
   }
 
@@ -94,20 +137,14 @@ final class PlaybackQueue {
             throw SpotifyFailure(message: "Reconnect to Spotify to allow reading its queue.")
           }
           let result = dict(try api.request("/me/player/queue", cancellation: cancellation))
-          try checkAccount()
-          if let current = normalized(dict(result["currently_playing"])) {
-            let saved = dict(store.get(Self.observedKey, stale: true))
-            let observed = dict(saved["current"])
-            let sameTrack = text(dict(observed["track"])["uri"]) == text(current["uri"])
-            // Queue snapshots bootstrap the display; accepted playback owns transitions.
-            try observe(
-              [
-                "item": current, "context": sameTrack ? observed["context"] ?? [:] : [:],
-              ], accepted: false)
-          }
           let upcoming = (result["queue"] as? [JSONObject] ?? []).compactMap(normalized)
-          try store.put(Self.remoteKey, upcoming, ttl: 365 * 86400)
-          try store.put(Self.freshKey, true, ttl: 5)
+          try store.transaction {
+            try checkAccount()
+            if let current = normalized(dict(result["currently_playing"])) { try seed(current) }
+            try store.put(Self.remoteKey, upcoming, ttl: 365 * 86400)
+            try store.put(Self.freshKey, true, ttl: 5)
+            try checkAccount()
+          }
         } catch {
           if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
             throw error
@@ -121,18 +158,21 @@ final class PlaybackQueue {
             let result = dict(
               try api.request(
                 "/me/player/recently-played", params: ["limit": "50"], cancellation: cancellation))
-            try checkAccount()
             let recent = (result["items"] as? [JSONObject] ?? []).compactMap {
               entry -> JSONObject? in
               guard let track = normalized(dict(entry["track"])),
                 let date = Self.playedDate(text(entry["played_at"]))
               else { return nil }
               return [
-                "id": "spotify:" + text(entry["played_at"]) + ":" + text(track["uri"]),
+                "id": Self.recentID(track, at: date.timeIntervalSince1970),
                 "track": track, "context": dict(entry["context"]), "at": date.timeIntervalSince1970,
               ]
             }
-            try store.put(Self.recentKey, recent, ttl: 365 * 86400)
+            try store.transaction {
+              try checkAccount()
+              try store.put(Self.recentKey, recent, ttl: 365 * 86400)
+              try checkAccount()
+            }
           } catch {
             if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
               throw error
@@ -142,32 +182,30 @@ final class PlaybackQueue {
         }
       }
     }
-    if cancellation?.isCancelled == true { throw URLError(.cancelled) }
-    let observed = dict(store.get(Self.observedKey, stale: true))
-    let current = dict(observed["current"])
-    var history = observed["history"] as? [JSONObject] ?? []
-    let recent = store.get(Self.recentKey, stale: true) as? [JSONObject] ?? []
-    for entry in recent {
-      let uri = text(dict(entry["track"])["uri"])
-      let duplicate = history.contains {
-        text(dict($0["track"])["uri"]) == uri && abs(number($0["at"]) - number(entry["at"])) < 5
+    var result: [JSONObject] = []
+    try store.transaction {
+      try checkAccount()
+      let observed = dict(store.get(Self.observedKey, stale: true))
+      let accepted = dict(observed["current"])
+      let current =
+        dict(accepted["track"]).isEmpty
+        ? dict(store.get(Self.seedKey, stale: true)) : accepted
+      let history = observed["history"] as? [JSONObject] ?? []
+      let recent = store.get(Self.recentKey, stale: true) as? [JSONObject] ?? []
+      result = mergedHistory(history, current: current, recent: recent).map {
+        row($0, role: "history")
       }
-      let isCurrent =
-        text(dict(current["track"])["uri"]) == uri
-        && abs(number(current["at"]) - number(entry["at"])) < 5
-      if !duplicate && !isCurrent { history.append(entry) }
-    }
-    history.sort { number($0["at"]) < number($1["at"]) }
-    var result = Array(history.suffix(100)).map { row($0, role: "history") }
-    if !dict(current["track"]).isEmpty { result.append(row(current, role: "current")) }
-    let upcoming = store.get(Self.remoteKey, stale: true) as? [JSONObject] ?? []
-    var occurrences: [String: Int] = [:]
-    for track in upcoming {
-      let uri = text(track["uri"])
-      let occurrence = occurrences[uri, default: 0]
-      occurrences[uri] = occurrence + 1
-      result.append(
-        row(["id": uri + ":" + String(occurrence), "track": track], role: "upcoming"))
+      if !dict(current["track"]).isEmpty { result.append(row(current, role: "current")) }
+      let upcoming = store.get(Self.remoteKey, stale: true) as? [JSONObject] ?? []
+      var occurrences: [String: Int] = [:]
+      for track in upcoming {
+        let uri = text(track["uri"])
+        let occurrence = occurrences[uri, default: 0]
+        occurrences[uri] = occurrence + 1
+        result.append(
+          row(["id": uri + ":" + String(occurrence), "track": track], role: "upcoming"))
+      }
+      try checkAccount()
     }
     if result.isEmpty, let failure = failure { throw failure }
     return result
@@ -175,8 +213,102 @@ final class PlaybackQueue {
 
   private func normalized(_ value: JSONObject) -> JSONObject? {
     guard validTrack(text(value["uri"])), !text(value["name"]).isEmpty else { return nil }
-    if text(value["kind"]) == "track" { return value }
-    return fromAPI(value, kind: "track")
+    guard var item = text(value["kind"]) == "track" ? value : fromAPI(value, kind: "track") else {
+      return nil
+    }
+    let linked = text(dict(value["linked_from"])["uri"])
+    if validTrack(linked) { item["linked_from"] = ["uri": linked] }
+    return Self.retainingIdentity(item, from: item)
+  }
+
+  static func canonicalURI(_ track: JSONObject) -> String {
+    let known = text(track["queue_canonical_uri"])
+    if aliases(track).contains(known) { return known }
+    let linked = text(dict(track["linked_from"])["uri"])
+    return validTrack(linked) ? linked : text(track["uri"])
+  }
+
+  static func sameTrack(_ first: JSONObject, _ second: JSONObject) -> Bool {
+    guard validTrack(text(first["uri"])), validTrack(text(second["uri"])) else { return false }
+    return !aliases(first).isDisjoint(with: aliases(second))
+  }
+
+  private static func aliases(_ track: JSONObject) -> Set<String> {
+    Set(
+      ((track["queue_aliases"] as? [String] ?? [])
+        + [text(track["uri"]), text(dict(track["linked_from"])["uri"])])
+        .filter(validTrack))
+  }
+
+  private static func retainingIdentity(_ incoming: JSONObject, from known: JSONObject)
+    -> JSONObject
+  {
+    guard sameTrack(incoming, known) else { return incoming }
+    var result = incoming
+    let combined = aliases(incoming).union(aliases(known))
+    guard combined.count > 1 else { return result }
+    result["queue_aliases"] = combined.sorted()
+    result["queue_canonical_uri"] = canonicalURI(known)
+    if text(incoming["uri"]) == text(known["uri"]),
+      !validTrack(text(dict(incoming["linked_from"])["uri"])),
+      validTrack(text(dict(known["linked_from"])["uri"]))
+    {
+      result["linked_from"] = known["linked_from"]
+    }
+    return result
+  }
+
+  private static func recentID(_ track: JSONObject, at: Double) -> String {
+    "spotify:" + String(Int64((at * 1000).rounded())) + ":" + canonicalURI(track)
+  }
+
+  private func mergedHistory(
+    _ history: [JSONObject], current: JSONObject, recent: [JSONObject]
+  ) -> [JSONObject] {
+    let known = history + [current]
+    var seen = Set<String>()
+    let remote = recent.compactMap { entry -> JSONObject? in
+      guard var track = normalized(dict(entry["track"])) else { return nil }
+      if let identity = known.reversed().first(where: {
+        Self.sameTrack(dict($0["track"]), track)
+          && Self.aliases(dict($0["track"])).count > 1
+      }) {
+        track = Self.retainingIdentity(track, from: dict(identity["track"]))
+      }
+      var entry = entry
+      let id = Self.recentID(track, at: number(entry["at"]))
+      guard seen.insert(id).inserted else { return nil }
+      entry["id"] = id
+      entry["track"] = track
+      return entry
+    }
+    var matched = Set<Int>()
+    var matchedTimes: [String: Double] = [:]
+    for entry in (history + [current]).sorted(by: { number($0["at"]) < number($1["at"]) }) {
+      guard let timestamp = (entry["playback_timestamp_ms"] as? NSNumber)?.int64Value else {
+        continue
+      }
+      if let index = remote.indices.first(where: {
+        !matched.contains($0) && Self.sameTrack(dict(entry["track"]), dict(remote[$0]["track"]))
+          && Int64((number(remote[$0]["at"]) * 1000).rounded()) == timestamp
+      }) {
+        matched.insert(index)
+        matchedTimes[text(entry["id"])] = number(remote[index]["at"])
+      }
+    }
+    let local = history.map { entry -> JSONObject in
+      guard let at = matchedTimes[text(entry["id"])] else { return entry }
+      var ordered = entry
+      ordered["at"] = at
+      return ordered
+    }
+    var combined =
+      local
+      + remote.enumerated().compactMap { index, entry in
+        matched.contains(index) ? nil : entry
+      }
+    combined.sort { number($0["at"]) < number($1["at"]) }
+    return Array(combined.suffix(100))
   }
 
   private func row(_ entry: JSONObject, role: String) -> JSONObject {

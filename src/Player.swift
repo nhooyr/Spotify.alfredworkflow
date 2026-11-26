@@ -6210,9 +6210,24 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     applyTheme(theme)
     let searchBlack =
       preview.image === symbol("magnifyingglass", height: 150) && preview.contentTintColor == .black
+    let searchTitle = previewTitle.stringValue
+    let searchDetail = previewDetail.stringValue
     table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
     previewSelection()
-    let otherPreviewsThemed = preview.contentTintColor == theme.secondary
+    let pendingPreviewStable =
+      preview.image === symbol("magnifyingglass", height: 150) && preview.contentTintColor == .black
+      && previewTitle.stringValue == searchTitle && previewDetail.stringValue == searchDetail
+    receive([
+      "type": "update", "command": "preview", "selected": source[0].uri,
+      "preview_complete": true,
+      "variables": [
+        "preview_title": "0 Playlists", "preview_detail": "",
+        "preview_art": ["src": "fixture-theme-missing-art"],
+      ],
+    ])
+    let otherPreviewsThemed =
+      preview.image === symbol("questionmark", height: 150)
+      && preview.contentTintColor == theme.secondary && previewTitle.stringValue == "0 Playlists"
     return [
       "status": "ok", "theme_applied_to_rows": selection && normal,
       "row_cache_updates_after_theme_change": rowThemeUpdated && row.title.textColor == theme.text,
@@ -6230,6 +6245,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "theme_controls": toggle.contentTintColor == theme.control
         && shuffle.contentTintColor == theme.secondary,
       "spotify_green_preserved": green, "large_search_preview_stays_black": searchBlack,
+      "pending_category_keeps_complete_search_preview": pendingPreviewStable,
       "other_preview_symbols_follow_theme": otherPreviewsThemed,
     ]
   }

@@ -2451,6 +2451,12 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         return true
       }
+      if modifiers == .control,
+        [#selector(NSResponder.moveUp(_:)), #selector(NSResponder.moveDown(_:))].contains(
+          commandSelector)
+      {
+        return true
+      }
       return connection != "credentials"
     }
     if modifiers == .command
@@ -2473,11 +2479,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       page(1)
       return true
     }
-    if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveDown(_:)) {
+    if (modifiers.isEmpty || modifiers == .control)
+      && commandSelector == #selector(NSResponder.moveDown(_:))
+    {
       move(1)
       return true
     }
-    if modifiers.isEmpty && commandSelector == #selector(NSResponder.moveUp(_:)) {
+    if (modifiers.isEmpty || modifiers == .control)
+      && commandSelector == #selector(NSResponder.moveUp(_:))
+    {
       move(-1)
       return true
     }
@@ -2553,13 +2563,18 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return true
       }
       guard connection == "credentials" else { return true }
-      if modifiers == [.command, .shift], [123, 124].contains(event.keyCode) { return true }
+      if modifiers == [.command, .shift],
+        [123, 124].contains(event.keyCode) || ["p", "n"].contains(key.lowercased())
+      {
+        return true
+      }
+      if modifiers == .control, ["n", "p"].contains(key.lowercased()) { return true }
       if modifiers == .command, ["s", "p", "n", "r", "l", "o"].contains(key.lowercased()) {
         return true
       }
       if modifiers.contains(.command),
         modifiers.contains(.control) || menuShortcutKeys.contains(key)
-          || [125, 126].contains(event.keyCode)
+          || [123, 124, 125, 126].contains(event.keyCode)
       {
         return true
       }
@@ -2570,7 +2585,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       requestSeek(event.keyCode == 123 ? -1 : 1)
       return true
     }
-    if modifiers == .command && key.lowercased() == "l" {
+    if modifiers == .command && ["l", "s"].contains(key.lowercased()) {
       collapseSearchSelection()
       toggleLiked()
       return true
@@ -2588,17 +2603,31 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       openSelection(preservingSelection: false, playDirectly: true)
       return true
     }
+    if modifiers == .control, ["n", "p"].contains(key.lowercased()) {
+      move(key.lowercased() == "n" ? 1 : -1)
+      return true
+    }
     if modifiers.isEmpty && [116, 121].contains(event.keyCode) {
       page(event.keyCode == 116 ? -1 : 1)
       return true
     }
     let transport: String?
     if modifiers == .command {
+      switch event.keyCode {
+      case 123: transport = "previous"
+      case 124: transport = "next"
+      default:
+        switch key.lowercased() {
+        case "p": transport = "toggle"
+        case "n": transport = "next"
+        case "r": transport = "refresh"
+        default: transport = nil
+        }
+      }
+    } else if modifiers == [.command, .shift] {
       switch key.lowercased() {
-      case "s": transport = "toggle"
       case "p": transport = "previous"
       case "n": transport = "next"
-      case "r": transport = "refresh"
       default: transport = nil
       }
     } else if modifiers == [.control, .command] {
@@ -3776,6 +3805,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-local-bindings" {
       return localBindingChecks()
     }
+    if testMode && value["command"] as? String == "test-revised-shortcuts" {
+      return revisedShortcutChecks()
+    }
     if testMode && value["command"] as? String == "test-like-shortcut" {
       return likeShortcutChecks()
     }
@@ -3960,6 +3992,182 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       },
     ]
   }
+  private func revisedShortcutChecks() -> JSONObject {
+    let wasVisible = panel.isVisible
+    if wasVisible { hide() }
+    let originalHotkey = launchHotkey
+    let originalLikes = likedTracks
+    let originalPending = pendingLikes
+    defer {
+      launchHotkey = originalHotkey
+      likedTracks = originalLikes
+      pendingLikes = originalPending
+      demo()
+      setSearchText("")
+      if wasVisible { show() }
+    }
+    launchHotkey = nil
+    let shows = showCount
+    let opened = openedSpotify
+    let current = "spotify:track:" + String(repeating: "c", count: 22)
+    let query = "liked songs/item"
+    let caret = NSRange(location: 3, length: 0)
+    func prepare() {
+      demo()
+      search.isEnabled = true
+      routeKind = "songs"
+      breadcrumb = "liked songs/"
+      source = (0..<4).map { index in
+        let item: JSONObject = [
+          "uri": "spotify:track:" + String(repeating: String(index), count: 22),
+          "name": "Item \(index)", "kind": "track",
+        ]
+        return MusicItem(item.merging(["item": item]) { _, new in new })
+      }
+      setSearchText(query)
+      filter(resetSelection: true)
+      table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+      focusSearch(selectAll: false)
+      (search.currentEditor() as? NSTextView)?.setSelectedRange(caret)
+      setCurrentTrack(current, refresh: false)
+      likedTracks[current] = false
+      pendingLikes.removeAll()
+      updateLike()
+    }
+    func event(_ code: UInt16, _ character: String, _ modifiers: NSEvent.ModifierFlags) -> NSEvent {
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: character,
+        charactersIgnoringModifiers: character, isARepeat: false, keyCode: code)!
+    }
+    let definitions: [(String, UInt16, String, NSEvent.ModifierFlags)] = [
+      ("previous", 123, "\u{f702}", .command), ("next", 124, "\u{f703}", .command),
+      ("toggle", 35, "p", .command), ("next", 45, "n", .command),
+      ("previous", 35, "P", [.command, .shift]), ("next", 45, "N", [.command, .shift]),
+      ("previous", 123, "\u{f702}", [.control, .command]),
+      ("next", 124, "\u{f703}", [.control, .command]),
+      ("toggle", 125, "\u{f701}", [.control, .command]),
+      ("toggle", 126, "\u{f700}", [.control, .command]),
+    ]
+    var transportMapped = true
+    var transportPreservesInput = true
+    for (index, definition) in definitions.enumerated() {
+      prepare()
+      let (command, code, character, modifiers) = definition
+      let transports = transportCommands
+      let navigation = navigationRequest
+      let keyEvent = event(code, character, modifiers)
+      let handled =
+        index.isMultiple(of: 2)
+        ? panel.performKeyEquivalent(with: keyEvent) : search.performKeyEquivalent(with: keyEvent)
+      transportMapped =
+        transportMapped && handled && transportCommands == transports + 1
+        && lastTransportCommand == command && pendingLikes[current] == nil
+      transportPreservesInput =
+        transportPreservesInput && search.stringValue == query
+        && (search.currentEditor() as? NSTextView)?.selectedRange() == caret
+        && table.selectedRow == 1 && navigationRequest == navigation
+    }
+    var likesCurrent = true
+    for (code, character): (UInt16, String) in [(1, "s"), (37, "l")] {
+      prepare()
+      let transports = transportCommands
+      let handled =
+        character == "s"
+        ? panel.performKeyEquivalent(with: event(code, character, .command))
+        : search.performKeyEquivalent(with: event(code, character, .command))
+      likesCurrent =
+        likesCurrent && handled && pendingLikes[current] == true
+        && pendingLikes.count == 1 && transportCommands == transports
+      receive(["type": "liked", "uri": current, "liked": true])
+      _ = key(event(code, character, .command))
+      likesCurrent =
+        likesCurrent && pendingLikes[current] == false
+        && transportCommands == transports
+    }
+    prepare()
+    guard let editor = search.currentEditor() as? NSTextView else {
+      return ["status": "error", "message": "No hidden native field editor"]
+    }
+    let playback = playbackRequest
+    let transports = transportCommands
+    let navigation = navigationRequest
+    panel.sendEvent(event(45, "n", .control))
+    let down = table.selectedRow == 2
+    let up =
+      search.performKeyEquivalent(with: event(35, "p", .control))
+      && table.selectedRow == 1
+    let selectorDown =
+      handleInputCommand(
+        #selector(NSResponder.moveDown(_:)), editor: editor, modifiers: .control)
+      && table.selectedRow == 2
+    let selectorUp =
+      handleInputCommand(
+        #selector(NSResponder.moveUp(_:)), editor: editor, modifiers: .control)
+      && table.selectedRow == 1
+    let navigationInput =
+      search.stringValue == query && editor.selectedRange() == caret
+      && panel.firstResponder === editor && playbackRequest == playback
+      && transportCommands == transports && navigationRequest == navigation
+    let seekBefore = seekRequest
+    let seekLeft = panel.performKeyEquivalent(with: event(123, "\u{f702}", [.command, .shift]))
+    let seekRight = search.performKeyEquivalent(with: event(124, "\u{f703}", [.command, .shift]))
+    let seeking =
+      seekLeft && seekRight && pendingSeekRequests[seekBefore + 1] == "seek-backward"
+      && pendingSeekRequests[seekBefore + 2] == "seek-forward" && transportCommands == transports
+    let untouched = sentTestCommands.count
+    let seekAfter = seekRequest
+    let invalid: [(UInt16, String, NSEvent.ModifierFlags)] = [
+      (1, "s", []), (35, "p", []), (45, "n", []), (1, "s", [.command, .shift]),
+      (35, "p", [.command, .option]), (45, "n", [.command, .option]),
+      (35, "p", [.command, .control]), (45, "n", [.command, .control]),
+      (35, "p", [.control, .shift]), (45, "n", [.control, .shift]),
+      (123, "\u{f702}", [.command, .option]), (124, "\u{f703}", [.command, .option]),
+    ]
+    let exactModifiers =
+      invalid.allSatisfy { !key(event($0.0, $0.1, $0.2)) }
+      && sentTestCommands.count == untouched && seekRequest == seekAfter
+      && transportCommands == transports && table.selectedRow == 1
+    let blocked =
+      definitions.map { ($0.1, $0.2, $0.3) } + [
+        (UInt16(1), "s", NSEvent.ModifierFlags.command), (37, "l", .command),
+        (35, "p", .control), (45, "n", .control),
+        (123, "\u{f702}", [.command, .shift]), (124, "\u{f703}", [.command, .shift]),
+      ]
+    var disconnected = true
+    for state in ["credentials", "connecting", "cleared", "failed", "loading"] {
+      connection = state
+      for (index, definition) in blocked.enumerated() {
+        let keyEvent = event(definition.0, definition.1, definition.2)
+        let handled =
+          index.isMultiple(of: 2)
+          ? panel.performKeyEquivalent(with: keyEvent) : search.performKeyEquivalent(with: keyEvent)
+        disconnected = disconnected && handled
+      }
+      disconnected =
+        disconnected
+        && handleInputCommand(
+          #selector(NSResponder.moveDown(_:)), editor: editor, modifiers: .control)
+        && handleInputCommand(
+          #selector(NSResponder.moveUp(_:)), editor: editor, modifiers: .control)
+        && sentTestCommands.count == untouched && playbackRequest == playback
+        && transportCommands == transports && seekRequest == seekAfter
+        && table.selectedRow == 1 && search.stringValue == query && editor.selectedRange() == caret
+    }
+    return [
+      "status": "ok", "revised_panel_and_search_playback_shortcuts": transportMapped,
+      "playback_shortcuts_preserve_filter_caret_and_menu": transportPreservesInput,
+      "command_s_and_l_like_unlike_current_not_selected_song": likesCurrent,
+      "control_n_p_move_menu_from_panel_and_search": down && up,
+      "control_n_p_native_selectors_move_menu": selectorDown && selectorUp,
+      "control_navigation_preserves_query_caret_and_editor": navigationInput,
+      "command_shift_arrows_still_seek_not_skip": seeking,
+      "revised_shortcuts_require_exact_modifiers": exactModifiers,
+      "revised_shortcuts_inert_before_connection": disconnected,
+      "hidden_shortcut_regression_test_never_opens_apps_or_windows": showCount == shows
+        && openedSpotify == opened && !panel.isVisible,
+    ]
+  }
   private func localBindingChecks() -> [String: Any] {
     let original = launchHotkey
     defer { launchHotkey = original }
@@ -3969,7 +4177,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     search.isEnabled = true
     placeSearchCaretAtEnd()
     let definitions: [(String, UInt16, String, NSEvent.ModifierFlags)] = [
-      ("toggle", 1, "s", .command), ("previous", 35, "p", .command), ("next", 45, "n", .command),
+      ("toggle", 35, "p", .command), ("next", 45, "n", .command),
+      ("previous", 35, "p", [.command, .shift]), ("next", 45, "n", [.command, .shift]),
+      ("previous", 123, "", .command), ("next", 124, "", .command),
       ("refresh", 15, "r", .command),
       ("previous", 123, "", [.control, .command]), ("next", 124, "", [.control, .command]),
       ("toggle", 125, "", [.control, .command]), ("toggle", 126, "", [.control, .command]),
@@ -4007,7 +4217,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let opened = openedSpotify
     _ = key(event(7, "x", .command))
     let customized = openedSpotify == opened + 1
-    let fixedAfterChange = key(event(1, "s", .command)) && lastTransportCommand == "toggle"
+    let fixedAfterChange = key(event(35, "p", .command)) && lastTransportCommand == "toggle"
     return [
       "status": "ok", "fixed_shortcuts_work_without_alfred_assignments": fixed,
       "other_quit_modifiers_remain_unhandled": systemQuit,
@@ -4184,7 +4394,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return panel.performKeyEquivalent(with: event(123)) && seekRequest == beforeDisconnected
     }
     connection = "connected"
-    let ordinaryArrows = [NSEvent.ModifierFlags(), .command, .option].allSatisfy {
+    let ordinaryArrows = [NSEvent.ModifierFlags(), .option].allSatisfy {
       !key(event(123, $0)) && !key(event(124, $0)) && seekRequest == beforeDisconnected
     }
     return [
@@ -5184,6 +5394,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       (18, "1", .command),
       (1, "s", .command), (35, "p", .command), (45, "n", .command), (15, "r", .command),
       (37, "l", .command),
+      (123, "", .command), (124, "", .command),
+      (35, "p", [.command, .shift]), (45, "n", [.command, .shift]),
+      (35, "p", .control), (45, "n", .control),
       (123, "", [.control, .command]), (124, "", [.control, .command]),
       (125, "", [.control, .command]), (126, "", [.control, .command]),
     ]

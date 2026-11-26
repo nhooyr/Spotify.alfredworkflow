@@ -154,10 +154,11 @@ rate limits a refresh. A confirmed account change clears the previous account’
 ### Shortcuts
 
 * <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Space</kbd> Open the player from any app.
-* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Left</kbd> / <kbd>Cmd</kbd><kbd>P</kbd> Previous Spotify track.
-* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Right</kbd> / <kbd>Cmd</kbd><kbd>N</kbd> Next Spotify track.
-* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Up</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Down</kbd> / <kbd>Cmd</kbd><kbd>S</kbd> Play/pause Spotify.
-* <kbd>Cmd</kbd><kbd>L</kbd> Like/unlike the current Spotify song.
+* <kbd>Cmd</kbd><kbd>Left</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Left</kbd> / <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>P</kbd> Previous Spotify track.
+* <kbd>Cmd</kbd><kbd>Right</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Right</kbd> / <kbd>Cmd</kbd><kbd>N</kbd> / <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>N</kbd> Next Spotify track.
+* <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Up</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Down</kbd> / <kbd>Cmd</kbd><kbd>P</kbd> Play/pause Spotify.
+* <kbd>Cmd</kbd><kbd>L</kbd> / <kbd>Cmd</kbd><kbd>S</kbd> Like/unlike the current Spotify song.
+* <kbd>Ctrl</kbd><kbd>N</kbd> / <kbd>Ctrl</kbd><kbd>P</kbd> Select the next/previous menu item, like Down/Up.
 * <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>Left</kbd> / <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>Right</kbd> Seek backward/forward five seconds.
 * <kbd>Cmd</kbd><kbd>O</kbd> Open the selection in Spotify, or open Spotify if it has no direct destination.
 * <kbd>Enter</kbd> Browse the selection from its first item or play a song.

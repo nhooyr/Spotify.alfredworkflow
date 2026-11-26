@@ -4005,7 +4005,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-queue-playback",
     "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
-    "test-local-bindings", "test-like-shortcut", "test-seek-shortcuts",
+    "test-local-bindings", "test-revised-shortcuts", "test-like-shortcut", "test-seek-shortcuts",
     "test-open-spotify-shortcut",
     "test-navigation",
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",

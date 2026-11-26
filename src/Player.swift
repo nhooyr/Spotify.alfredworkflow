@@ -4976,17 +4976,51 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ]
   }
   private func textUpdateChecks() -> JSONObject {
-    let label = TextLabel(labelWithString: "Existing text")
+    final class CellProbe: NSTextFieldCell {
+      var mutations = 0
+      override var stringValue: String {
+        get { super.stringValue }
+        set {
+          mutations += 1
+          super.stringValue = newValue
+        }
+      }
+      override var font: NSFont? {
+        get { super.font }
+        set {
+          mutations += 1
+          super.font = newValue
+        }
+      }
+      override var textColor: NSColor? {
+        get { super.textColor }
+        set {
+          mutations += 1
+          super.textColor = newValue
+        }
+      }
+    }
+    let label = TextLabel(frame: NSRect(x: 0, y: 0, width: 180, height: 24))
+    let probe = CellProbe(textCell: "Existing text")
+    label.cell = probe
     label.font = .systemFont(ofSize: 13)
     label.textColor = .black
-    label.needsDisplay = false
-    label.needsLayout = false
-    label.stringValue = "Existing text"
-    label.font = .systemFont(ofSize: 13)
-    label.textColor = .black
-    let unchangedLabel = !label.needsDisplay && !label.needsLayout
+    let value = label.stringValue
+    let font = label.font
+    let color = label.textColor
+    probe.mutations = 0
+    label.stringValue = value
+    label.font = font
+    label.textColor = color
+    let unchangedLabel = probe.mutations == 0
     label.stringValue = "Replacement text"
-    let replacedLabel = label.stringValue == "Replacement text"
+    let replacedLabel = label.stringValue == "Replacement text" && probe.mutations > 0
+    probe.mutations = 0
+    label.font = .systemFont(ofSize: 19)
+    let changedFont = label.font?.pointSize == 19 && probe.mutations > 0
+    probe.mutations = 0
+    label.textColor = .red
+    let changedColor = label.textColor == .red && probe.mutations > 0
     label.stringValue = ""
     let clearedLabel = label.stringValue.isEmpty
 
@@ -5029,6 +5063,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     return [
       "status": "ok", "equal_label_updates_do_not_invalidate": unchangedLabel,
       "replacement_text_is_applied": replacedLabel,
+      "changed_font_reaches_cell": changedFont, "changed_color_reaches_cell": changedColor,
       "intentional_empty_text_is_applied": clearedLabel,
       "unchanged_menu_preserves_row": retainedRow,
       "unchanged_menu_preserves_symbol": retainedSymbol,

@@ -595,9 +595,9 @@ private final class MusicCell: NSTableCellView {
   }
   private var displayed: DisplayState?
   let artwork = NSImageView()
-  let title = NSTextField(labelWithString: "")
-  let shortcut = NSTextField(labelWithString: "")
-  let shortcutNumber = NSTextField(labelWithString: "")
+  let title = TextLabel(labelWithString: "")
+  let shortcut = TextLabel(labelWithString: "")
+  let shortcutNumber = TextLabel(labelWithString: "")
   let returnArrow = ReturnGlyphView()
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -654,19 +654,30 @@ private final class MusicCell: NSTableCellView {
       name: item.name, symbol: item.symbol, kind: item.kind,
       selected: selected, theme: playerThemeGeneration)
     guard displayed != state else { return }
+    let previous = displayed
     displayed = state
+    let titleFont = playerTheme.font(playerTheme.resultFont, size: 16)
+    let shortcutFont = playerTheme.font(playerTheme.shortcutFont, size: 14)
+    let metricsChanged =
+      title.stringValue != item.name || title.font != titleFont || shortcut.font != shortcutFont
+      || shortcutNumber.font != shortcutFont
     title.stringValue = item.name
-    title.font = playerTheme.font(playerTheme.resultFont, size: 16)
-    shortcut.font = playerTheme.font(playerTheme.shortcutFont, size: 14)
-    shortcutNumber.font = playerTheme.font(playerTheme.shortcutFont, size: 14)
+    title.font = titleFont
+    shortcut.font = shortcutFont
+    shortcutNumber.font = shortcutFont
     let color = selected ? playerTheme.selectedText : playerTheme.text
     title.textColor = color
     shortcut.textColor = selected ? playerTheme.selectedShortcut : playerTheme.shortcut
     shortcutNumber.textColor = shortcut.textColor
-    returnArrow.contentTintColor = playerTheme.selectedShortcut
-    artwork.contentTintColor = selected ? color : playerTheme.secondary
-    artwork.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: item.kind)
-    needsLayout = true
+    if returnArrow.contentTintColor != playerTheme.selectedShortcut {
+      returnArrow.contentTintColor = playerTheme.selectedShortcut
+    }
+    let artworkColor = selected ? color : playerTheme.secondary
+    if artwork.contentTintColor != artworkColor { artwork.contentTintColor = artworkColor }
+    if previous?.symbol != item.symbol || previous?.kind != item.kind {
+      artwork.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: item.kind)
+    }
+    if metricsChanged { needsLayout = true }
   }
 }
 
@@ -919,16 +930,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private let table = NSTableView()
   private let scroll = NSScrollView()
   private let preview = NSImageView()
-  private let previewTitle = NSTextField(labelWithString: "")
-  private let previewDetail = NSTextField(wrappingLabelWithString: "")
+  private let previewTitle = TextLabel(labelWithString: "")
+  private let previewDetail = TextLabel(wrappingLabelWithString: "")
   private let nowArt = NSImageView()
-  private let nowTitle = NSTextField(labelWithString: "No track")
-  private let nowDetail = NSTextField(labelWithString: "")
-  private let nowContext = NSTextField(labelWithString: "")
+  private let nowTitle = TextLabel(labelWithString: "No track")
+  private let nowDetail = TextLabel(labelWithString: "")
+  private let nowContext = TextLabel(labelWithString: "")
   private var currentPlaybackContext: PlaybackContext?
   private var selectedSourceTrack = ""
   private var observedPlaybackContext: (track: String, context: PlaybackContext?)?
-  private let status = NSTextField(labelWithString: "")
+  private let status = TextLabel(labelWithString: "")
   private var offline = false
   private var initialSyncing = false
   private let toggle = IconButton()
@@ -1707,7 +1718,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     // A late reply may warm the cache, but only the current selection can paint the preview.
     if let item = selectedItem(), responseURI == item.uri && responseURI == previewURI {
-      if let title = variables["preview_title"] as? String { previewTitle.stringValue = title }
+      if let title = variables["preview_title"] as? String, !title.isEmpty {
+        previewTitle.stringValue = title
+      }
       if let detail = variables["preview_detail"] as? String {
         previewDetail.stringValue = previewDescription(detail, for: item)
         previewDetail.textColor = playerTheme.secondary
@@ -1824,6 +1837,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private func filter(preferredURI: String? = nil, resetSelection: Bool = false) {
     guard pendingPlaintextPath == nil else { return }
     let selection = preferredURI ?? (resetSelection ? nil : selectedItem()?.uri)
+    let previous = filtered
     let origin = scroll.contentView.bounds.origin
     let input = connection == "connected" ? search.stringValue : ""
     let query = input.hasPrefix(breadcrumb) ? String(input.dropFirst(breadcrumb.count)) : input
@@ -1845,7 +1859,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
     }
     suppressSelection = true
-    table.reloadData()
+    let sameRows = previous.elementsEqual(filtered) { $0.uri == $1.uri }
+    if !sameRows { table.reloadData() }
     if !filtered.isEmpty {
       let index = selection.flatMap { uri in filtered.firstIndex { $0.uri == uri } } ?? 0
       table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
@@ -1853,6 +1868,14 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         scrollMenu(to: origin)
       } else {
         table.scrollRowToVisible(index)
+      }
+    }
+    if sameRows {
+      table.enumerateAvailableRowViews { row, index in
+        guard self.filtered.indices.contains(index) else { return }
+        (row.view(atColumn: 0) as? MusicCell)?.display(
+          self.filtered[index], index: self.shortcutIndex(for: index),
+          selected: index == self.table.selectedRow)
       }
     }
     suppressSelection = false
@@ -2025,8 +2048,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let text = singleLineQuery(value)
     updatingSearchField = true
     defer { updatingSearchField = false }
-    search.stringValue = text
-    search.needsDisplay = true
+    if search.stringValue != text { search.stringValue = text }
     if let editor = search.currentEditor() as? NSTextView {
       if editor.string != text { editor.string = text }
       editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
@@ -2040,8 +2062,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     // Re-entering an active field editor can reopen AppKit's text-input popup.
     if search.currentEditor() == nil { panel.makeFirstResponder(search) }
     if search.currentEditor() == nil { search.selectText(nil) }
-    search.stringValue = text
-    search.needsDisplay = true
+    if search.stringValue != text { search.stringValue = text }
     if let editor = search.currentEditor() as? NSTextView {
       if editor.string != text { editor.string = text }
       styleEditor()
@@ -2679,11 +2700,16 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     nowContext.stringValue = label
     nowDetail.stringValue = [currentTrackArtist, currentTrackAlbum]
       .filter { !$0.isEmpty }.joined(separator: " · ")
-    nowContext.toolTip = label.isEmpty ? nil : "Playing from " + label
-    nowContext.setAccessibilityLabel(label.isEmpty ? nil : "Playing from " + label)
-    nowContext.isHidden = label.isEmpty
-    nowTitle.frame.origin.y = label.isEmpty ? 409 : 418
-    nowDetail.frame.origin.y = label.isEmpty ? 382 : 393
+    let description = label.isEmpty ? nil : "Playing from " + label
+    if nowContext.toolTip != description {
+      nowContext.toolTip = description
+      nowContext.setAccessibilityLabel(description)
+    }
+    if nowContext.isHidden != label.isEmpty { nowContext.isHidden = label.isEmpty }
+    let titleY: CGFloat = label.isEmpty ? 409 : 418
+    let detailY: CGFloat = label.isEmpty ? 382 : 393
+    if nowTitle.frame.origin.y != titleY { nowTitle.frame.origin.y = titleY }
+    if nowDetail.frame.origin.y != detailY { nowDetail.frame.origin.y = detailY }
   }
   private func refreshCurrentLike() {
     lastLikedCheck = Date()
@@ -2945,27 +2971,46 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       shuffling = values[6] == "true"
       updateShuffle()
     }
+    func clearMetadata() {
+      currentTrackArtist = ""
+      currentTrackAlbum = ""
+      setCurrentTrack("")
+      nowTitle.stringValue = "No track"
+      currentImageURL = ""
+      setNowArt("")
+    }
     guard values.count >= 6 else {
       // A metadata-property error returns only the playback state. It does not
       // mean the current track or its cached cover disappeared.
-      if values.isEmpty || values.first == "stopped" {
-        setCurrentTrack("")
-        setNowArt("")
-      }
+      if values.isEmpty || values.first == "stopped" { clearMetadata() }
+      return
+    }
+    if values[5].isEmpty && values[1].isEmpty {
+      clearMetadata()
       return
     }
     let sameTrack = !values[5].isEmpty && values[5] == currentTrackURI
+    let cached = values[5].isEmpty ? nil : catalog.first { $0.uri == values[5] }
+    func metadata(_ incoming: String, known: String, cached: String) -> String {
+      if !incoming.isEmpty { return incoming }
+      return sameTrack && !known.isEmpty ? known : cached
+    }
+    let title = metadata(values[1], known: nowTitle.stringValue, cached: cached?.name ?? "")
+    // Keep the previous header as a unit until the new track has usable metadata.
+    guard !validTrack(values[5]) || !title.isEmpty else { return }
+    let artist = metadata(values[2], known: currentTrackArtist, cached: cached?.artist ?? "")
+    let album = metadata(values[3], known: currentTrackAlbum, cached: cached?.album ?? "")
     let imageURL = sameTrack && values[4].isEmpty ? currentImageURL : values[4]
     let keepArtwork = sameTrack && values[4].isEmpty && !currentArtPath.isEmpty
-    currentTrackArtist = values[2]
-    currentTrackAlbum = values[3]
+    currentTrackArtist = artist
+    currentTrackAlbum = album
     setCurrentTrack(values[5])
-    nowTitle.stringValue = values[1]
+    nowTitle.stringValue = title
     updateContextLabel()
     if currentImageURL != imageURL { currentArtPath = "" }
     currentImageURL = imageURL
-    if let item = catalog.first(where: { $0.uri == values[5] }), !item.art.isEmpty {
-      setNowArt(item.art)
+    if let cached = cached, !cached.art.isEmpty {
+      setNowArt(cached.art)
     } else if !keepArtwork {
       if imageURL.isEmpty {
         setNowArt("")
@@ -3155,6 +3200,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return playbackHeaderTestResult ?? ["status": "pending"]
     }
     if testMode && value["command"] as? String == "test-repeat" { return repeatChecks() }
+    if testMode && value["command"] as? String == "test-playback-metadata" {
+      return playbackMetadataChecks()
+    }
     if testMode && value["command"] as? String == "test-playback-context" {
       return playbackContextChecks()
     }
@@ -3225,6 +3273,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     if testMode && value["command"] as? String == "test-menu-scrolling-result" {
       return menuScrollingTestResult ?? ["status": "pending"]
+    }
+    if testMode && value["command"] as? String == "test-text-updates" {
+      return textUpdateChecks()
     }
     if testMode && value["command"] as? String == "test-ui" {
       return previewChecks()
@@ -3775,6 +3826,87 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "backspace_restores_parent_selection": backspace && restoredDelete,
       "parent_filter_restored": parentFilter, "deleting_filter_selects_first": deletionResets,
       "command_up_clears_home_filter": homeCleared,
+    ]
+  }
+  private func playbackMetadataChecks() -> [String: Any] {
+    demo()
+    optimisticUntil = .distantPast
+    catalog = []
+    defer {
+      demo()
+      optimisticUntil = .distantPast
+      setSearchText("")
+    }
+    let first = "spotify:track:" + String(repeating: "m", count: 22)
+    let second = "spotify:track:" + String(repeating: "n", count: 22)
+    let cached = "spotify:track:" + String(repeating: "o", count: 22)
+    func snapshot(
+      _ title: String, _ artist: String, _ album: String, _ uri: String, playing: Bool = true
+    ) {
+      updatePlayback([playing ? "playing" : "paused", title, artist, album, "", uri, "false"])
+    }
+    snapshot("Known title", "Known artist", "Known album", first)
+    snapshot("", "", "", first, playing: false)
+    let sameTrackRetained =
+      currentTrackURI == first && nowTitle.stringValue == "Known title"
+      && nowDetail.stringValue == "Known artist · Known album" && !playing
+    updatePlayback(["playing"])
+    updatePlayback(["paused"])
+    let propertyErrorsRetained =
+      currentTrackURI == first && nowTitle.stringValue == "Known title"
+      && nowDetail.stringValue == "Known artist · Known album"
+    snapshot("Renamed title", "", "", first)
+    let partialUpdates =
+      nowTitle.stringValue == "Renamed title"
+      && nowDetail.stringValue == "Known artist · Known album"
+    let oldCover = nowArt.image
+    snapshot("", "New artist", "New album", second)
+    let unknownTrackDeferred =
+      currentTrackURI == first && nowTitle.stringValue == "Renamed title"
+      && nowDetail.stringValue == "Known artist · Known album" && nowArt.image === oldCover
+      && playing
+    snapshot("New title", "New artist", "New album", second)
+    let completeTrackReplaces =
+      currentTrackURI == second && nowTitle.stringValue == "New title"
+      && nowDetail.stringValue == "New artist · New album"
+    catalog = [
+      MusicItem([
+        "uri": cached, "kind": "track", "name": "Cached title", "artist": "Cached artist",
+        "album": "Cached album",
+      ])
+    ]
+    snapshot("", "", "", cached)
+    let cacheCompletesMetadata =
+      currentTrackURI == cached && nowTitle.stringValue == "Cached title"
+      && nowDetail.stringValue == "Cached artist · Cached album"
+    catalog = []
+    snapshot("Standalone title", "", "", second)
+    let newTrackDoesNotBorrow =
+      currentTrackURI == second && nowTitle.stringValue == "Standalone title"
+      && nowDetail.stringValue.isEmpty
+    func cleared() -> Bool {
+      currentTrackURI.isEmpty && nowTitle.stringValue == "No track" && nowDetail.stringValue.isEmpty
+        && nowContext.isHidden && currentImageURL.isEmpty && currentArtPath.isEmpty
+    }
+    updatePlayback([])
+    let emptySnapshotClears = cleared()
+    snapshot("Known title", "Known artist", "Known album", first)
+    updatePlayback(["stopped"])
+    let stoppedSnapshotClears = cleared()
+    snapshot("Known title", "Known artist", "Known album", first)
+    snapshot("", "", "", "", playing: false)
+    let noTrackSnapshotClears = cleared()
+    return [
+      "status": "ok", "same_track_incomplete_metadata_is_retained": sameTrackRetained,
+      "short_property_errors_keep_metadata": propertyErrorsRetained,
+      "partial_metadata_updates_only_known_fields": partialUpdates,
+      "new_track_waits_for_title_without_blanking_header": unknownTrackDeferred,
+      "complete_new_track_replaces_metadata": completeTrackReplaces,
+      "cached_metadata_completes_new_track": cacheCompletesMetadata,
+      "new_track_never_borrows_previous_artist_album": newTrackDoesNotBorrow,
+      "genuine_empty_snapshot_clears_header": emptySnapshotClears,
+      "genuine_stopped_snapshot_clears_header": stoppedSnapshotClears,
+      "genuine_no_track_metadata_clears_header": noTrackSnapshotClears,
     ]
   }
   private func playbackContextChecks() -> [String: Any] {
@@ -4589,6 +4721,68 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "repeated_keys_at_limits_do_not_scroll": limitsStable,
       "menu_scrolls_in_both_directions": scrolledBothWays,
       "keyboard_navigation_keeps_input_focus": panel.firstResponder === editor,
+    ]
+  }
+  private func textUpdateChecks() -> JSONObject {
+    let label = TextLabel(labelWithString: "Existing text")
+    label.font = .systemFont(ofSize: 13)
+    label.textColor = .black
+    label.needsDisplay = false
+    label.needsLayout = false
+    label.stringValue = "Existing text"
+    label.font = .systemFont(ofSize: 13)
+    label.textColor = .black
+    let unchangedLabel = !label.needsDisplay && !label.needsLayout
+    label.stringValue = "Replacement text"
+    let replacedLabel = label.stringValue == "Replacement text"
+    label.stringValue = ""
+    let clearedLabel = label.stringValue.isEmpty
+
+    demo()
+    let item: JSONObject = [
+      "name": "Caption fixture", "uri": "spotify:track:1234567890123456789012",
+      "kind": "track", "detail": "Artist · Album",
+    ]
+    source = [MusicItem(item.merging(["item": item]) { _, new in new })]
+    catalog = source
+    setSearchText("")
+    filter(resetSelection: true)
+    previewSelection()
+    panel.contentView?.layoutSubtreeIfNeeded()
+    let cell = table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? MusicCell
+    cell?.layoutSubtreeIfNeeded()
+    let symbol = cell?.artwork.image
+    filter()
+    let retainedRow =
+      cell != nil && table.view(atColumn: 0, row: 0, makeIfNecessary: false) === cell
+    let retainedSymbol = cell?.artwork.image === symbol
+    previewTitle.needsDisplay = false
+    previewDetail.needsDisplay = false
+    receive([
+      "type": "update", "command": "preview", "selected": source[0].uri,
+      "variables": ["preview_title": "Caption fixture", "preview_detail": "Artist · Album"],
+    ])
+    let duplicateCaption =
+      !previewTitle.needsDisplay && !previewDetail.needsDisplay
+      && previewTitle.stringValue == "Caption fixture"
+      && previewDetail.stringValue == "Song · Artist · Album"
+    receive([
+      "type": "update", "command": "preview", "selected": source[0].uri,
+      "variables": ["preview_title": ""],
+    ])
+    let incompleteCaption = previewTitle.stringValue == "Caption fixture"
+    search.needsDisplay = false
+    setSearchText(search.stringValue)
+    let unchangedInput = !search.needsDisplay
+    return [
+      "status": "ok", "equal_label_updates_do_not_invalidate": unchangedLabel,
+      "replacement_text_is_applied": replacedLabel,
+      "intentional_empty_text_is_applied": clearedLabel,
+      "unchanged_menu_preserves_row": retainedRow,
+      "unchanged_menu_preserves_symbol": retainedSymbol,
+      "duplicate_preview_reply_keeps_caption": duplicateCaption,
+      "incomplete_preview_reply_keeps_known_title": incompleteCaption,
+      "equal_query_update_does_not_redraw_input": unchangedInput,
     ]
   }
   private func previewChecks() -> [String: Any] {

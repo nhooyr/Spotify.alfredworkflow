@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.2 (Unreleased)
+
+- Keep artwork captions, now-playing metadata and menu text steady while browsing and refreshing.
+
 ## v0.7.1
 
 - Show syncing only during the initial library import and clear stale playback errors when retrying.

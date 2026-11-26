@@ -4091,8 +4091,8 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let restoredDown = table.selectedRow == 2 && selectedItem()?.uri == "song:3"
     table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
     let editor = search.currentEditor() as! NSTextView
-    let backspace = control(
-      search, textView: editor, doCommandBy: #selector(NSResponder.deleteBackward(_:)))
+    let backspace = handleInputCommand(
+      #selector(NSResponder.deleteBackward(_:)), editor: editor, modifiers: [])
     back()
     let restoredDelete = table.selectedRow == 1 && selectedItem()?.uri == "folder:2"
     _ = shortcut(125)
@@ -4776,7 +4776,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     setSearchText("")
     filter()
     focusSearch(selectAll: false)
-    _ = control(search, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:)))
+    _ = handleInputCommand(#selector(NSResponder.moveDown(_:)), editor: editor, modifiers: [])
     let browse = table.selectedRow == 1 && panel.firstResponder === editor
     demo()
     setSearchText("")
@@ -6375,7 +6375,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       #selector(NSResponder.insertLineBreak(_:)),
       #selector(NSResponder.insertParagraphSeparator(_:)),
     ] {
-      ignored = control(search, textView: editor, doCommandBy: selector) && ignored
+      ignored = handleInputCommand(selector, editor: editor, modifiers: []) && ignored
     }
     let noSeparators = ignored && search.stringValue == query && editor.string == query
     let uri = "spotify:album:" + String(repeating: "k", count: 22)

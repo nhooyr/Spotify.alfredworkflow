@@ -3867,6 +3867,21 @@ func runIntegrationTests(screenshot: URL? = nil) {
   check(
     dict(request("state")["theme"])["id"] as? String == env["alfred_theme"],
     "C launcher safely forwards theme context")
+  func waitForFocusedWindow(mode: Bool, shows: Double) -> JSONObject {
+    let deadline = Date().addingTimeInterval(3)
+    var state = request("test-demo-windows")
+    func ready() -> Bool {
+      ["active", "key", "visible", "editor", "handoff"].allSatisfy { state[$0] as? Bool == true }
+        && state["demo"] as? Bool == mode && number(state["shows"]) == shows
+    }
+    while !ready(), Date() < deadline {
+      usleep(5_000)
+      state = request("test-demo-windows")
+    }
+    print("focused window: \(String(decoding: try! jsonData(state), as: UTF8.self))")
+    check(ready(), "Player window finishes activation and focus for mode=\(mode), shows=\(shows)")
+    return state
+  }
   for command in [
     "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
@@ -3881,6 +3896,11 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-spaces", "test-search", "test-artwork", "test-missing-artwork", "test-catalog-mode",
     "test-catalog-resume",
   ] {
+    if command.hasPrefix("test-menu-") {
+      let shows = number(request("state")["shows"])
+      _ = request("test-demo-prepare")
+      _ = waitForFocusedWindow(mode: false, shows: shows + 1)
+    }
     let previousWindow = command == "test-queue-ui" ? request("test-demo-windows") : nil
     let initial = request(command)
     var result = initial
@@ -3905,24 +3925,9 @@ func runIntegrationTests(screenshot: URL? = nil) {
     }
 
   }
-  func waitForDemoWindow(mode: Bool, shows: Double) -> JSONObject {
-    let deadline = Date().addingTimeInterval(3)
-    var state = request("test-demo-windows")
-    func ready() -> Bool {
-      ["active", "key", "visible", "editor", "handoff"].allSatisfy { state[$0] as? Bool == true }
-        && state["demo"] as? Bool == mode && number(state["shows"]) == shows
-    }
-    while !ready(), Date() < deadline {
-      usleep(5_000)
-      state = request("test-demo-windows")
-    }
-    print("demo window: \(String(decoding: try! jsonData(state), as: UTF8.self))")
-    check(ready(), "Demo window finishes activation and focus for mode=\(mode), shows=\(shows)")
-    return state
-  }
   let showsBeforePrepare = number(request("state")["shows"])
   _ = request("test-demo-prepare")
-  let prepared = waitForDemoWindow(mode: false, shows: showsBeforePrepare + 1)
+  let prepared = waitForFocusedWindow(mode: false, shows: showsBeforePrepare + 1)
   // AppKit creates hidden input helpers lazily; check visible windows and editor reuse.
   let demoWindows = prepared["visibleWindows"] as? [Int]
   let demoEditor = text(prepared["editorID"])
@@ -3931,7 +3936,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
   for index in 0..<6 {
     let showsBefore = number(request("state")["shows"])
     spawnClient(workflow.appendingPathComponent("show"), ["--screenshot"], environment: env)
-    let state = waitForDemoWindow(mode: index % 2 == 0, shows: showsBefore + 1)
+    let state = waitForFocusedWindow(mode: index % 2 == 0, shows: showsBefore + 1)
     check(state["demo"] as? Bool == (index % 2 == 0), "One demo command changes mode exactly once")
     check(state["visible"] as? Bool == true, "Demo toggles leave the player open in either mode")
     check(state["editor"] as? Bool == true, "Demo toggles retain the active search editor")

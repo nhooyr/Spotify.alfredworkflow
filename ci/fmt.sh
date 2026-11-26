@@ -2,15 +2,27 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+case "${1-}" in
+-h | --help)
+	printf 'Usage: %s [--help | --fish-completions]\n\nFormat source files concurrently.\n' "$0"
+	exit 0
+	;;
+--fish-completions)
+	printf "complete -c fmt.sh -s h -l help -d 'Show usage'\n"
+	printf "complete -c fmt.sh -l fish-completions -d 'Print Fish completions'\n"
+	exit 0
+	;;
+esac
+
 if [ "${GITHUB_ACTIONS-}" ]; then
 	brew install shfmt clang-format
 fi
 
-npx prettier --log-level warn -w --print-width=110 --no-semi --bracket-same-line \
-	--ignore-path .gitignore --ignore-path .prettierignore .
-shfmt -s -w .
-xcrun swift format --in-place --parallel src/*.swift
-clang-format -i src/*.c src/*.h
+perl ci/parallel.pl \
+	prettier 'npx prettier --log-level warn -w --print-width=110 --no-semi --bracket-same-line --ignore-path .gitignore --ignore-path .prettierignore .' \
+	shfmt 'shfmt -s -w .' \
+	swift-format 'xcrun swift format --in-place --parallel src/*.swift' \
+	clang-format 'clang-format -i src/*.c src/*.h'
 
 if [ "${CI-}" ]; then
 	git add --intent-to-add --ignore-removal .

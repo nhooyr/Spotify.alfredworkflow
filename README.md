@@ -159,6 +159,7 @@ rate limits a refresh. A confirmed account change clears the previous account’
 * <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Up</kbd> / <kbd>Ctrl</kbd><kbd>Cmd</kbd><kbd>Down</kbd> / <kbd>Cmd</kbd><kbd>S</kbd> Play/pause Spotify.
 * <kbd>Cmd</kbd><kbd>L</kbd> Like/unlike the current Spotify song.
 * <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>Left</kbd> / <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>Right</kbd> Seek backward/forward five seconds.
+* <kbd>Cmd</kbd><kbd>O</kbd> Open the selection in Spotify, or open Spotify if it has no direct destination.
 * <kbd>Enter</kbd> Browse the selection from its first item or play a song.
 * <kbd>Opt</kbd><kbd>Enter</kbd> Play the selected song, album, playlist, artist or all Liked Songs directly; browse-only items open normally.
 * <kbd>Cmd</kbd><kbd>Down</kbd> Open the selection, restoring its previous selection and filter.

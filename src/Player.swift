@@ -1028,6 +1028,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var repeatPending = false
   private var lastRepeatPoll = Date.distantPast
   private var openedSpotify = 0
+  private var openedSpotifyURI: String?
   private var lastTransportCommand = ""
   private var transportCommands = 0
   private var refreshRequests = 0
@@ -2553,7 +2554,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       guard connection == "credentials" else { return true }
       if modifiers == [.command, .shift], [123, 124].contains(event.keyCode) { return true }
-      if modifiers == .command, ["s", "p", "n", "r", "l"].contains(key.lowercased()) {
+      if modifiers == .command, ["s", "p", "n", "r", "l", "o"].contains(key.lowercased()) {
         return true
       }
       if modifiers.contains(.command),
@@ -2572,6 +2573,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if modifiers == .command && key.lowercased() == "l" {
       collapseSearchSelection()
       toggleLiked()
+      return true
+    }
+    if modifiers == .command && key.lowercased() == "o" {
+      openSpotify(selectedItem())
       return true
     }
     if modifiers == .command && [36, 76].contains(event.keyCode) {
@@ -3260,20 +3265,33 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       self.requestLiked(desired)
     }
   }
-  @objc private func openSpotify() {
-    openedSpotify += 1
-    hide()
-    lastResignedKey = .distantPast
-    if testMode { return }
-    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.spotify.client")
-    else {
+  private func openSpotify(_ item: MusicItem? = nil) {
+    let destination = item.flatMap { spotifyDestination(for: $0.payload) }
+    let app =
+      testMode
+      ? nil : NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.spotify.client")
+    guard testMode || app != nil else {
       showError("Install the Spotify desktop app to open Spotify.")
       return
     }
-    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) {
-      [weak self] _, error in
+    openedSpotify += 1
+    openedSpotifyURI = destination?.absoluteString
+    hide()
+    lastResignedKey = .distantPast
+    guard let app = app else { return }
+    let configuration = NSWorkspace.OpenConfiguration()
+    let completion: (Error?) -> Void = { [weak self] error in
       if let error = error {
         DispatchQueue.main.async { self?.showError(error.localizedDescription) }
+      }
+    }
+    if let destination = destination {
+      NSWorkspace.shared.open([destination], withApplicationAt: app, configuration: configuration) {
+        _, error in completion(error)
+      }
+    } else {
+      NSWorkspace.shared.openApplication(at: app, configuration: configuration) { _, error in
+        completion(error)
       }
     }
   }
@@ -3764,6 +3782,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-seek-shortcuts" {
       return seekShortcutChecks()
     }
+    if testMode && value["command"] as? String == "test-open-spotify-shortcut" {
+      return openSpotifyShortcutChecks()
+    }
     if testMode && value["command"] as? String == "test-navigation" { return navigationChecks() }
     if testMode && value["command"] as? String == "test-input-focus" { return inputFocusChecks() }
     if testMode && value["command"] as? String == "test-plaintext-paths" {
@@ -3993,6 +4014,92 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "only_launch_hotkey_is_configurable": customized && fixedAfterChange,
       "fixed_keys_do_not_open_apps_or_rebuild_window": beforeShows + 1 == showCount
         && beforeOpened + 1 == openedSpotify,
+    ]
+  }
+  private func openSpotifyShortcutChecks() -> JSONObject {
+    let originalHotkey = launchHotkey
+    defer {
+      launchHotkey = originalHotkey
+      demo()
+      setSearchText("")
+    }
+    launchHotkey = nil
+    demo()
+    search.isEnabled = true
+    let current = "spotify:track:" + String(repeating: "c", count: 22)
+    let selected = "spotify:track:" + String(repeating: "s", count: 22)
+    setCurrentTrack(current, refresh: false)
+    func select(_ item: JSONObject, rowURI: String? = nil) {
+      routeKind = "songs"
+      breadcrumb = ""
+      setSearchText("")
+      source = [
+        MusicItem(
+          item.merging(["uri": rowURI ?? text(item["uri"]), "item": item]) { _, new in new })
+      ]
+      filter(resetSelection: true)
+      focusSearch(selectAll: false)
+    }
+    func event(_ modifiers: NSEvent.ModifierFlags = .command) -> NSEvent {
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "o",
+        charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31)!
+    }
+    let shows = showCount
+    let playback = playbackRequest
+    let transport = transportCommands
+    let navigation = navigationRequest
+    let commandStart = sentTestCommands.count
+    select(["uri": selected, "kind": "track", "name": "Selected song"])
+    var opened = openedSpotify
+    let panelHandled = panel.performKeyEquivalent(with: event())
+    let selectedSong =
+      panelHandled && openedSpotify == opened + 1 && openedSpotifyURI == selected
+      && currentTrackURI == current
+    select(
+      ["uri": selected, "kind": "track", "name": "Queued song", "play_uri": selected],
+      rowURI: "queue:played:fixture")
+    opened = openedSpotify
+    let searchHandled = search.performKeyEquivalent(with: event())
+    let selectedQueue =
+      searchHandled && openedSpotify == opened + 1 && openedSpotifyURI == selected
+    select(homeItems[3])
+    _ = panel.performKeyEquivalent(with: event())
+    let liked = openedSpotifyURI == PlaybackContext.likedSongs.uri
+    select(homeItems[4])
+    _ = search.performKeyEquivalent(with: event())
+    let unmapped = openedSpotifyURI == nil
+    source = []
+    filter(resetSelection: true)
+    opened = openedSpotify
+    _ = panel.performKeyEquivalent(with: event())
+    let noSelection = openedSpotify == opened + 1 && openedSpotifyURI == nil
+    select(["uri": selected, "kind": "track", "name": "Selected song"])
+    openSpotify()
+    let defaultOpensApp = openedSpotifyURI == nil
+    opened = openedSpotify
+    let disconnected = ["credentials", "connecting", "cleared", "failed", "loading"].allSatisfy {
+      connection = $0
+      return panel.performKeyEquivalent(with: event()) && openedSpotify == opened
+    }
+    connection = "connected"
+    let otherModifiers = [
+      NSEvent.ModifierFlags(), [.command, .shift], [.command, .option], [.command, .control],
+    ].allSatisfy { !key(event($0)) && openedSpotify == opened }
+    let playbackCommands = ["play", "transport", "seek", "queue-add", "activate"]
+    return [
+      "status": "ok", "panel_command_o_opens_selected_not_playing_song": selectedSong,
+      "search_command_o_opens_queue_track_not_synthetic_row": selectedQueue,
+      "home_liked_songs_opens_canonical_collection": liked,
+      "unmapped_or_missing_selection_opens_main_app": unmapped && noSelection,
+      "launch_hotkey_path_keeps_main_app_destination": defaultOpensApp,
+      "open_shortcut_inactive_until_connected": disconnected,
+      "open_shortcut_requires_exact_command_modifier": otherModifiers,
+      "open_shortcut_never_plays_or_navigates": playbackRequest == playback
+        && transportCommands == transport && navigationRequest == navigation
+        && !sentTestCommands.dropFirst(commandStart).contains(where: playbackCommands.contains),
+      "hidden_open_regression_test_never_shows_a_window": showCount == shows && !panel.isVisible,
     ]
   }
   private func seekShortcutChecks() -> JSONObject {

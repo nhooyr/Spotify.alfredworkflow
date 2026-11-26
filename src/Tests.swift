@@ -3199,6 +3199,9 @@ func runModelTests() {
   do { try runSeekRegressionTests() } catch {
     check(false, "Seek regression test: " + error.localizedDescription)
   }
+  do { try runSpotifyDestinationRegressionTests() } catch {
+    check(false, "Spotify destination regression test: " + error.localizedDescription)
+  }
   do { try testInitialLibrarySync() } catch {
     check(false, "Initial library sync regression test: " + error.localizedDescription)
   }
@@ -4003,6 +4006,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
     "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
     "test-local-bindings", "test-like-shortcut", "test-seek-shortcuts",
+    "test-open-spotify-shortcut",
     "test-navigation",
     "test-navigation-shortcuts", "test-plaintext-paths", "test-input-focus", "test-connection-ui",
     "test-connection-session", "test-client-id-input", "test-controls", "test-direct-play",

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.2 (Unreleased)
+
+- Add Command–Shift–Left/Right to seek backward/forward five seconds on Spotify’s current output.
+
 ## v0.8.1
 
 - Add Command–L to like or unlike the current song in the mini player.

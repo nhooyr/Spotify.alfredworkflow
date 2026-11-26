@@ -194,7 +194,18 @@ final class WebPlayback {
   private let computerName: String
   private let online: () -> Bool
   private let wait: (TimeInterval) -> Void
+  private let now: () -> TimeInterval
   private var deviceID: String?
+  private struct SeekAnchor {
+    let uri: String
+    let device: String
+    let timestamp: Double
+    let position: Double
+    let at: TimeInterval
+    let playing: Bool
+    let cancellation: RequestCancellation?
+  }
+  private var seekAnchor: SeekAnchor?
 
   init(
     _ api: SpotifyAPI, store: MusicStore? = nil,
@@ -202,6 +213,7 @@ final class WebPlayback {
       ?? ProcessInfo.processInfo.hostName,
     online: @escaping () -> Bool = WebPlayback.networkAvailable,
     wait: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+    now: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
     desktopUserID: @escaping () -> String? = DesktopAccount.currentUserID
   ) {
     self.api = api
@@ -209,6 +221,7 @@ final class WebPlayback {
     self.computerName = computerName
     self.online = online
     self.wait = wait
+    self.now = now
     self.desktopUserID = desktopUserID
   }
   func isDesktopDevice(_ device: JSONObject) -> Bool {
@@ -306,6 +319,8 @@ final class WebPlayback {
     return command
   }
   func transport(_ command: String, cancellation: RequestCancellation? = nil) throws -> JSONObject {
+    let previousSeek = seekAnchor
+    seekAnchor = nil
     if cancellation?.isCancelled == true { throw URLError(.cancelled) }
     guard online() else {
       throw SpotifyFailure(message: "Spotify is offline.", isNetworkError: true)
@@ -313,6 +328,11 @@ final class WebPlayback {
     guard api.hasScope("user-modify-playback-state") else {
       throw SpotifyFailure(
         message: "Run \(api.paths.command("reauth")) to allow controlling Spotify playback.")
+    }
+    if command == "seek-backward" || command == "seek-forward" {
+      return try seek(
+        command == "seek-backward" ? -5000 : 5000, previous: previousSeek,
+        cancellation: cancellation)
     }
     var command = command
     var state: JSONObject = [:]
@@ -373,10 +393,65 @@ final class WebPlayback {
     }
     return result
   }
+  private func seek(
+    _ offset: Double, previous: SeekAnchor?, cancellation: RequestCancellation?
+  ) throws -> JSONObject {
+    guard api.canReadPlayback else {
+      throw SpotifyFailure(
+        message: "Run \(api.paths.command("reauth")) to allow reading Spotify playback state.")
+    }
+    let state = dict(try api.request("/me/player", timeout: 2, cancellation: cancellation))
+    func finite(_ value: Any?) -> Double? {
+      guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+        value.doubleValue.isFinite
+      else { return nil }
+      return value.doubleValue
+    }
+    guard let progress = finite(state["progress_ms"]), progress >= 0 else {
+      throw SpotifyFailure(message: "Spotify has no playback position to seek. Start a song first.")
+    }
+    let item = dict(state["item"])
+    let uri = text(item["uri"])
+    let device = text(dict(state["device"])["id"])
+    let timestamp = finite(state["timestamp"])
+    let playing = state["is_playing"] as? Bool == true
+    let at = now()
+    var position = progress
+    if let previous = previous, previous.cancellation?.isCancelled != true,
+      !uri.isEmpty, !device.isEmpty, previous.uri == uri, previous.device == device,
+      previous.timestamp == timestamp, previous.playing == playing,
+      at >= previous.at, at - previous.at < 2
+    {
+      position = previous.position + (playing ? (at - previous.at) * 1000 : 0)
+    }
+    position = max(0, position + offset)
+    if let duration = finite(item["duration_ms"]) {
+      guard duration > 0 else {
+        throw SpotifyFailure(message: "Spotify cannot seek within this item.")
+      }
+      position = min(position, max(0, duration - 1))
+    }
+    guard position.isFinite, position < Double(Int64.max) else {
+      throw SpotifyFailure(message: "Spotify returned an invalid playback position.")
+    }
+    let target = Int64(position.rounded(.down))
+    if cancellation?.isCancelled == true { throw URLError(.cancelled) }
+    _ = try api.request(
+      "/me/player/seek", params: ["position_ms": String(target)], method: "PUT", timeout: 2,
+      expectJSON: false, cancellation: cancellation)
+    if cancellation?.isCancelled == true { throw URLError(.cancelled) }
+    if !uri.isEmpty, !device.isEmpty, let timestamp = timestamp, timestamp >= 0 {
+      seekAnchor = SeekAnchor(
+        uri: uri, device: device, timestamp: timestamp, position: Double(target), at: now(),
+        playing: playing, cancellation: cancellation)
+    }
+    return [:]
+  }
   func play(
     _ uri: String, context: String = "", recentlyLaunched: Bool = false,
     cancellation: RequestCancellation? = nil
   ) throws {
+    seekAnchor = nil
     var body = try Self.payload(uri, context: context)
     if cancellation?.isCancelled == true { throw URLError(.cancelled) }
     guard online() else {

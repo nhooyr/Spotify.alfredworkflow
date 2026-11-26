@@ -28,6 +28,7 @@ final class NativeBackend {
   private var playbackCancellation: RequestCancellation?
   private let transportLock = NSLock()
   private var transportCancellations: [RequestCancellation] = []
+  private var seekCancellations: [RequestCancellation] = []
   private var queueAddCancellations: [RequestCancellation] = []
   private var observedQueueTrackURIs: Set<String> = []
   private var queueRefreshWork: DispatchWorkItem?
@@ -678,6 +679,13 @@ final class NativeBackend {
     transportLock.unlock()
     for cancellation in pending { cancellation.cancel() }
   }
+  private func cancelSeeks() {
+    transportLock.lock()
+    let pending = seekCancellations
+    seekCancellations.removeAll()
+    transportLock.unlock()
+    for cancellation in pending { cancellation.cancel() }
+  }
   private func observeQueuePlayback(_ snapshot: JSONObject) {
     var state = snapshot
     let incoming = dict(state["item"])
@@ -878,6 +886,7 @@ final class NativeBackend {
           } catch { self.failedSignIn(error) }
         case "reset":
           self.cancelQueueAdditions()
+          self.cancelSeeks()
           self.observedQueueTrackURIs.removeAll()
           self.auth?.cancel()
           self.libraryCancellation?.cancel()
@@ -890,25 +899,30 @@ final class NativeBackend {
             "type": "update", "connection": "cleared", "message": self.message,
             "close_player": true, "rows": self.connectionItems().map(self.nativeRow),
           ])
-        case "transport":
+        case "transport", "seek":
           let request = args.count > 1 ? Int(args[1]) ?? 0 : 0
-          if !["shuffle-on", "shuffle-off"].contains(argument) {
+          if command == "transport", !["shuffle-on", "shuffle-off"].contains(argument) {
             self.playbackCancellation?.cancel()
+          }
+          if command == "transport", ["next", "previous"].contains(argument) {
+            self.cancelSeeks()
           }
           let cancellation = RequestCancellation()
           self.transportLock.lock()
           self.transportCancellations.append(cancellation)
+          if command == "seek" { self.seekCancellations.append(cancellation) }
           self.transportLock.unlock()
           self.playbackWork.async {
             defer {
               self.transportLock.lock()
               self.transportCancellations.removeAll { $0 === cancellation }
+              self.seekCancellations.removeAll { $0 === cancellation }
               self.transportLock.unlock()
             }
             guard self.running, !cancellation.isCancelled else { return }
             do {
               var result = try self.playback.transport(argument, cancellation: cancellation)
-              result["type"] = "transport"
+              result["type"] = command
               result["command"] = argument
               result["request"] = request
               if let state = result["state"] as? JSONObject, !dict(state["device"]).isEmpty {
@@ -918,7 +932,7 @@ final class NativeBackend {
             } catch {
               guard !cancellation.isCancelled else { return }
               var result: JSONObject = [
-                "type": "transport", "command": argument, "request": request,
+                "type": command, "command": argument, "request": request,
               ]
               if !WebPlayback.networkAvailable() {
                 result["fallback"] = true
@@ -929,6 +943,7 @@ final class NativeBackend {
             }
           }
         case "play":
+          self.cancelSeeks()
           let context = args.count > 1 ? args[1] : ""
           let launched = args.count > 2 && args[2] == "started"
           let request = args.count > 3 ? Int(args[3]) ?? 0 : 0

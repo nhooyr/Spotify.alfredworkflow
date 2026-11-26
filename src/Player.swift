@@ -743,6 +743,17 @@ final class SpotifyCommands {
             tell application id "com.spotify.client" to set shuffling to true
         else if commandName is "shuffle-off" then
             tell application id "com.spotify.client" to set shuffling to false
+        else if commandName is "seek-backward" or commandName is "seek-forward" then
+            tell application id "com.spotify.client"
+                set seekPosition to player position
+                if commandName is "seek-backward" then
+                    set seekPosition to seekPosition - 5
+                else
+                    set seekPosition to seekPosition + 5
+                end if
+                if seekPosition < 0 then set seekPosition to 0
+                set player position to seekPosition
+            end tell
         end if
     end perform
     on snapshot()
@@ -864,7 +875,7 @@ final class SpotifyCommands {
     enqueuePlayback {
       guard !cancellation.isCancelled else { return }
       var message: String?
-      if command == "shuffle-on" || command == "shuffle-off" {
+      if ["shuffle-on", "shuffle-off", "seek-backward", "seek-forward"].contains(command) {
         let result = self.queue.sync { self.call("perform", arguments: [command, uri, context]) }
         if case .failure(let error) = result { message = error.localizedDescription }
       } else {
@@ -921,8 +932,11 @@ final class SpotifyCommands {
     cancellation: RequestCancellation, completion: @escaping (String?) -> Void
   ) {
     guard
-      ["toggle", "pause", "resume", "shuffle-on", "shuffle-off", "next", "previous", "play"]
-        .contains(command)
+      [
+        "toggle", "pause", "resume", "shuffle-on", "shuffle-off", "next", "previous", "play",
+        "seek-backward", "seek-forward",
+      ]
+      .contains(command)
     else { return }
     if command == "play" {
       guard validPlaybackURI(uri), context.isEmpty || validURI(context) else { return }
@@ -1096,6 +1110,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var optimisticUntil = Date.distantPast
   private var playbackRequest = 0
   private var pendingTransportRequest: Int?
+  private var seekRequest = 0
+  private var pendingSeekRequests: [Int: String] = [:]
+  private var localSeekCancellations: [Int: RequestCancellation] = [:]
   private var playbackTarget: PlaybackTarget?
   private var playbackTargetUntil = Date.distantPast
   private var playbackConfirmationWork: DispatchWorkItem?
@@ -1461,7 +1478,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       if command != "path" { pendingPlaintextPath = nil }
     }
     let message: JSONObject = ["command": command, "args": args, "navigation": navigationRequest]
-    if ["play", "transport", "repeat"].contains(command) {
+    if ["play", "transport", "repeat", "seek"].contains(command) {
       spotify.afterPlayback(playbackDispatchSession) { [weak self] in
         guard let self = self, self.connection == "connected" else { return }
         self.backend.send(message)
@@ -1563,6 +1580,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         dict(value["state"]), remote: value["remote"] as? Bool == true,
         sampledAt: (value["sampled_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
           ?? Date())
+      return
+    }
+    if type == "seek" {
+      receiveSeek(value)
       return
     }
     if type == "transport" {
@@ -2518,6 +2539,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return true
       }
       guard connection == "credentials" else { return true }
+      if modifiers == [.command, .shift], [123, 124].contains(event.keyCode) { return true }
       if modifiers == .command, ["s", "p", "n", "r", "l"].contains(key.lowercased()) {
         return true
       }
@@ -2528,6 +2550,11 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         return true
       }
       return false
+    }
+    if modifiers == [.command, .shift], [123, 124].contains(event.keyCode) {
+      collapseSearchSelection()
+      requestSeek(event.keyCode == 123 ? -1 : 1)
+      return true
     }
     if modifiers == .command && key.lowercased() == "l" {
       collapseSearchSelection()
@@ -2807,6 +2834,60 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     send("transport", args: [target, String(playbackRequest)])
   }
+  private func requestSeek(_ direction: Int) {
+    guard connection == "connected" else { return }
+    if offline && remotePlaybackDevice {
+      showError("Go online to control the Spotify device already playing.")
+      return
+    }
+    seekRequest += 1
+    let command = direction < 0 ? "seek-backward" : "seek-forward"
+    pendingSeekRequests[seekRequest] = command
+    send("seek", args: [command, String(seekRequest)])
+  }
+  private func receiveSeek(_ value: JSONObject) {
+    guard connection == "connected", let request = value["request"] as? Int,
+      let command = pendingSeekRequests[request], command == text(value["command"])
+    else { return }
+    pendingSeekRequests.removeValue(forKey: request)
+    if value["fallback"] as? Bool == true {
+      guard offline && !remotePlaybackDevice else {
+        if request == seekRequest {
+          showError("Go online to control the Spotify device already playing.")
+        }
+        return
+      }
+      let cancellation = RequestCancellation()
+      localSeekCancellations[request] = cancellation
+      if !testMode {
+        spotify.play(command, uri: "", context: "", cancellation: cancellation) {
+          [weak self] error in
+          self?.completeLocalSeek(request, cancellation: cancellation, error: error)
+        }
+      }
+    } else if let error = value["error"] as? String {
+      if request == seekRequest { showError(error) }
+    } else {
+      spotify.invalidateStatus()
+      if !testMode && !remotePlaybackDevice { spotify.poll() }
+    }
+  }
+  private func completeLocalSeek(
+    _ request: Int, cancellation: RequestCancellation, error: String?
+  ) {
+    guard connection == "connected", !cancellation.isCancelled,
+      localSeekCancellations[request] === cancellation
+    else { return }
+    localSeekCancellations.removeValue(forKey: request)
+    if let error = error, request == seekRequest { showError(error) }
+    spotify.invalidateStatus()
+    if !testMode { spotify.poll() }
+  }
+  private func cancelSeekRequests() {
+    pendingSeekRequests.removeAll()
+    for cancellation in localSeekCancellations.values { cancellation.cancel() }
+    localSeekCancellations.removeAll()
+  }
   private func clearPlaybackIntent() {
     playbackIntentExpiry?.cancel()
     playbackIntentExpiry = nil
@@ -2868,6 +2949,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func supersedePlaybackSession() {
     cancelLocalPlayback()
+    cancelSeekRequests()
     playbackDispatchSession.cancel()
     playbackDispatchSession = RequestCancellation()
   }
@@ -3591,6 +3673,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if testMode && value["command"] as? String == "test-like-shortcut" {
       return likeShortcutChecks()
     }
+    if testMode && value["command"] as? String == "test-seek-shortcuts" {
+      return seekShortcutChecks()
+    }
     if testMode && value["command"] as? String == "test-navigation" { return navigationChecks() }
     if testMode && value["command"] as? String == "test-input-focus" { return inputFocusChecks() }
     if testMode && value["command"] as? String == "test-plaintext-paths" {
@@ -3820,6 +3905,106 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "only_launch_hotkey_is_configurable": customized && fixedAfterChange,
       "fixed_keys_do_not_open_apps_or_rebuild_window": beforeShows + 1 == showCount
         && beforeOpened + 1 == openedSpotify,
+    ]
+  }
+  private func seekShortcutChecks() -> JSONObject {
+    let originalHotkey = launchHotkey
+    defer {
+      launchHotkey = originalHotkey
+      cancelSeekRequests()
+      demo()
+      setSearchText("")
+    }
+    launchHotkey = nil
+    demo()
+    cancelSeekRequests()
+    search.isEnabled = true
+    setSearchText("seek query")
+    focusSearch(selectAll: true)
+    playing = false
+    confirmedPlaying = false
+    let generation = playbackRequest
+    playbackIntent = PlaybackIntent(request: generation, desired: true)
+    func event(_ code: UInt16, _ modifiers: NSEvent.ModifierFlags = [.command, .shift]) -> NSEvent {
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil,
+        characters: code == 123 ? "\u{f702}" : "\u{f703}",
+        charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
+    }
+    func reply(_ request: Int, _ command: String, fallback: Bool = false, error: String = "") {
+      var result: JSONObject = ["type": "seek", "request": request, "command": command]
+      if fallback { result["fallback"] = true }
+      if !error.isEmpty { result["error"] = error }
+      receive(result)
+    }
+    let shows = showCount
+    let opened = openedSpotify
+    let navigation = navigationRequest
+    let left = panel.performKeyEquivalent(with: event(123))
+    let back = seekRequest
+    let right = search.performKeyEquivalent(with: event(124))
+    let forward = seekRequest
+    let directions =
+      left && right && pendingSeekRequests[back] == "seek-backward"
+      && pendingSeekRequests[forward] == "seek-forward"
+    let queryPreserved =
+      search.stringValue == "seek query"
+      && (search.currentEditor() as? NSTextView)?.selectedRange()
+        == NSRange(location: 10, length: 0)
+    reply(back, "seek-backward", error: "Superseded seek failure")
+    let oldErrorIgnored = inlineError == nil
+    reply(forward, "seek-forward")
+    let intentPreserved =
+      !playing && !confirmedPlaying && playbackRequest == generation
+      && playbackIntent?.request == generation && playbackIntent?.desired == true
+    requestSeek(1)
+    reply(seekRequest, "seek-forward", error: "Fixture HTTP 403")
+    let onlineError = inlineError == "Fixture HTTP 403" && localSeekCancellations.isEmpty
+    requestSeek(-1)
+    reply(seekRequest, "seek-backward", fallback: true)
+    let noOnlineFallback = localSeekCancellations.isEmpty
+    offline = true
+    remotePlaybackDevice = false
+    requestSeek(-1)
+    let firstLocal = seekRequest
+    reply(firstLocal, "seek-backward", fallback: true)
+    requestSeek(1)
+    let secondLocal = seekRequest
+    reply(secondLocal, "seek-forward", fallback: true)
+    let separateLocal = localSeekCancellations.count == 2
+    let cancellation = localSeekCancellations[firstLocal]!
+    supersedePlaybackSession()
+    completeLocalSeek(firstLocal, cancellation: cancellation, error: "Old local seek error")
+    let cancelled = cancellation.isCancelled && localSeekCancellations.isEmpty && inlineError == nil
+    remotePlaybackDevice = true
+    let beforeRemote = seekRequest
+    requestSeek(1)
+    let remoteOfflineBlocked = seekRequest == beforeRemote && pendingSeekRequests.isEmpty
+    offline = false
+    remotePlaybackDevice = false
+    let beforeDisconnected = seekRequest
+    let disconnected = ["credentials", "connecting", "cleared", "failed", "loading"].allSatisfy {
+      connection = $0
+      return panel.performKeyEquivalent(with: event(123)) && seekRequest == beforeDisconnected
+    }
+    connection = "connected"
+    let ordinaryArrows = [NSEvent.ModifierFlags(), .command, .option].allSatisfy {
+      !key(event(123, $0)) && !key(event(124, $0)) && seekRequest == beforeDisconnected
+    }
+    return [
+      "status": "ok", "panel_and_search_seek_in_requested_directions": directions,
+      "seeking_preserves_query_and_caret": queryPreserved,
+      "seek_does_not_change_play_pause_or_pending_play": intentPreserved,
+      "superseded_seek_error_is_ignored": oldErrorIgnored,
+      "online_seek_errors_never_use_applescript": onlineError && noOnlineFallback,
+      "offline_seek_requests_keep_separate_completions": separateLocal,
+      "new_selection_discards_old_local_seek_completion": cancelled,
+      "offline_remote_output_never_moves_to_mac": remoteOfflineBlocked,
+      "seek_shortcuts_inactive_until_connected": disconnected,
+      "ordinary_arrow_editing_remains_unhandled": ordinaryArrows,
+      "seek_does_not_navigate_or_open_apps": navigationRequest == navigation
+        && showCount == shows && openedSpotify == opened,
     ]
   }
   private func likeShortcutChecks() -> JSONObject {

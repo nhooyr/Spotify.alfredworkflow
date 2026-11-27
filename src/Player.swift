@@ -6419,7 +6419,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let remoteRequest = pendingTransportRequest ?? -1
     receive(["type": "transport", "command": "next", "request": remoteRequest])
     web(oldState, remote: true)
-    try? await Task.sleep(nanoseconds: 520_000_000)
+    let remoteRetryDeadline = Date().addingTimeInterval(1)
+    while skipRefreshAPIReads < remoteAPIReads + 2, Date() < remoteRetryDeadline {
+      try? await Task.sleep(nanoseconds: 5_000_000)
+    }
     let remoteRetries =
       skipRefreshAPIReads == remoteAPIReads + 2
       && skipRefreshDesktopReads == remoteDesktopReads && remotePlaybackDevice

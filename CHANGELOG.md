@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.8.2 (Unreleased)
+## v0.8.2
 
 - Keep Queue selections stable across jumps and repeated songs, reject stale upcoming data, and allow replaying Liked Songs history.
 - Use Spotify’s queue symbol in black for the Queue preview.

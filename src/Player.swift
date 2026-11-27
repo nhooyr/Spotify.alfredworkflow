@@ -459,6 +459,34 @@ private func systemImage(_ name: String, height: CGFloat) -> NSImage? {
   return image
 }
 
+private func queueImage(height: CGFloat) -> NSImage? {
+  let key = "queue.spotify:\(height)"
+  if let image = symbolImages[key] { return image }
+  let drawing = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
+    NSGraphicsContext.saveGraphicsState()
+    let transform = NSAffineTransform()
+    transform.translateX(by: rect.minX, yBy: rect.minY)
+    transform.scaleX(by: rect.width / 16, yBy: rect.height / 16)
+    transform.concat()
+    NSColor.black.set()
+    let capsule = NSBezierPath(
+      roundedRect: NSRect(x: 1, y: 10, width: 14, height: 5), xRadius: 2.5, yRadius: 2.5)
+    capsule.windingRule = .evenOdd
+    capsule.append(
+      NSBezierPath(
+        roundedRect: NSRect(x: 2.5, y: 11.5, width: 11, height: 2), xRadius: 1, yRadius: 1))
+    capsule.fill()
+    for y: CGFloat in [1, 5.5] {
+      NSBezierPath(rect: NSRect(x: 1, y: y, width: 14, height: 1.5)).fill()
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    return true
+  }
+  let image = tightImage(drawing, height: height)
+  symbolImages[key] = image
+  return image
+}
+
 private func repeatAllImage(height: CGFloat) -> NSImage? {
   let key = "repeat.extended:\(height)"
   if let image = symbolImages[key] { return image }
@@ -2123,15 +2151,17 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     previewSelection()
   }
   private func previewPlaceholder(_ item: MusicItem) -> NSImage? {
-    symbol(
-      item.payload["action"] as? String == "catalog"
-        || text(dict(item.payload["target"])["kind"]) == "queue" ? item.symbol : "questionmark",
+    if text(dict(item.payload["target"])["kind"]) == "queue" { return queueImage(height: 150) }
+    return symbol(
+      item.payload["action"] as? String == "catalog" ? item.symbol : "questionmark",
       height: 150)
   }
   private func updatePreviewTint() {
-    let isSearch =
-      selectedItem()?.payload["action"] as? String == "catalog" && preview.image?.isTemplate == true
-    preview.contentTintColor = isSearch ? .black : playerTheme.secondary
+    let blackIcon =
+      preview.image?.isTemplate == true
+      && (preview.image === symbol("magnifyingglass", height: 150)
+        || preview.image === queueImage(height: 150))
+    preview.contentTintColor = blackIcon ? .black : playerTheme.secondary
   }
   private func setPreviewImage(_ image: NSImage?) {
     if preview.image !== image {
@@ -2218,7 +2248,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       if let cover = image(path) {
         setPreviewImage(cover)
         previewIsCover = true
-      } else if homePreview || !previewIsCover || failedImages.contains(path) {
+      } else if homePreview || !previewIsCover || failedImages.contains(path)
+        || text(dict(item.payload["target"])["kind"]) == "queue"
+      {
         setPreviewImage(previewPlaceholder(item))
         previewIsCover = false
       }

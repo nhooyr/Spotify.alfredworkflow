@@ -2,6 +2,7 @@
 
 ## v0.8.2 (Unreleased)
 
+- Use Spotify’s queue symbol in black for the Queue preview.
 - Update local shortcuts for playback, likes and menu navigation.
 - Add Command–O to open the selected song, album, artist or playlist in Spotify.
 - Refresh now-playing details promptly after Next or Previous, without waiting for the regular polling interval.

@@ -955,10 +955,14 @@ final class SpotifyCommands {
         .failure(SpotifyFailure(message: "Install the Spotify desktop app to play music.")))
     }
   }
+  static func playbackContext(uri: String, context: String) -> String {
+    validTrack(uri) && isLikedSongsURI(context) ? "" : context
+  }
   func play(
     _ command: String, uri: String = "", context: String = "",
     cancellation: RequestCancellation, completion: @escaping (String?) -> Void
   ) {
+    let context = command == "play" ? Self.playbackContext(uri: uri, context: context) : context
     guard
       [
         "toggle", "pause", "resume", "shuffle-on", "shuffle-off", "next", "previous", "play",
@@ -1091,6 +1095,12 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   private var queueNotice: String?
   private var queueRequest = 0
   private var queuePending: [Int: Int] = [:]
+  private var queueJump:
+    (
+      row: String, track: String, request: Int, acknowledged: Bool, expiresAt: Date
+    )?
+  private var deferredQueueUpdate: JSONObject?
+  private var abandonedQueueJumpRow: String?
   private var menuInteraction = 0
   private var lastQueueObservation: Data?
   private var acceptedPlayback: JSONObject?
@@ -1840,6 +1850,40 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return
     }
     if let rows = value["rows"] as? [[String: Any]] {
+      var queueSelection: String?
+      let incoming = rows.map(MusicItem.init)
+      if value["route_kind"] as? String == "queue", routeKind == "queue" {
+        if let jump = queueJump, Date() >= jump.expiresAt { clearQueueJump() }
+        let current = incoming.first { $0.queueRole == "current" }
+        if let jump = queueJump, selectedItem()?.uri == jump.row {
+          guard let current = current, queueTrack(current, matches: jump.track) else { return }
+          if !jump.acknowledged {
+            deferredQueueUpdate = value
+            return
+          }
+          queueSelection = current.uri
+          clearQueueJump(cancelled: false)
+        } else {
+          clearQueueJump()
+          if let current = current, let accepted = acceptedPlayback,
+            !PlaybackQueue.sameTrack(current.payload, dict(accepted["item"]))
+          {
+            return
+          }
+          if let selected = selectedItem(), selected.queueRole == "upcoming",
+            selected.uri != abandonedQueueJumpRow,
+            !incoming.contains(where: { $0.uri == selected.uri }), let current = current,
+            current.uri != source.first(where: { $0.queueRole == "current" })?.uri,
+            queueTrack(current, matches: queueTrackURI(selected)),
+            let accepted = acceptedPlayback,
+            PlaybackQueue.sameTrack(current.payload, dict(accepted["item"]))
+          {
+            queueSelection = current.uri
+          }
+        }
+      } else if value["route_kind"] as? String != "queue" {
+        clearQueueJump()
+      }
       let enteringQueue =
         value["route_kind"] as? String == "queue" && (routeKind != "queue" || filtered.isEmpty)
       if let kind = value["route_kind"] as? String { routeKind = kind }
@@ -1851,7 +1895,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       source =
         routeKind == "catalog" && (catalogPending || offline)
-        ? localCatalogResults(value["query"] as? String ?? "") : rows.map(MusicItem.init)
+        ? localCatalogResults(value["query"] as? String ?? "") : incoming
       if value["route_kind"] as? String == "catalog" { source = MusicItem.prioritized(source) }
       breadcrumb = value["prefix"] as? String ?? ""
       if value["command"] as? String == "path", let raw = value["path_prefix"] as? String {
@@ -1875,9 +1919,10 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         enteringQueue && restored == nil
         ? source.first { $0.queueRole == "current" }?.uri : nil
       filter(
-        preferredURI: restored?.uri ?? currentQueue,
+        preferredURI: restored?.uri ?? queueSelection ?? currentQueue,
 
-        resetSelection: value["search_text"] != nil || command == "path")
+        resetSelection: value["search_text"] != nil || command == "path",
+        revealSelection: queueSelection != nil)
       if currentQueue != nil, table.selectedRow >= 0 {
         let row = table.rect(ofRow: table.selectedRow)
         scrollMenu(to: NSPoint(x: 0, y: row.midY - scroll.contentView.bounds.height / 2))
@@ -2041,7 +2086,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       nowArt.image = symbol("questionmark", height: 64)
     }
   }
-  private func filter(preferredURI: String? = nil, resetSelection: Bool = false) {
+  private func filter(
+    preferredURI: String? = nil, resetSelection: Bool = false, revealSelection: Bool = false
+  ) {
     guard pendingPlaintextPath == nil else { return }
     let selection = preferredURI ?? (resetSelection ? nil : selectedItem()?.uri)
     let previous = filtered
@@ -2072,7 +2119,15 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     if !filtered.isEmpty {
       let index = selection.flatMap { uri in filtered.firstIndex { $0.uri == uri } } ?? 0
       table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-      if !resetSelection, preferredURI == nil, selection == filtered[index].uri {
+      if revealSelection {
+        let row = table.rect(ofRow: index)
+        var destination = origin
+        if row.minY < destination.y { destination.y = row.minY }
+        if row.maxY > destination.y + scroll.contentView.bounds.height {
+          destination.y = row.maxY - scroll.contentView.bounds.height
+        }
+        if destination != scroll.contentView.bounds.origin { scrollMenu(to: destination) }
+      } else if !resetSelection, preferredURI == nil, selection == filtered[index].uri {
         scrollMenu(to: origin)
       } else {
         table.scrollRowToVisible(index)
@@ -2088,6 +2143,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
     suppressSelection = false
     let updatedSelection = selectedItem()
+    if let jump = queueJump, updatedSelection?.uri != jump.row { clearQueueJump() }
     let changedPreview =
       previousSelection?.uri == updatedSelection?.uri
       && (previousSelection?.name != updatedSelection?.name
@@ -2096,7 +2152,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         || previousSelection?.queueRole != updatedSelection?.queueRole)
     if changedPreview { previewURI = "" }
     updateMenuShortcuts()
-    previewSelection(debounce: !(routeKind == "queue" && changedPreview))
+    previewSelection(debounce: !(routeKind == "queue" && (changedPreview || revealSelection)))
 
   }
   private var visibleShortcutRows: Range<Int> {
@@ -2141,6 +2197,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   func tableViewSelectionDidChange(_ notification: Notification) {
     guard !suppressSelection else { return }
+    if let jump = queueJump, selectedItem()?.uri != jump.row { clearQueueJump() }
     collapseSearchSelection()
     for row in table.rows(in: table.visibleRect)
       .location..<NSMaxRange(table.rows(in: table.visibleRect)) where filtered.indices.contains(row)
@@ -2740,6 +2797,26 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       CGFloat(direction) * max(1, scroll.contentView.bounds.height - scroll.verticalPageScroll)
     scrollMenu(to: origin)
   }
+  private func queueTrackURI(_ item: MusicItem) -> String {
+    let uri = text(item.payload["play_uri"])
+    return uri.isEmpty ? text(item.payload["uri"]) : uri
+  }
+  private func queueTrack(_ item: MusicItem, matches uri: String) -> Bool {
+    guard validTrack(uri) else { return false }
+    if queueTrackURI(item) == uri { return true }
+    if playbackTarget?.uri == uri, playbackTarget?.confirmedTrack == queueTrackURI(item) {
+      return true
+    }
+    guard let accepted = acceptedPlayback,
+      PlaybackQueue.sameTrack(dict(accepted["item"]), ["uri": uri])
+    else { return false }
+    return PlaybackQueue.sameTrack(item.payload, dict(accepted["item"]))
+  }
+  private func clearQueueJump(cancelled: Bool = true) {
+    if cancelled, let jump = queueJump { abandonedQueueJumpRow = jump.row }
+    queueJump = nil
+    deferredQueueUpdate = nil
+  }
   private func queueSelection() {
     guard connection == "connected", let item = selectedItem() else { return }
     let playURI = text(item.payload["play_uri"])
@@ -2832,6 +2909,9 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       }
       spotify.invalidateStatus()
       playbackRequest += 1
+      if routeKind == "queue", ["history", "upcoming"].contains(item.queueRole), validTrack(uri) {
+        queueJump = (item.uri, uri, playbackRequest, false, Date().addingTimeInterval(6))
+      }
       observedPlaybackContext = nil
       if !testMode {
         let request = playbackRequest
@@ -2873,6 +2953,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func requestTransport(_ command: String) {
     guard connection == "connected" else { return }
+    if command == "previous" || command == "next" { clearQueueJump() }
     if offline && remotePlaybackDevice {
       showError("Go online to control the Spotify device already playing.")
       return
@@ -3034,6 +3115,13 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   private func finishPlaybackIntent(request: Int, error: String?) {
     guard var intent = playbackIntent, intent.request == request else { return }
+    if queueJump?.request == request {
+      if error != nil {
+        clearQueueJump()
+      } else {
+        queueJump?.acknowledged = true
+      }
+    }
     if error != nil {
       clearPlaybackIntent()
       playing = confirmedPlaying
@@ -3041,18 +3129,24 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       updateToggle()
     } else {
       intent.acknowledge()
+      if queueJump?.request == request { queueJump?.expiresAt = intent.expiresAt }
       playbackIntent = intent
       playbackIntentExpiry?.cancel()
       let work = DispatchWorkItem { [weak self] in self?.expirePlaybackIntent(request: request) }
       playbackIntentExpiry = work
       DispatchQueue.main.asyncAfter(
         deadline: .now() + max(0, intent.expiresAt.timeIntervalSinceNow), execute: work)
+      if let update = deferredQueueUpdate, queueJump?.acknowledged == true {
+        deferredQueueUpdate = nil
+        receive(update)
+      }
     }
   }
   private func expirePlaybackIntent(request: Int) {
     guard let intent = playbackIntent, intent.request == request, intent.acknowledged,
       Date() >= intent.expiresAt
     else { return }
+    if queueJump?.request == request { clearQueueJump() }
     clearPlaybackIntent()
     playing = confirmedPlaying
     optimisticUntil = .distantPast
@@ -3089,6 +3183,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     localPlaybackCancellations.removeAll()
   }
   private func supersedePlaybackSession() {
+    clearQueueJump()
     cancelLocalPlayback()
     cancelSeekRequests()
     cancelSkipRefresh()
@@ -3681,6 +3776,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     show()
   }
   private func hide() {
+    clearQueueJump()
     cancelSkipRefresh()
     dismissQueueNotice()
     finishSearchInput()
@@ -3895,6 +3991,7 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return menuScrollingTestResult ?? ["status": "pending"]
     }
     if testMode && value["command"] as? String == "test-queue-ui" { return queueUIChecks() }
+    if testMode && value["command"] as? String == "test-queue-jumps" { return queueJumpChecks() }
     if testMode && value["command"] as? String == "test-queue-playback" {
       return queuePlaybackChecks()
     }
@@ -6597,6 +6694,294 @@ final class PlayerDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       "first_usable_timestamp_is_sent_once_and_preserved": timestampAcquired && timestampRetained,
       "playback_state_changes_still_reach_history": playingChangesSent,
       "unnamed_context_refresh_preserves_known_label_and_observation": namedContextStable,
+    ]
+  }
+  private func queueJumpChecks() -> JSONObject {
+    let wasVisible = panel.isVisible
+    if wasVisible { hide() }
+    let oldHotkey = launchHotkey
+    defer {
+      launchHotkey = oldHotkey
+      demo()
+      setSearchText("")
+      if wasVisible { show() }
+    }
+    launchHotkey = nil
+    let shows = showCount
+    let opened = openedSpotify
+    let playlist = "spotify:playlist:" + String(repeating: "p", count: 22)
+    func uri(_ letter: String) -> String { "spotify:track:" + String(repeating: letter, count: 22) }
+    func row(_ letter: String, _ role: String, _ id: String) -> JSONObject {
+      let art = "fixture-queue-jump-" + letter
+      if imageCache.object(forKey: art as NSString) == nil {
+        imageCache.setObject(NSImage(size: NSSize(width: 20, height: 20)), forKey: art as NSString)
+      }
+      let item: JSONObject = [
+        "uri": uri(letter), "name": "Item " + letter, "kind": "track", "play_uri": uri(letter),
+        "context": playlist, "playback_context": ["uri": playlist, "name": "Fixture playlist"],
+      ]
+      return [
+        "uri": id, "name": "Item " + letter, "kind": "track", "art": art, "queue_role": role,
+        "detail": role == "current" ? "Now playing" : role == "history" ? "Played" : "Up next",
+        "item": item,
+      ]
+    }
+    let history =
+      (0..<14).map { row("f", "history", "queue:played:filler-\($0)") }
+      + [row("a", "history", "queue:played:a"), row("b", "history", "queue:played:b")]
+    let initial =
+      history + [
+        row("c", "current", "queue:played:c"), row("d", "upcoming", "queue:upcoming:d"),
+        row("e", "upcoming", "queue:upcoming:e"),
+        row("e", "upcoming", "queue:upcoming:e-duplicate"),
+      ]
+    func update(_ rows: [JSONObject], accepted: String? = nil) {
+      if let accepted = accepted { acceptedPlayback = ["item": ["uri": uri(accepted)]] }
+      receive([
+        "type": "update", "command": "queue-update", "route_kind": "queue", "prefix": "queue/",
+        "rows": rows,
+      ])
+    }
+    func promoted(_ letter: String, id: String) -> [JSONObject] {
+      history + [row("c", "history", "queue:played:c"), row(letter, "current", id)]
+        + initial.suffix(3)
+    }
+    func prepare() {
+      demo()
+      search.isEnabled = true
+      setSearchText("queue/item")
+      receive([
+        "type": "update", "command": "activate", "connection": "connected",
+        "route_kind": "queue", "prefix": "queue/", "rows": initial,
+      ])
+      acceptedPlayback = ["item": ["uri": uri("c")]]
+    }
+    @discardableResult func select(_ id: String, play: Bool = true) -> Int {
+      guard let index = filtered.firstIndex(where: { $0.uri == id }) else { return -1 }
+      table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+      table.scrollRowToVisible(index)
+      if play { activateSelection() }
+      return playbackRequest
+    }
+    func acknowledge(_ request: Int, error: String? = nil) {
+      var value: JSONObject = ["type": "playback", "request": request]
+      value["error"] = error
+      receive(value)
+    }
+    prepare()
+    let forward = select("queue:upcoming:e")
+    let origin = scroll.contentView.bounds.origin
+    let forwardContext = currentPlaybackContext?.uri == playlist
+    let forwardRows = promoted("e", id: "queue:played:new-e")
+    final class TitleProbe: NSTextFieldCell {
+      var stringWrites = 0
+      override var stringValue: String {
+        get { super.stringValue }
+        set {
+          stringWrites += 1
+          super.stringValue = newValue
+        }
+      }
+    }
+    let originalTitleCell = previewTitle.cell
+    let titleProbe = TitleProbe(textCell: previewTitle.stringValue)
+    titleProbe.font = previewTitle.font
+    titleProbe.textColor = previewTitle.textColor
+    titleProbe.alignment = previewTitle.alignment
+    previewTitle.cell = titleProbe
+    titleProbe.stringWrites = 0
+    let images = previewImageChanges
+    update(forwardRows, accepted: "e")
+    let waitsForACK = selectedItem()?.uri == "queue:upcoming:e" && queueJump?.request == forward
+    acknowledge(forward)
+    let forwardMoves = selectedItem()?.uri == "queue:played:new-e" && queueJump == nil
+    let forwardStable =
+      search.stringValue == "queue/item" && scroll.contentView.bounds.origin == origin
+      && previewTitle.stringValue == "Item e" && titleProbe.stringWrites == 0
+      && previewDetail.stringValue == "Song · Now playing" && previewImageChanges == images
+      && preview.image === imageCache.object(forKey: "fixture-queue-jump-e" as NSString)
+    previewTitle.cell = originalTitleCell
+    let backward = select("queue:played:a")
+    acknowledge(backward)
+    let backwardRows = promoted("a", id: "queue:played:replayed-a")
+    update(backwardRows, accepted: "a")
+    let backwardMoves =
+      selectedItem()?.uri == "queue:played:replayed-a"
+      && source.contains { $0.uri == "queue:played:a" }
+
+    prepare()
+    let longHistory =
+      [row("a", "history", "queue:played:a"), row("b", "history", "queue:played:b")]
+      + (0..<50).map { row("f", "history", "queue:played:long-\($0)") }
+    update(longHistory + initial.suffix(4))
+    let distant = select("queue:played:a")
+    let distantOrigin = scroll.contentView.bounds.origin
+    let distantCaret = (search.currentEditor() as? NSTextView)?.selectedRange()
+    acknowledge(distant)
+    update(
+      longHistory + [
+        row("c", "history", "queue:played:c"), row("a", "current", "queue:played:distant-a"),
+      ],
+      accepted: "a")
+    let distantRow = table.rect(ofRow: table.selectedRow)
+    let distantVisible =
+      selectedItem()?.uri == "queue:played:distant-a"
+      && scroll.contentView.documentVisibleRect.contains(distantRow)
+      && scroll.contentView.bounds.origin.y > distantOrigin.y
+      && search.stringValue == "queue/item"
+      && (search.currentEditor() as? NSTextView)?.selectedRange() == distantCaret
+
+    prepare()
+    select("queue:played:c")
+    let currentReplayUnowned = queueJump == nil
+    update(forwardRows, accepted: "e")
+    let currentReplayPreserved =
+      currentReplayUnowned && selectedItem()?.uri == "queue:played:c"
+      && selectedItem()?.queueRole == "history"
+
+    prepare()
+    let first = select("queue:upcoming:e")
+    let latest = select("queue:upcoming:d")
+    acknowledge(first, error: "Stale queue playback failure")
+    update(forwardRows)
+    let latestRemains = selectedItem()?.uri == "queue:upcoming:d" && inlineError == nil
+    acknowledge(latest)
+    acknowledge(first)
+    let latestRows = promoted("d", id: "queue:played:new-d")
+    update(latestRows, accepted: "d")
+    acknowledge(first, error: "Late first failure")
+    update(forwardRows)
+    let rapidLatestWins =
+      latestRemains && selectedItem()?.uri == "queue:played:new-d"
+      && inlineError == nil && queueJump == nil
+
+    prepare()
+    select("queue:upcoming:e")
+    let retained = select("queue:upcoming:d")
+    update(latestRows, accepted: "d")
+    update(forwardRows)
+    acknowledge(retained)
+    let matchingDeferredRetained = selectedItem()?.uri == "queue:played:new-d" && queueJump == nil
+
+    prepare()
+    let duplicate = select("queue:upcoming:e-duplicate")
+    acknowledge(duplicate)
+    update(forwardRows, accepted: "e")
+    let duplicateMoves =
+      selectedItem()?.uri == "queue:played:new-e"
+      && source.filter { queueTrackURI($0) == uri("e") }.count == 3
+
+    var sameRecordingReplay = true
+    for selected in ["queue:played:a", "queue:upcoming:a-duplicate"] {
+      prepare()
+      let sameRecording =
+        history + [
+          row("a", "current", "queue:played:existing-a"),
+          row("a", "upcoming", "queue:upcoming:a-duplicate"),
+        ]
+      update(sameRecording, accepted: "a")
+      let replay = select(selected)
+      acknowledge(replay)
+      update(sameRecording)
+      sameRecordingReplay =
+        sameRecordingReplay
+        && selectedItem()?.uri == "queue:played:existing-a" && queueJump == nil
+        && source.count == sameRecording.count
+        && source.filter { $0.queueRole == "history" }.count == history.count
+    }
+
+    prepare()
+    let browsing = select("queue:upcoming:e")
+    select("queue:played:b", play: false)
+    let browsingOrigin = scroll.contentView.bounds.origin
+    acknowledge(browsing)
+    update(forwardRows, accepted: "e")
+    let browsingPreserved =
+      selectedItem()?.uri == "queue:played:b" && queueJump == nil
+      && scroll.contentView.bounds.origin == browsingOrigin && search.stringValue == "queue/item"
+
+    prepare()
+    select("queue:upcoming:d", play: false)
+    let naturalRows = promoted("d", id: "queue:played:natural-d").filter {
+      text($0["uri"]) != "queue:upcoming:d"
+    }
+    update(naturalRows, accepted: "d")
+    let naturalPromotion = selectedItem()?.uri == "queue:played:natural-d"
+
+    prepare()
+    let rejected = select("queue:upcoming:e")
+    acknowledge(rejected, error: "Fixture play rejected")
+    update(forwardRows)
+    let rejectedDoesNotMove =
+      queueJump == nil && selectedItem()?.uri == "queue:upcoming:e"
+      && inlineError == "Fixture play rejected"
+    prepare()
+    select("queue:upcoming:e")
+    hide()
+    let closingClears = queueJump == nil && deferredQueueUpdate == nil
+    prepare()
+    select("queue:upcoming:e")
+    receive(["type": "update", "connection": "connecting", "rows": []])
+    let disconnectClears = queueJump == nil && deferredQueueUpdate == nil
+    prepare()
+    let expiring = select("queue:upcoming:e")
+    acknowledge(expiring)
+    playbackIntent?.expiresAt = .distantPast
+    expirePlaybackIntent(request: expiring)
+    let expiryClears = queueJump == nil && deferredQueueUpdate == nil
+    prepare()
+    let confirmed = select("queue:upcoming:e")
+    acknowledge(confirmed)
+    updatePlayback(["playing", "Item e", "Artist", "Album", "", uri("e"), "false"])
+    let confirmedIntentCleared = playbackIntent == nil && queueJump?.request == confirmed
+    queueJump?.expiresAt = .distantPast
+    update(latestRows, accepted: "d")
+    let confirmedOwnerExpires =
+      confirmedIntentCleared && queueJump == nil
+      && source.contains { $0.uri == "queue:played:new-d" && $0.queueRole == "current" }
+      && inlineError == nil
+    prepare()
+    let obsolete = select("queue:upcoming:e")
+    queueJump?.expiresAt = .distantPast
+    let replacement = select("queue:upcoming:d")
+    acknowledge(obsolete)
+    update(forwardRows)
+    let replacementKeepsDeadline =
+      queueJump?.request == replacement
+      && (queueJump?.expiresAt ?? .distantPast) > Date()
+      && selectedItem()?.uri == "queue:upcoming:d"
+    let collectionContexts = [PlaybackContext.likedSongs.uri, "spotify:user:fixture:collection"]
+      .allSatisfy { SpotifyCommands.playbackContext(uri: uri("a"), context: $0).isEmpty }
+    let otherContexts =
+      SpotifyCommands.playbackContext(uri: uri("a"), context: playlist) == playlist
+      && SpotifyCommands.playbackContext(uri: playlist, context: PlaybackContext.likedSongs.uri)
+        == PlaybackContext.likedSongs.uri
+      && SpotifyCommands.playbackContext(uri: uri("a"), context: "invalid") == "invalid"
+    return [
+      "status": "ok",
+      "queue_forward_jump_waits_for_ack_then_selects_new_current": waitsForACK && forwardMoves,
+      "queue_backward_jump_selects_new_occurrence_preserving_history": backwardMoves,
+      "queue_distant_replayed_current_scrolls_into_view_without_changing_input": distantVisible,
+      "queue_current_replay_keeps_stable_occurrence_without_pending_jump": currentReplayPreserved,
+      "queue_jump_preserves_filter_viewport_context_and_cover_without_blank_text": forwardStable
+        && forwardContext,
+      "queue_rapid_jumps_ignore_old_acks_errors_and_current_snapshots": rapidLatestWins,
+      "queue_stale_snapshot_cannot_replace_matching_pre_ack_current": matchingDeferredRetained,
+      "queue_duplicate_tracks_follow_activated_occurrence_to_current": duplicateMoves,
+      "queue_replaying_current_recording_uses_existing_current_without_inventing_history":
+        sameRecordingReplay,
+      "queue_jump_never_steals_selection_after_user_browses_away": browsingPreserved,
+      "queue_removed_upcoming_selection_follows_confirmed_natural_playback": naturalPromotion,
+      "queue_rejected_jump_does_not_follow_stale_snapshot": rejectedDoesNotMove,
+      "queue_jump_ownership_clears_on_close_disconnect_and_expiry": closingClears
+        && disconnectClears && expiryClears,
+      "queue_jump_deadline_survives_playback_confirmation_and_releases_new_current":
+        confirmedOwnerExpires,
+      "queue_old_owner_deadline_never_expires_newer_selection": replacementKeepsDeadline,
+      "offline_track_replay_normalizes_only_liked_songs_context": collectionContexts
+        && otherContexts,
+      "queue_jump_regression_test_stays_hidden_without_opening_spotify": showCount == shows
+        && openedSpotify == opened && !panel.isVisible,
     ]
   }
   private func queueUIChecks() -> JSONObject {

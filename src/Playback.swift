@@ -231,7 +231,7 @@ final class WebPlayback {
   }
   static func networkAvailable() -> Bool { NetworkAvailability.shared.isOnline() }
   static func payload(_ uri: String, context: String) throws -> JSONObject {
-    guard validPlaybackURI(uri), context.isEmpty || validURI(context) else {
+    guard validPlaybackURI(uri), context.isEmpty || validPlaybackURI(context) else {
       throw SpotifyFailure(message: "This selection cannot be played in Spotify.")
     }
     if validTrack(uri) {

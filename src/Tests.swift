@@ -404,6 +404,23 @@ private func testWebPlayback() throws {
     "Playlist track preserves its queue and selected offset")
   try playback.play(track, context: album)
   check(text(bodies.last?["context_uri"]) == album, "Album track preserves its album context")
+  for context in [PlaybackContext.likedSongs.uri, "spotify:user:fixture:collection"] {
+    try playback.play(track, context: context)
+    check(
+      (bodies.last?["uris"] as? [String]) == [track]
+        && bodies.last?["context_uri"] == nil && bodies.last?["offset"] == nil,
+      "Queue replay regression test accepts Liked Songs context without an invalid collection offset"
+    )
+  }
+  let beforeInvalidContext = bodies.count
+  do {
+    try playback.play(track, context: "spotify:collection:unrecognized")
+    check(false, "An unsupported Queue context cannot start playback")
+  } catch {
+    check(
+      bodies.count == beforeInvalidContext,
+      "Queue replay regression test rejects unsupported contexts before sending playback")
+  }
   for uri in [playlist, album, artist] {
     try playback.play(uri)
     check(
@@ -3163,6 +3180,7 @@ func runModelTests() {
   do {
     try runQueueRegressionTests()
     try runQueueBackendRegressionTests()
+    try runQueueRefreshRegressionTests()
   } catch {
     check(false, "Queue regression test: \(error)")
   }
@@ -4003,6 +4021,7 @@ func runIntegrationTests(screenshot: URL? = nil) {
   }
   for command in [
     "test-ui", "test-text-updates", "test-home-captions", "test-queue-ui", "test-queue-playback",
+    "test-queue-jumps",
     "test-menu-scrolling",
     "test-menu-viewport", "test-editing",
     "test-local-bindings", "test-revised-shortcuts", "test-like-shortcut", "test-seek-shortcuts",

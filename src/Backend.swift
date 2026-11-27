@@ -121,6 +121,8 @@ final class NativeBackend {
     running = false
     queue.async { [weak self] in
       self?.cancelPlaybackPoll()
+      self?.catalogRequest?.cancel()
+      self?.catalogRequest = nil
       self?.setInitialSyncing(false)
     }
     playbackCancellation?.cancel()
@@ -442,7 +444,7 @@ final class NativeBackend {
       }
     }
   }
-  private func browseNetwork() {
+  private func browseNetwork(queueRetry: Int = 0) {
     catalogRequest?.cancel()
     catalogRequest = nil
     let current = route
@@ -463,7 +465,9 @@ final class NativeBackend {
       do {
         let rows = try self.library.browse(current, network: true, cancellation: cancellation)
         self.queue.async {
-          guard generation == self.revision, self.connection == "connected" else { return }
+          guard self.running, generation == self.revision, self.connection == "connected",
+            cancellation?.isCancelled != true
+          else { return }
           self.reloadArt()
           self.output([
             "type": "update", "command": "browse", "connection": self.connection,
@@ -473,13 +477,26 @@ final class NativeBackend {
           ])
           self.sendCatalog()
           self.warmArtwork()
+          if text(current["kind"]) == "queue", queueRetry < 2,
+            self.library.playbackQueue.needsReconciliation, let cancellation = cancellation
+          {
+            self.queue.asyncAfter(deadline: .now() + (queueRetry == 0 ? 0.25 : 0.75)) {
+              guard self.running, generation == self.revision, self.connection == "connected",
+                self.catalogRequest === cancellation, !cancellation.isCancelled,
+                WebPlayback.networkAvailable()
+              else { return }
+              self.browseNetwork(queueRetry: queueRetry + 1)
+            }
+          }
         }
       } catch {
         self.queue.async {
-          guard self.running, generation == self.revision, self.connection == "connected" else {
+          guard self.running, generation == self.revision, self.connection == "connected",
+            cancellation?.isCancelled != true
+          else {
             return
           }
-          if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
+          if (error as? URLError)?.code == .cancelled {
             let rows = (try? self.library.browse(current)) ?? []
             self.output([
               "type": "update", "command": "browse", "connection": self.connection,
@@ -656,6 +673,9 @@ final class NativeBackend {
               && !self.playback.isDesktopDevice(dict(state["device"])),
           ])
           self.publishPlaybackContext(state, request: playbackRequest)
+          if text(self.route["kind"]) == "queue", self.library.playbackQueue.needsReconciliation {
+            self.browseNetwork(queueRetry: 2)
+          }
         }
       }
     }
@@ -890,7 +910,10 @@ final class NativeBackend {
             self.connect()
           } else {
             self.publishRows(command: "show")
-            if self.connection == "connected" { self.refresh(force: false) }
+            if self.connection == "connected" {
+              self.refresh(force: false)
+              if text(self.route["kind"]) == "queue" { self.browseNetwork() }
+            }
           }
         case "connect": self.connect()
         case "client-id":

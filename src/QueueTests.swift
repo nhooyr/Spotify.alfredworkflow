@@ -267,13 +267,13 @@ func runQueueRegressionTests() throws {
   let staleQueue = try transitionQueue.rows(network: true)
   try require(
     staleQueue.map { text($0["uri"]) } == [
-      text(first["uri"]), text(second["uri"]), text(third["uri"]), text(first["uri"]),
-      text(third["uri"]),
+      text(first["uri"]), text(second["uri"]), text(third["uri"]), text(third["uri"]),
     ]
       && staleQueue.map { text($0["queue_role"]) } == [
-        "history", "current", "upcoming", "upcoming", "upcoming",
-      ] && staleQueue.prefix(2).map { text($0["queue_row_id"]) } == acceptedIDs,
-    "a stale queue current cannot invent a transition after accepted playback ages")
+        "history", "current", "upcoming", "upcoming",
+      ] && staleQueue.prefix(2).map { text($0["queue_row_id"]) } == acceptedIDs
+      && transitionQueue.needsReconciliation,
+    "a stale queue current cannot replace accepted playback or upcoming rows")
   queueCurrent = second
   try transitionQueue.invalidate()
   let confirmedQueue = try transitionQueue.rows(network: true)
@@ -321,6 +321,206 @@ func runQueueRegressionTests() throws {
     if let progress = progress { result["progress_ms"] = progress }
     if let timestamp = timestamp { result["timestamp"] = timestamp }
     return result
+  }
+  func upcomingRows(_ queue: PlaybackQueue, network: Bool = false) throws -> [JSONObject] {
+    try queue.rows(network: network).filter { text($0["queue_role"]) == "upcoming" }
+  }
+  func rowIDs(_ rows: [JSONObject]) -> [String] { rows.map { text($0["queue_row_id"]) } }
+  do {
+    let account = "queue-multi-item-jumps"
+    let (database, queue) = try fixture(account)
+    let initial = track("x")
+    let fourth = track("d")
+    var current = initial
+    var upcoming = [first, first, second, third, first, fourth]
+    var onlyReads = true
+    QueueTestProtocol.response = { request in
+      onlyReads = onlyReads && request.httpMethod == "GET"
+      return (200, ["currently_playing": current, "queue": upcoming])
+    }
+    try queue.observe(snapshot(initial, at: 100))
+    let original = rowIDs(try upcomingRows(queue, network: true))
+    current = first
+    upcoming.removeFirst()
+    try queue.observe(snapshot(first, at: 101))
+    try queue.invalidate()
+    let oneForward = rowIDs(try upcomingRows(queue, network: true))
+    try require(
+      oneForward == Array(original.dropFirst()),
+      "consuming the first duplicate preserves the later duplicate's occurrence identity")
+    current = third
+    upcoming = [first, fourth]
+    try queue.observe(snapshot(third, at: 102))
+    try queue.invalidate()
+    let severalForward = try queue.rows(network: true)
+    try require(
+      rowIDs(severalForward.filter { text($0["queue_role"]) == "upcoming" })
+        == Array(original.suffix(2))
+        && severalForward.filter { text($0["queue_role"]) == "history" }.map { text($0["uri"]) }
+          == [text(initial["uri"]), text(first["uri"])],
+      "jumping several items forward retains surviving IDs without inventing skipped plays")
+    try queue.didEnqueue([first, first], expectedAccount: account)
+    upcoming += [first, first]
+    let appended = rowIDs(try upcomingRows(queue))
+    try require(
+      Array(appended.prefix(2)) == Array(original.suffix(2))
+        && Set(appended).count == 4 && Set(appended.suffix(2)).isDisjoint(with: original),
+      "appended duplicates get new IDs rather than reusing consumed occurrences")
+    try queue.invalidate()
+    try require(
+      rowIDs(try upcomingRows(queue, network: true)) == appended,
+      "the API acknowledgement preserves newly queued duplicate occurrence IDs")
+    current = first
+    try queue.observe(snapshot(first, at: 103))
+    try queue.invalidate()
+    let backward = try queue.rows(network: true)
+    try require(
+      backward.filter { text($0["queue_role"]) == "history" }.map { text($0["uri"]) }
+        == [text(initial["uri"]), text(first["uri"]), text(third["uri"])]
+        && backward.first { text($0["queue_role"]) == "current" }?["uri"] as? String
+          == text(first["uri"])
+        && rowIDs(backward.filter { text($0["queue_role"]) == "upcoming" }) == appended,
+      "playing several history items back records the replay without guessing a different future queue"
+    )
+    let reopened = PlaybackQueue(database, api, online: { false })
+    try require(
+      rowIDs(try upcomingRows(reopened)) == appended,
+      "upcoming occurrence identities survive process restarts and offline reads")
+    var linked = track("z")
+    linked["linked_from"] = ["uri": text(first["uri"])]
+    upcoming[0] = linked
+    try queue.invalidate()
+    let relinkedRows = try upcomingRows(queue, network: true)
+    try require(
+      rowIDs(relinkedRows) == appended
+        && text(relinkedRows[0]["play_uri"]) == text(linked["uri"])
+        && PlaybackQueue.canonicalURI(relinkedRows[0]) == text(first["uri"]),
+      "relinked queue metadata keeps the occurrence ID and actual playable URI")
+    current = fourth
+    upcoming = [first, first]
+    try queue.observe(snapshot(fourth, at: 104))
+    try queue.invalidate()
+    let duplicateTail = rowIDs(try upcomingRows(queue, network: true))
+    try require(
+      duplicateTail == Array(appended.suffix(2)),
+      "a later multi-item trim keeps the duplicate tail rather than earlier consumed aliases")
+    try queue.didEnqueue([first], expectedAccount: account)
+    let addedAgain = rowIDs(try upcomingRows(queue))
+    try require(
+      Array(addedAgain.prefix(2)) == duplicateTail
+        && !Set(original + appended).contains(addedAgain.last ?? ""),
+      "re-adding a consumed song allocates another distinct occurrence")
+    try require(onlyReads, "queue reconciliation never sends playback or queue mutations")
+    try database.useAccount("queue-jumps-new-account")
+    try require(
+      try queue.rows().isEmpty && !queue.needsReconciliation,
+      "an account change clears upcoming occurrence identities and reconciliation state")
+    try queue.didEnqueue([first], expectedAccount: "queue-jumps-new-account")
+    try require(
+      !Set(addedAgain).contains(rowIDs(try upcomingRows(queue)).first ?? ""),
+      "a new account never reuses the previous account's upcoming occurrence IDs")
+  }
+  do {
+    let (database, queue) = try fixture("queue-cached-occurrences")
+    try database.put("playback-queue:remote", [first, first, second])
+    let cached = rowIDs(try upcomingRows(queue))
+    let reopened = PlaybackQueue(database, api, online: { false })
+    try require(
+      cached.count == 3 && Set(cached).count == 3
+        && rowIDs(try upcomingRows(reopened)) == cached,
+      "cached-only reads allocate persistent independent occurrence IDs without network access")
+    try database.put("playback-queue:remote", [first, third, first, second])
+    let inserted = rowIDs(try upcomingRows(queue))
+    try require(
+      [inserted[0], inserted[2], inserted[3]] == cached && !Set(cached).contains(inserted[1]),
+      "a middle insertion preserves both duplicate occurrences and the following song")
+    try database.put("playback-queue:remote", [first, first, second])
+    try require(
+      rowIDs(try upcomingRows(queue)) == cached,
+      "removing an inserted middle item restores the same surviving occurrence identities")
+  }
+  do {
+    let (database, queue) = try fixture("queue-stale-jumps")
+    var reported: Any = first
+    var upcoming = [second, third]
+    var duringRequest: (() throws -> Void)?
+    var status = 200
+    QueueTestProtocol.response = { _ in
+      try! duringRequest?()
+      return (status, ["currently_playing": reported, "queue": upcoming])
+    }
+    try queue.observe(snapshot(first, at: 100))
+    let accepted = rowIDs(try upcomingRows(queue, network: true))
+    reported = third
+    upcoming = [first]
+    try queue.invalidate()
+    try require(
+      rowIDs(try upcomingRows(queue, network: true)) == accepted && queue.needsReconciliation
+        && database.get("playback-queue:fresh") == nil,
+      "a mismatched current response cannot replace upcoming rows or mark stale data fresh")
+    let reads = QueueTestProtocol.requests().count
+    reported = NSNull()
+    try require(
+      rowIDs(try upcomingRows(queue, network: true)) == accepted && queue.needsReconciliation
+        && QueueTestProtocol.requests().count == reads + 1,
+      "a missing-current reply remains retryable and preserves the accepted upcoming queue")
+    reported = first
+    upcoming = [third]
+    try require(
+      rowIDs(try upcomingRows(queue, network: true)) == Array(accepted.suffix(1))
+        && !queue.needsReconciliation && database.get("playback-queue:fresh") != nil,
+      "a later trusted reply reconciles the queue and clears the retry flag")
+    let trusted = rowIDs(try upcomingRows(queue))
+    duringRequest = {
+      try queue.observe(snapshot(second, at: 101))
+      try queue.observe(snapshot(first, at: 102))
+    }
+    upcoming = [second]
+    try queue.invalidate()
+    try require(
+      rowIDs(try upcomingRows(queue, network: true)) == trusted && queue.needsReconciliation,
+      "A-to-B-to-A during an in-flight request cannot accept an older same-URI response")
+    duringRequest = nil
+    status = 503
+    _ = try upcomingRows(queue, network: true)
+    try require(
+      !queue.needsReconciliation && rowIDs(try upcomingRows(queue)) == trusted,
+      "a real API error clears reconciliation retries while retaining cached upcoming rows")
+  }
+  do {
+    try grant(SpotifyAPI.scopes)
+    let (database, queue) = try fixture("queue-history-rate-limit")
+    let cooldown = paths.data.appendingPathComponent("api-cooldown.json")
+    defer { try? FileManager.default.removeItem(at: cooldown) }
+    try database.put("playback-queue:remote", [second])
+    try queue.observe(snapshot(first, at: 100))
+    QueueTestProtocol.response = { request in
+      request.url!.path.hasSuffix("/queue")
+        ? (200, ["currently_playing": third, "queue": [first]]) : (429, [:])
+    }
+    try require(
+      try upcomingRows(queue, network: true).map { text($0["uri"]) } == [text(second["uri"])]
+        && !queue.needsReconciliation,
+      "a recently-played rate limit stops reconciliation retries without replacing cached queue rows"
+    )
+    try grant("user-read-playback-state")
+  }
+  do {
+    let (database, queue) = try fixture("queue-error-account-switch")
+    QueueTestProtocol.response = { _ in
+      try! database.useAccount("queue-error-new-account")
+      try! database.put("playback-queue:reconciliation", true)
+      return (503, [:])
+    }
+    do {
+      _ = try queue.rows(network: true)
+      throw SpotifyFailure(message: "Queue regression test: an old-account error was accepted")
+    } catch let error as URLError {
+      try require(error.code == .cancelled, "an account change cancels an old failed request")
+    }
+    try require(
+      queue.needsReconciliation,
+      "an old account's request error cannot clear the new account's reconciliation state")
   }
   let (seedStore, provisional) = try fixture("queue-provisional")
   QueueTestProtocol.response = { _ in (200, ["currently_playing": first, "queue": []]) }

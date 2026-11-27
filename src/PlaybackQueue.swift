@@ -8,8 +8,14 @@ final class PlaybackQueue {
   private static let observedKey = "playback-queue:observed"
   private static let seedKey = "playback-queue:seed"
   private static let remoteKey = "playback-queue:remote"
+  private static let occurrencesKey = "playback-queue:upcoming-occurrences"
+  private static let reconciliationKey = "playback-queue:reconciliation"
   private static let recentKey = "playback-queue:recent"
   private static let freshKey = "playback-queue:fresh"
+
+  var needsReconciliation: Bool {
+    store.get(Self.reconciliationKey, stale: true) as? Bool == true
+  }
 
   init(
     _ store: MusicStore, _ api: SpotifyAPI,
@@ -111,7 +117,7 @@ final class PlaybackQueue {
         text(store.get("library:account", stale: true)) == expectedAccount
       else { throw URLError(.cancelled) }
       let upcoming = store.get(Self.remoteKey, stale: true) as? [JSONObject] ?? []
-      try store.put(Self.remoteKey, upcoming + added, ttl: 365 * 86400)
+      try saveUpcoming(upcoming + added)
       // Spotify's acknowledgement can precede the updated queue response.
       try store.put(Self.freshKey, true, ttl: 2)
       if cancellation?.isCancelled == true { throw URLError(.cancelled) }
@@ -136,18 +142,35 @@ final class PlaybackQueue {
           if !api.canReadPlayback {
             throw SpotifyFailure(message: "Reconnect to Spotify to allow reading its queue.")
           }
+          let observedID = text(
+            dict(dict(store.get(Self.observedKey, stale: true))["current"])["id"])
           let result = dict(try api.request("/me/player/queue", cancellation: cancellation))
           let upcoming = (result["queue"] as? [JSONObject] ?? []).compactMap(normalized)
           try store.transaction {
             try checkAccount()
-            if let current = normalized(dict(result["currently_playing"])) { try seed(current) }
-            try store.put(Self.remoteKey, upcoming, ttl: 365 * 86400)
+            let accepted = dict(dict(store.get(Self.observedKey, stale: true))["current"])
+            let current = normalized(dict(result["currently_playing"]))
+            guard text(accepted["id"]) == observedID,
+              dict(accepted["track"]).isEmpty
+                || current.map({ Self.sameTrack(dict(accepted["track"]), $0) }) == true
+            else {
+              try store.put(Self.reconciliationKey, true, ttl: 365 * 86400)
+              try checkAccount()
+              return
+            }
+            if let current = current { try seed(current) }
+            try saveUpcoming(upcoming)
+            try store.execute("DELETE FROM responses WHERE key=?", [Self.reconciliationKey])
             try store.put(Self.freshKey, true, ttl: 5)
             try checkAccount()
           }
         } catch {
           if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
             throw error
+          }
+          try store.transaction {
+            try checkAccount()
+            try store.execute("DELETE FROM responses WHERE key=?", [Self.reconciliationKey])
           }
           failure = error
         }
@@ -177,6 +200,12 @@ final class PlaybackQueue {
             if cancellation?.isCancelled == true || (error as? URLError)?.code == .cancelled {
               throw error
             }
+            if (error as? SpotifyFailure)?.status == 429 {
+              try store.transaction {
+                try checkAccount()
+                try store.execute("DELETE FROM responses WHERE key=?", [Self.reconciliationKey])
+              }
+            }
             if failure == nil { failure = error }
           }
         }
@@ -197,18 +226,72 @@ final class PlaybackQueue {
       }
       if !dict(current["track"]).isEmpty { result.append(row(current, role: "current")) }
       let upcoming = store.get(Self.remoteKey, stale: true) as? [JSONObject] ?? []
-      var occurrences: [String: Int] = [:]
-      for track in upcoming {
-        let uri = text(track["uri"])
-        let occurrence = occurrences[uri, default: 0]
-        occurrences[uri] = occurrence + 1
-        result.append(
-          row(["id": uri + ":" + String(occurrence), "track": track], role: "upcoming"))
-      }
+      result += try upcomingEntries(upcoming).map { row($0, role: "upcoming") }
       try checkAccount()
     }
     if result.isEmpty, let failure = failure { throw failure }
     return result
+  }
+
+  private func saveUpcoming(_ tracks: [JSONObject]) throws {
+    _ = try upcomingEntries(tracks)
+    try store.put(Self.remoteKey, tracks, ttl: 365 * 86400)
+  }
+
+  private func upcomingEntries(_ tracks: [JSONObject]) throws -> [JSONObject] {
+    let previous = store.get(Self.occurrencesKey, stale: true) as? [JSONObject] ?? []
+    let known = previous.map { dict($0["track"]) }
+    var matches: [Int: Int] = [:]
+    if known.count <= tracks.count,
+      zip(known, tracks).allSatisfy({ Self.sameTrack($0, $1) })
+    {
+      for index in known.indices { matches[index] = index }
+    } else if tracks.count < known.count,
+      let start = known.indices.first(where: { start in
+        let count = known.count - start
+        return count <= tracks.count
+          && zip(known[start...], tracks).allSatisfy { Self.sameTrack($0, $1) }
+      })
+    {
+      for index in start..<known.count { matches[index - start] = index }
+    } else if !known.isEmpty, !tracks.isEmpty {
+      var lengths = Array(
+        repeating: Array(repeating: 0, count: tracks.count + 1), count: known.count + 1)
+      for old in known.indices {
+        for new in tracks.indices {
+          lengths[old + 1][new + 1] =
+            Self.sameTrack(known[old], tracks[new])
+            ? lengths[old][new] + 1
+            : max(lengths[old][new + 1], lengths[old + 1][new])
+        }
+      }
+      var old = known.count
+      var new = tracks.count
+      while old > 0, new > 0 {
+        if Self.sameTrack(known[old - 1], tracks[new - 1]) {
+          matches[new - 1] = old - 1
+          old -= 1
+          new -= 1
+        } else if lengths[old - 1][new] > lengths[old][new - 1] {
+          old -= 1
+        } else {
+          new -= 1
+        }
+      }
+    }
+    let entries = tracks.enumerated().map { index, track -> JSONObject in
+      if let old = matches[index] {
+        return [
+          "id": text(previous[old]["id"]),
+          "track": Self.retainingIdentity(track, from: known[old]),
+        ]
+      }
+      return ["id": UUID().uuidString, "track": track]
+    }
+    if (try? jsonData(entries)) != (try? jsonData(previous)) {
+      try store.put(Self.occurrencesKey, entries, ttl: 365 * 86400)
+    }
+    return entries
   }
 
   private func normalized(_ value: JSONObject) -> JSONObject? {

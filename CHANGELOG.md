@@ -2,6 +2,7 @@
 
 ## v0.8.2 (Unreleased)
 
+- Keep Queue selections stable across jumps and repeated songs, reject stale upcoming data, and allow replaying Liked Songs history.
 - Use Spotify’s queue symbol in black for the Queue preview.
 - Update local shortcuts for playback, likes and menu navigation.
 - Add Command–O to open the selected song, album, artist or playlist in Spotify.

@@ -7,6 +7,8 @@ private final class QueueBackendFixture {
   var offlinePost = false
   var blockNextPost = false
   var blocked = false
+  var queueResponses: [JSONObject] = []
+  var queueStatus = 200
   let release = DispatchSemaphore(value: 0)
   let tracks: [JSONObject]
   init(_ tracks: [JSONObject]) { self.tracks = tracks }
@@ -32,6 +34,9 @@ private final class QueueBackendFixture {
       blockNextPost = false
       blocked = true
     }
+    let queueRead = request.httpMethod == "GET" && request.url!.path == "/v1/me/player/queue"
+    let queueResponse = queueRead && !queueResponses.isEmpty ? queueResponses.removeFirst() : nil
+    let queueStatus = self.queueStatus
     lock.unlock()
     if block { _ = release.wait(timeout: .now() + 3) }
     if post && offline { throw URLError(.notConnectedToInternet) }
@@ -40,9 +45,11 @@ private final class QueueBackendFixture {
       return fails
         ? (403, try jsonData(["error": ["message": "Fixture queue denied"]])) : (204, Data())
     case ("GET", "/v1/me/player/queue"):
-      return (
-        200, try jsonData(["currently_playing": tracks[0], "queue": [tracks[1], tracks[1]]])
-      )
+      let body: JSONObject =
+        queueStatus == 200
+        ? queueResponse ?? ["currently_playing": tracks[0], "queue": [tracks[1], tracks[1]]]
+        : ["error": ["message": "Fixture queue read denied"]]
+      return (queueStatus, try jsonData(body))
     case ("GET", "/v1/me/player/recently-played"):
       return (
         200, try jsonData(["items": [["track": tracks[2], "played_at": "2026-11-26T10:00:00Z"]]])
@@ -74,6 +81,138 @@ private final class QueueBackendURLProtocol: URLProtocol {
     } catch { client?.urlProtocol(self, didFailWithError: error) }
   }
   override func stopLoading() {}
+}
+
+func runQueueRefreshRegressionTests() throws {
+  func require(_ value: Bool, _ message: String) throws {
+    guard value else { throw SpotifyFailure(message: "Queue refresh regression test: " + message) }
+  }
+  let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(
+    "spotify-queue-refresh-" + UUID().uuidString)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let environment = [
+    "alfred_workflow_data": root.appendingPathComponent("data").path,
+    "alfred_workflow_cache": root.appendingPathComponent("cache").path,
+    "SPOTIFY_DESKTOP_CACHE": root.appendingPathComponent("desktop").path,
+    "SPOTIFY_DESKTOP_USER_CACHE": root.appendingPathComponent("empty").path,
+  ]
+  let authorization = testAuthorizationStore(root: root, environment: environment)
+  let paths = WorkflowPaths(root: root, environment: environment, authorization: authorization)
+  try paths.prepare()
+  let client = String(repeating: "a", count: 32)
+  try paths.saveClientID(client)
+  try authorization.save([
+    "client_id": client, "access_token": "fixture", "refresh_token": "fixture",
+    "expires_at": Date().timeIntervalSince1970 + 3600, "scope": "user-read-playback-state",
+  ])
+  let store = try MusicStore(paths.cache.appendingPathComponent("index.sqlite3"))
+  try store.useAccount("queue-refresh-fixture")
+  try store.put(MusicLibrary.syncKey, true, ttl: 3600)
+  try store.put("desktop:scanned:v4", true, ttl: 3600)
+  let tracks: [JSONObject] = ["a", "b", "c"].map { letter in
+    [
+      "uri": "spotify:track:" + String(repeating: letter, count: 22),
+      "kind": "track", "name": letter,
+    ]
+  }
+  let fixture = QueueBackendFixture(tracks)
+  QueueBackendURLProtocol.fixture = fixture
+  let config = URLSessionConfiguration.ephemeral
+  config.protocolClasses = [QueueBackendURLProtocol.self]
+  let session = URLSession(configuration: config)
+  let backend = NativeBackend(
+    root, environment: environment, session: session, credentials: authorization)
+  var updates: [JSONObject] = []
+  backend.receive = { updates.append($0) }
+  defer {
+    backend.stop()
+    session.invalidateAndCancel()
+    QueueBackendURLProtocol.fixture = nil
+  }
+  func wait(_ ready: () -> Bool) {
+    let deadline = Date().addingTimeInterval(4)
+    while !ready(), Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+    }
+  }
+  func observe(_ index: Int) throws {
+    backend.send([
+      "command": "observe-playback",
+      "args": [
+        String(decoding: try jsonData(["item": tracks[index]]), as: UTF8.self)
+      ],
+    ])
+  }
+  func configure(_ replies: [JSONObject], status: Int = 200) {
+    fixture.lock.lock()
+    fixture.queueResponses = replies
+    fixture.queueStatus = status
+    fixture.lock.unlock()
+  }
+  let model = PlaybackQueue(store, SpotifyAPI(paths, session: session), online: { false })
+  try backend.start()
+  wait { updates.contains { text($0["connection"]) == "connected" } }
+  try require(updates.contains { text($0["connection"]) == "connected" }, "isolated backend starts")
+  try observe(2)
+  configure([
+    ["currently_playing": tracks[0], "queue": [tracks[1]]],
+    ["currently_playing": tracks[2], "queue": [tracks[0]]],
+  ])
+  let queueHome = homeItems.first { text(dict($0["target"])["kind"]) == "queue" }!
+  backend.send([
+    "command": "activate", "args": [String(decoding: try jsonData(queueHome), as: UTF8.self)],
+  ])
+  wait { fixture.queueReads >= 2 && !model.needsReconciliation }
+  try require(fixture.queueReads == 2, "a stale successful reply gets one bounded follow-up")
+  try require(
+    try model.rows().filter { text($0["queue_role"]) == "upcoming" }.map { text($0["name"]) } == [
+      "a"
+    ],
+    "the trusted follow-up replaces upcoming with the new playback's queue")
+
+  let beforeStale = fixture.queueReads
+  configure([])
+  try observe(1)
+  wait { fixture.queueReads >= beforeStale + 3 }
+  RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+  try require(
+    fixture.queueReads == beforeStale + 3, "persistent stale replies stop after two follow-ups")
+  let beforePoll = fixture.queueReads
+  backend.send(["command": "repeat-state", "args": ["1", "1"]])
+  wait { fixture.queueReads > beforePoll }
+  RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+  try require(
+    fixture.queueReads == beforePoll + 1,
+    "the normal playback poll makes one follow-up without restarting the burst")
+  let beforeError = fixture.queueReads
+  configure([], status: 403)
+  backend.send(["command": "show"])
+  wait { fixture.queueReads > beforeError && !model.needsReconciliation }
+  RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+  try require(fixture.queueReads == beforeError + 1, "HTTP errors never start a retry loop")
+
+  configure([["currently_playing": tracks[1], "queue": [tracks[2]]]])
+  let beforeReopen = fixture.queueReads
+  backend.send(["command": "show"])
+  wait { fixture.queueReads > beforeReopen && !model.needsReconciliation }
+  try require(
+    try model.rows().filter { text($0["queue_role"]) == "upcoming" }.map { text($0["name"]) } == [
+      "c"
+    ],
+    "reopening Queue retries a previously untrusted snapshot")
+
+  configure([])
+  let beforeLeaving = fixture.queueReads
+  try observe(2)
+  wait { fixture.queueReads > beforeLeaving && model.needsReconciliation }
+  backend.send(["command": "home"])
+  wait { updates.last?["route_kind"] as? String == "home" }
+  RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+  try require(
+    fixture.queueReads == beforeLeaving + 1, "leaving Queue cancels scheduled follow-up reads")
+  print(
+    "Queue refresh regression tests passed: stale replies, bounded retries, errors, reopening and navigation cancellation."
+  )
 }
 
 func runQueueBackendRegressionTests() throws {

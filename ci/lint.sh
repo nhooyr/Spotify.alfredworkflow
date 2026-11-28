@@ -17,8 +17,6 @@ printf '%s\0' \
 	sh 'shfmt -f=0 . | xargs -0 -n1 sh -n' \
 	arm64 "$arch_checks" \
 	x86_64 "$arch_checks" \
-	clang-analyze 'for source in src/*.c; do
-		xcrun clang --analyze --analyzer-output text -Xanalyzer -analyzer-werror \
-			-Wall -Wextra -Werror -o /dev/null "$source"
-	done' |
+	clang-analyze 'xcrun clang --analyze --analyzer-output text -Xanalyzer -analyzer-werror \
+		-Wall -Wextra -Werror src/*.c' |
 	PARALLEL_SHELL=/bin/sh parallel --plain --null -N 2 --jobs 4 --line-buffer --tagstring '[{1}]' 'sh -ec {2} sh {1} 2>&1'

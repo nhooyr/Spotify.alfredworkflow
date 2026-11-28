@@ -23,7 +23,7 @@ printf '%s\0' \
 	shfmt 'shfmt -s -w .' \
 	swift-format 'xcrun swift format --in-place --parallel src/*.swift' \
 	clang-format 'clang-format -i src/*.c src/*.h' |
-	PARALLEL_SHELL=/bin/sh parallel --plain --null -N 2 --jobs 4 --line-buffer --tagstring '[{1}]' --halt never 'sh -ec {2} 2>&1'
+	PARALLEL_SHELL=/bin/sh parallel --plain --null -N 2 --jobs 4 --line-buffer --tagstring '[{1}]' 'sh -ec {2} 2>&1'
 
 if [ "${CI-}" ]; then
 	git add --intent-to-add --ignore-removal .
